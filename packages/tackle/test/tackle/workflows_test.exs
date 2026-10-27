@@ -245,6 +245,34 @@ defmodule Tackle.WorkflowsTest do
     assert File.read!(secret) == "SECRET"
   end
 
+  test "a user workflow directory linked into the workspace goes through the jail", %{
+    root: root,
+    cwd: cwd,
+    home: home,
+    opts: opts
+  } do
+    # $TACKLE_HOME/workflows -> <workspace>/shared-workflows
+    shared = Path.join(cwd, "shared-workflows")
+    put(shared, "report.lua", "-- Report\nreturn 1")
+    File.mkdir_p!(home)
+    File.ln_s!(shared, Path.join(home, "workflows"))
+    opts = Keyword.put(opts, :executor, FakeJail.new(cwd, self()))
+
+    assert {:ok, %{source: :user}, "-- Report\nreturn 1"} = Workflows.fetch("report", opts)
+
+    # Jailed code points the workflow at a host file.
+    secret = Path.join(root, "secret.lua")
+    File.write!(secret, "SECRET")
+    File.rm!(Path.join(shared, "report.lua"))
+    File.ln_s!(secret, Path.join(shared, "report.lua"))
+    user_path = Path.join(home, "workflows/report.lua")
+
+    assert {:error, {:unknown_workflow, "report", []}} = Workflows.fetch("report", opts)
+    assert {:error, :enoent} = Workflows.save(user_path, "overwritten", opts)
+    assert_received {:fake_jail, :write, _path}
+    assert File.read!(secret) == "SECRET"
+  end
+
   defp put(dir, name, script) do
     File.mkdir_p!(dir)
     File.write!(Path.join(dir, name), script)

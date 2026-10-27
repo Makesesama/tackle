@@ -165,8 +165,12 @@ too; `Tackle.Config` rejects a malformed executor rather than falling back to
 the local one. With a jailed executor, `AGENTS.md`, skills, and project agent
 definitions inside the workspace are also read through the jail (see
 `Tackle.ProjectFiles`), so symlinks planted by jailed code cannot expose host
-files; those files are limited to 1 MiB. A custom executor must implement every
-`Tackle.Executor` callback, including `stat/2`, `list/2`, and `workspace/1`. Cancelling or timing out `bash` kills the command's whole process
+files; those files are limited to 1 MiB. Files outside the workspace, such as
+`~/.agents/skills` or `$TACKLE_HOME/workflows`, are read and written on the
+host, but if one of their symlinks leads into the workspace, the rest of the
+path goes through the jail too, so a symlinked user skill still loads and
+jailed code cannot retarget it at a host file. A custom executor must implement
+every `Tackle.Executor` callback, including `stat/2`, `list/2`, and `workspace/1`. Cancelling or timing out `bash` kills the command's whole process
 group.
 
 `bash` retains a bounded output tail and incrementally spills oversized output

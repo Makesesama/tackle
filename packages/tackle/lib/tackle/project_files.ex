@@ -13,7 +13,12 @@ defmodule Tackle.ProjectFiles do
   The workspace is the directory the executor mounts
   (`c:Tackle.Executor.workspace/1`), which may contain the agent's working
   directory. Paths outside it (its parent directories, `~/.agents`, and
-  `$TACKLE_HOME`) are not writable from the jail and are accessed locally.
+  `$TACKLE_HOME`) are not writable from the jail and are accessed locally, but
+  they may be symlinks into the workspace, such as a user skill linked to a
+  repository's copy. Such a path is resolved on the host, one component at a
+  time: once a resolved prefix lands inside the workspace, the rest of the
+  path goes through the executor, so no symlink the jail can change is ever
+  followed on the host. Writes route the same way.
   """
 
   alias Tackle.Executor
@@ -26,28 +31,42 @@ defmodule Tackle.ProjectFiles do
   @max_walk_dirs 256
   @max_dir_entries 1_000
 
-  @enforce_keys [:executor, :workspace]
-  defstruct [:executor, :workspace]
+  @max_symlinks 40
+
+  @enforce_keys [:executor, :workspace, :real_workspace]
+  defstruct [:executor, :workspace, :real_workspace]
 
   @typedoc "Routes project file access between the session executor and the host."
-  @type t :: %__MODULE__{executor: Executor.t(), workspace: Path.t() | nil}
+  @type t :: %__MODULE__{
+          executor: Executor.t(),
+          workspace: Path.t() | nil,
+          real_workspace: Path.t() | nil
+        }
 
   @doc """
   Creates a router for an executor (default: the local executor).
 
   Paths inside the executor's `c:Tackle.Executor.workspace/1` are read through
-  it; everything else is read locally.
+  it; everything else is read locally (see the module documentation).
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
     executor = Keyword.get(opts, :executor) || Executor.local()
-    %__MODULE__{executor: executor, workspace: Executor.workspace(executor)}
+    workspace = Executor.workspace(executor)
+
+    %__MODULE__{
+      executor: executor,
+      workspace: workspace,
+      real_workspace: workspace && host_realpath(workspace)
+    }
   end
 
   @doc "Reads a whole file of at most 1 MiB; larger files return `{:error, :too_large}`."
   @spec read(t(), Path.t()) :: {:ok, binary()} | {:error, Executor.reason()}
-  def read(files, path),
-    do: files |> executor_for(path) |> Executor.read_file(path, @max_file_bytes)
+  def read(files, path) do
+    with {:ok, executor, path} <- route(files, path),
+         do: Executor.read_file(executor, path, @max_file_bytes)
+  end
 
   @doc """
   Writes a file through the same routing as reads.
@@ -56,8 +75,10 @@ defmodule Tackle.ProjectFiles do
   exclusive `:create`) and `:mkdir_p` to create parent directories.
   """
   @spec write(t(), Path.t(), binary(), keyword()) :: :ok | {:error, Executor.reason()}
-  def write(files, path, data, opts \\ []),
-    do: files |> executor_for(path) |> Executor.write(path, data, opts)
+  def write(files, path, data, opts \\ []) do
+    with {:ok, executor, path} <- route(files, path),
+         do: Executor.write(executor, path, data, opts)
+  end
 
   @doc """
   Finds the nearest existing project directory at or above `cwd`.
@@ -136,7 +157,8 @@ defmodule Tackle.ProjectFiles do
   @doc "Returns the type of a path, following symlinks."
   @spec type(t(), Path.t()) :: {:ok, atom()} | {:error, Executor.reason()}
   def type(files, path) do
-    with {:ok, %{type: type}} <- files |> executor_for(path) |> Executor.stat(path) do
+    with {:ok, executor, path} <- route(files, path),
+         {:ok, %{type: type}} <- Executor.stat(executor, path) do
       {:ok, type}
     end
   end
@@ -147,7 +169,8 @@ defmodule Tackle.ProjectFiles do
   """
   @spec list(t(), Path.t()) :: {:ok, [String.t()]} | {:error, Executor.reason()}
   def list(files, path) do
-    with {:ok, names} <- files |> executor_for(path) |> Executor.list(path) do
+    with {:ok, executor, path} <- route(files, path),
+         {:ok, names} <- Executor.list(executor, path) do
       {:ok, names |> Enum.sort() |> Enum.take(@max_dir_entries)}
     end
   end
@@ -191,17 +214,90 @@ defmodule Tackle.ProjectFiles do
   @spec exists?(t(), Path.t()) :: boolean()
   def exists?(files, path), do: match?({:ok, _type}, type(files, path))
 
-  @doc "Returns whether a path is the workspace or inside it."
+  @doc """
+  Returns whether a path is the workspace or inside it, by its text.
+
+  Routing also follows host symlinks (see the module documentation); this
+  check does not.
+  """
   @spec in_workspace?(t(), Path.t()) :: boolean()
   def in_workspace?(%__MODULE__{workspace: nil}, _path), do: false
-  def in_workspace?(%__MODULE__{workspace: "/"}, _path), do: true
 
-  def in_workspace?(%__MODULE__{workspace: workspace}, path) do
+  def in_workspace?(%__MODULE__{workspace: workspace}, path),
+    do: contains?(workspace, Path.expand(path))
+
+  # Returns the executor for a path and the path to give it. Without a
+  # workspace the executor sees the host, so the host reads everything.
+  defp route(%__MODULE__{workspace: nil}, path), do: {:ok, Executor.local(), path}
+
+  defp route(files, path) do
     path = Path.expand(path)
-    path == workspace or String.starts_with?(path, workspace <> "/")
+
+    if in_workspace?(files, path),
+      do: {:ok, files.executor, path},
+      else: resolve(files, Path.split(path), "/", 0)
   end
 
-  defp executor_for(files, path) do
-    if in_workspace?(files, path), do: files.executor, else: Executor.local()
+  # Resolves a host path one component at a time, following its symlinks.
+  # `resolved` holds no symlinks; once it is inside the workspace, the rest of
+  # the path is the executor's to resolve, so no symlink the jail controls is
+  # followed on the host.
+  defp resolve(_files, _parts, _resolved, links) when links > @max_symlinks,
+    do: {:error, :eloop}
+
+  defp resolve(files, parts, resolved, links) do
+    case workspace_path(files, resolved) do
+      {:ok, inside} -> {:ok, files.executor, Path.join([inside | parts])}
+      :error -> resolve_next(files, parts, resolved, links)
+    end
   end
+
+  defp resolve_next(_files, [], resolved, _links), do: {:ok, Executor.local(), resolved}
+  defp resolve_next(files, ["/" | rest], _resolved, links), do: resolve(files, rest, "/", links)
+
+  defp resolve_next(files, ["." | rest], resolved, links),
+    do: resolve(files, rest, resolved, links)
+
+  defp resolve_next(files, [".." | rest], resolved, links),
+    do: resolve(files, rest, Path.dirname(resolved), links)
+
+  defp resolve_next(files, [part | rest], resolved, links) do
+    candidate = Path.join(resolved, part)
+
+    case File.read_link(candidate) do
+      {:ok, target} -> resolve(files, Path.split(target) ++ rest, resolved, links + 1)
+      {:error, _reason} -> resolve(files, rest, candidate, links)
+    end
+  end
+
+  # A path inside the workspace, given by text or through the workspace's
+  # resolved location, as the executor names it.
+  defp workspace_path(nil, _path), do: :error
+
+  defp workspace_path(%__MODULE__{workspace: workspace, real_workspace: real} = files, path) do
+    cond do
+      in_workspace?(files, path) ->
+        {:ok, path}
+
+      is_binary(real) and contains?(real, path) ->
+        {:ok,
+         Path.join(workspace, path |> String.replace_prefix(real, "") |> String.trim_leading("/"))}
+
+      true ->
+        :error
+    end
+  end
+
+  # Resolves every symlink of a host path; a symlink loop leaves it as given.
+  defp host_realpath(path) do
+    path = Path.expand(path)
+
+    case resolve(nil, Path.split(path), "/", 0) do
+      {:ok, _executor, resolved} -> resolved
+      {:error, :eloop} -> path
+    end
+  end
+
+  defp contains?("/", _path), do: true
+  defp contains?(dir, path), do: path == dir or String.starts_with?(path, dir <> "/")
 end

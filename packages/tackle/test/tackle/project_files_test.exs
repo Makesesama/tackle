@@ -83,6 +83,45 @@ defmodule Tackle.ProjectFilesTest do
       refute jailed =~ "SECRET-TOKEN"
     end
 
+    test "host files linked into the workspace go through the jail", %{
+      workspace: workspace,
+      secret: secret,
+      root: root
+    } do
+      # ~/AGENTS.md -> <workspace>/AGENTS.md, which jailed code points at a
+      # host file.
+      user = Path.join(root, "user")
+      cwd = Path.join(user, "project")
+      File.mkdir_p!(cwd)
+      File.ln_s!(secret, Path.join(workspace, "AGENTS.md"))
+      File.ln_s!(Path.join(workspace, "AGENTS.md"), Path.join(user, "AGENTS.md"))
+      File.write!(Path.join(cwd, "AGENTS.md"), "Project guidance.")
+      opts = [cwd: cwd, home: Path.join(root, "home/.tackle"), user_home: user, tools: []]
+
+      assert {:ok, local} = SystemPrompt.build(opts)
+      assert local =~ "SECRET-TOKEN"
+
+      assert {:ok, jailed} = SystemPrompt.build([executor: FakeJail.new(workspace)] ++ opts)
+      assert jailed =~ "Project guidance."
+      refute jailed =~ "SECRET-TOKEN"
+
+      # A linked directory, including through `..` in the link, routes the same way.
+      File.mkdir_p!(Path.join(workspace, "docs"))
+      File.ln_s!(secret, Path.join(workspace, "docs/leak.md"))
+      File.ln_s!(Path.join(workspace, "docs/../docs"), Path.join(root, "docs-link"))
+      files = ProjectFiles.new(executor: FakeJail.new(workspace, self()))
+      assert {:error, :enoent} = ProjectFiles.read(files, Path.join(root, "docs-link/leak.md"))
+      assert_received {:fake_jail, :read, _path}
+    end
+
+    test "host symlink loops are an error, not a hang", %{workspace: workspace, root: root} do
+      File.ln_s!(Path.join(root, "loop-b"), Path.join(root, "loop-a"))
+      File.ln_s!(Path.join(root, "loop-a"), Path.join(root, "loop-b"))
+      files = ProjectFiles.new(executor: FakeJail.new(workspace))
+
+      assert {:error, :eloop} = ProjectFiles.read(files, Path.join(root, "loop-a/file"))
+    end
+
     test "skills", %{workspace: workspace, root: root} do
       outside = Path.join(root, "outside-skill")
       File.mkdir_p!(outside)

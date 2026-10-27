@@ -72,6 +72,37 @@ defmodule Tackle.Tools.LoadSkillTest do
              LoadSkill.run(%{"name" => "planted"}, context)
   end
 
+  test "a user skill linked into the workspace is read through the jail", %{
+    root: root,
+    workspace: workspace
+  } do
+    # ~/.agents/skills/linked -> <workspace>/skills/linked, a legitimate setup.
+    target = Path.join([workspace, "skills", "linked"])
+    write_skill(target, "linked", "Shared.")
+    user_skills = Path.join([root, "home", ".agents", "skills"])
+    File.mkdir_p!(user_skills)
+    File.ln_s!(target, Path.join(user_skills, "linked"))
+    dir = Path.join(user_skills, "linked")
+    skill = %Skill{name: "linked", description: "d", path: Path.join(dir, "SKILL.md"), dir: dir}
+    context = %{skills: [skill], executor: FakeJail.new(workspace, self())}
+
+    assert {:ok, loaded} = LoadSkill.run(%{"name" => "linked"}, context)
+    assert loaded =~ "Shared."
+    assert_received {:fake_jail, :read, _path}
+
+    # Jailed code swaps the skill file for a link to the user's credentials.
+    secret = Path.join([root, "home", ".tackle", "auth.json"])
+    File.mkdir_p!(Path.dirname(secret))
+    File.write!(secret, ~s({"token": "SECRET"}))
+    File.rm!(Path.join(target, "SKILL.md"))
+    File.ln_s!(secret, Path.join(target, "SKILL.md"))
+
+    assert {:error, "could not load skill linked: " <> reason} =
+             LoadSkill.run(%{"name" => "linked"}, context)
+
+    refute reason =~ "SECRET"
+  end
+
   test "reports a skill file that disappeared", %{workspace: workspace} do
     skill = write_skill(Path.join(workspace, "gone"), "gone", "Body.")
     File.rm!(skill.path)

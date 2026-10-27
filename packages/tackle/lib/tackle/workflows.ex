@@ -7,7 +7,8 @@ defmodule Tackle.Workflows do
   flat; project files override user files by name. There are no parameters or
   approval gates: configuration belongs in locals inside the script.
 
-  Filesystem access uses `Tackle.ProjectFiles`, including its 1 MiB read cap.
+  Filesystem access uses `Tackle.ProjectFiles`, including its 1 MiB read cap
+  and its routing of host symlinks into the workspace through the executor.
   """
 
   alias Tackle.{Executor, Paths, ProjectFiles}
@@ -123,7 +124,9 @@ defmodule Tackle.Workflows do
   end
 
   @doc """
-  Writes a script, through the executor inside its workspace and locally otherwise.
+  Writes a script, through the executor inside its workspace and locally
+  otherwise; a host path whose symlinks lead into the workspace is written
+  through the executor (see `Tackle.ProjectFiles`).
 
   Accepts discovery options plus executor write options `:mode` (default
   `:replace`, or `:create` for exclusive creation) and `:mkdir_p` (default false).

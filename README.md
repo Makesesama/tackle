@@ -307,7 +307,10 @@ devshell.
 
 Tackle reads project guidance (`AGENTS.md`), skills, and project agent
 definitions inside the workspace through the jail, so a symlink that jailed code
-plants to a host file such as `~/.tackle/auth.json` resolves to nothing.
+plants to a host file such as `~/.tackle/auth.json` resolves to nothing. The
+same holds for host files that are symlinks into the workspace, such as a
+`~/.agents/skills` entry linked to a repository's copy: once a path leads into
+the workspace, the rest of it is resolved in the jail.
 Pasted images are staged in the jail's `/tmp` so the agent's `read` tool can
 open them.
 
