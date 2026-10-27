@@ -29,10 +29,14 @@ defmodule Tackle.NarratorTest do
       receive do
         {:writer_reply, reply} -> reply
         :writer_crash -> raise "writer crashed"
+        # A FunctionClauseError keeps the request in its stacktrace.
+        :writer_clause_error -> apply(__MODULE__, :only_nothing, [opts])
       after
         5_000 -> {:error, :no_reply}
       end
     end
+
+    def only_nothing(:nothing), do: :ok
   end
 
   setup do
@@ -346,6 +350,31 @@ defmodule Tackle.NarratorTest do
       assert [_before, _after] = String.split(log, "narration model narr/fake failed")
       assert Process.alive?(narrator)
       assert :sys.get_state(narrator).backoff_ms == nil
+    end
+
+    test "a crashing model is logged without the request", ctx do
+      narrator = start_narrator(ctx.scope)
+
+      log =
+        capture_log(fn ->
+          send_event(narrator, subagent_tool_start("call-1", "rotate the s3cr3t key"))
+          send_event(narrator, subagent_started("run-1", "call-1"))
+          send_event(narrator, subagent_progress("run-1", "call-1", read("r1", "a.ex")))
+
+          assert_receive {:writer_called, writer, opts}, 2_000
+          assert [%{content: prompt}] = opts[:messages]
+          assert prompt =~ "s3cr3t"
+          send(writer, :writer_clause_error)
+
+          # Retried after the back-off, so the failure was handled.
+          assert_receive {:writer_called, writer, _opts}, 2_000
+          send(writer, {:writer_reply, answer("rotating the key")})
+          assert_receive {:tackle_event, _sid, nil, %Event{type: :narration}}, 1_000
+        end)
+
+      assert log =~ "narration model narr/fake failed"
+      assert log =~ "FunctionClauseError"
+      refute log =~ "s3cr3t"
     end
   end
 

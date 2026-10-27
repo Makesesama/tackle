@@ -368,13 +368,14 @@ defmodule Tackle.Watchdog do
     message = stop_message(digest, choice, probability)
 
     case Runtime.cancel_tool_call(state.agent_ref, id, message) do
+      # Commands may carry secrets, such as a bearer token; log the call id.
       :ok ->
-        Logger.info(
-          "watchdog stopped #{inspect(digest.command)} for #{inspect(state.agent_ref)}: #{choice}"
-        )
+        Logger.info("watchdog stopped tool call #{id} for #{inspect(state.agent_ref)}: #{choice}")
 
       {:error, reason} ->
-        Logger.warning("watchdog could not stop tool call #{id}: #{inspect(reason)}")
+        Logger.warning(
+          "watchdog could not stop tool call #{id}: #{StatusRedaction.reason(reason)}"
+        )
     end
 
     %{state | calls: Map.delete(state.calls, id)}
@@ -393,7 +394,8 @@ defmodule Tackle.Watchdog do
 
   defp warn_once(state, reason) do
     Logger.warning(
-      "watchdog decision model #{state.settings.model_ref} failed: #{inspect(reason)}; " <>
+      "watchdog decision model #{state.settings.model_ref} failed: " <>
+        "#{StatusRedaction.reason(reason)}; " <>
         "commands will not be stopped until it answers"
     )
 

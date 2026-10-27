@@ -49,6 +49,7 @@ defmodule Tackle.Narrator do
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Registry
+  alias Tackle.StatusRedaction
 
   @max_chars 100
   @end_events [:tool_execution_end, :tool_end, :tool_error]
@@ -464,7 +465,9 @@ defmodule Tackle.Narrator do
             :ok
 
           {:error, reason} ->
-            Logger.debug("narrator could not publish for #{run.run_id}: #{inspect(reason)}")
+            Logger.debug(
+              "narrator could not publish for #{run.run_id}: #{StatusRedaction.reason(reason)}"
+            )
         end
 
         %{run | digest: Digest.narrated(run.digest, text)}
@@ -490,7 +493,7 @@ defmodule Tackle.Narrator do
 
   defp warn_once(state, reason) do
     Logger.warning(
-      "narration model #{state.settings.model_ref} failed: #{inspect(reason)}; " <>
+      "narration model #{state.settings.model_ref} failed: #{StatusRedaction.reason(reason)}; " <>
         "delegated runs will not be narrated until it answers"
     )
 

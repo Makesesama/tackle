@@ -515,7 +515,9 @@ logging. Unexpected journal exits (including disk errors and writer-lock loss)
 also produce a report with a payload-free failure category and the last
 stage/sequence before cleanup. Crash reports and `:sys.get_status/1` of the
 journal, its deadline process, the catalog, and the bash watchdog show no transcript,
-command, or option values either. Normal shutdown does not create a
+command, or option values either, and the watchdog and the narrator log
+failures by kind (an adapter crash by the exception it raised) and stopped
+commands by tool call id, never a command, its output, or a model request. Normal shutdown does not create a
 failure report. Check `recorded_at`: a report from an earlier crash is retained
 when the session resumes. If storage itself is stuck, saving that diagnostic may
 also fail; scope shutdown does not depend on it. Prompts, tool arguments, and

@@ -41,6 +41,11 @@ defmodule Tackle.WatchdogTest do
       end
     end
 
+    # Crashes with a FunctionClauseError, whose stacktrace keeps the request.
+    def crash(request), do: apply(__MODULE__, :only_nothing, [request])
+
+    def only_nothing(:nothing), do: :ok
+
     defp now, do: System.monotonic_time(:millisecond)
   end
 
@@ -261,8 +266,35 @@ defmodule Tackle.WatchdogTest do
       end)
 
     assert watchdog_pid(scope.root_agent_ref) == watchdog
-    assert log =~ "Invalid decision response: {:answers, nil}"
+    assert log =~ "invalid_response error"
     refute log =~ "watchdog stopped"
+  end
+
+  test "logs neither commands nor their output, also when the adapter crashes" do
+    command = "curl -H 'Authorization: Bearer s3cr3t-token' https://example.test"
+    scope = start_watched_scope(arguments: %{"command" => command})
+    {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
+    session_id = snapshot.session_id
+
+    log =
+      capture_log(fn ->
+        {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "go")
+        assert_receive {:bash_started, ^command, _tool}, 5_000
+
+        assert_receive {:judge_called, judge, request, _at}, 2_000
+        assert request.state["command"] == command
+        send(judge, {:judge_reply, fn -> Judge.crash(request) end})
+
+        assert_receive {:judge_called, judge, _request, _at}, 2_000
+        send(judge, {:judge_reply, verdict("infinite_loop", 0.93)})
+        assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, _state}}, 5_000
+      end)
+
+    assert log =~ "watchdog decision model judge/fake failed"
+    assert log =~ "FunctionClauseError"
+    assert log =~ "watchdog stopped tool call w1"
+    refute log =~ "s3cr3t"
+    refute log =~ "line 1"
   end
 
   test "retries its subscription after a restart in the middle of a turn" do
