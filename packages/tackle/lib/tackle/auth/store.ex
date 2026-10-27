@@ -17,11 +17,29 @@ defmodule Tackle.Auth.Store do
       before that read began; otherwise the file is read again. Each atomic
       replacement creates a new inode.
 
-  Changes are serialized within one store process but not across VMs: the
-  window between a change's re-read and its rename is not locked, so when two
-  VMs change the file at the same moment, the rename that lands first can be
-  overwritten by the other. Power-loss durability after the rename and
-  operating-system keyrings are also outside this store.
+  Two locks, both `Tackle.FileLock`s on files beside `auth.json` in its `0700`
+  directory, coordinate the VMs:
+
+    * Every change holds the write lock `.auth.json.lock` from its re-read to
+      its rename, so changes from different VMs at the same moment are
+      applied one after the other and none is lost. A change waits up to
+      `:write_lock_timeout` milliseconds (default and maximum 5000) for it and
+      then fails with `{:error, {:auth_file_locked, path}}`.
+    * `with_lock/3` (`Tackle.Lib.CredentialStore.with_lock/3`) holds a lock
+      for one namespace, `.auth.json.<hash>.lock` named from a SHA-256 of the
+      namespace, while the caller runs a function, such as an OAuth refresh
+      that spends a rotating refresh token. It waits up to
+      `:credential_lock_timeout` milliseconds (default 60000) and then
+      returns `{:error, {:credential_lock_failed, {:lock_timeout, lock_path}}}`.
+      Different namespaces do not wait for each other, and the function may
+      fetch and change credentials through the store.
+
+  On systems with `flock`, both are operating-system locks released when the
+  process holding them exits, so they hold across VMs. Elsewhere they fall
+  back to owner records, only as strong as the recorded PID: two VMs
+  reclaiming a stale record at the same moment can both proceed. Lock files
+  are `0600` and are not deleted. Reads take no lock. Power-loss durability
+  after the rename and operating-system keyrings are outside this store.
 
   A file that becomes unreadable or invalid while the store runs makes reads
   and changes return `{:error, reason}`; such a file is never overwritten.
@@ -44,6 +62,7 @@ defmodule Tackle.Auth.Store do
 
   @behaviour Tackle.Lib.CredentialStore
 
+  alias Tackle.FileLock
   alias Tackle.Lib.LLM.Provider
   alias Tackle.StatusRedaction
 
@@ -52,9 +71,15 @@ defmodule Tackle.Auth.Store do
   @directory_mode 0o700
   @file_mode 0o600
   @temporary_attempts 3
+  @max_write_lock_timeout 5_000
+  @default_credential_lock_timeout 60_000
+  # Changes may wait for the write lock; their calls wait longer.
+  @change_call_timeout @max_write_lock_timeout + 10_000
 
   @type state :: %{
           path: Path.t(),
+          write_lock_timeout: non_neg_integer(),
+          credential_lock_timeout: non_neg_integer(),
           providers: %{optional(String.t()) => map()},
           accounts: %{optional(String.t()) => account()},
           stamp: stamp() | nil
@@ -72,6 +97,8 @@ defmodule Tackle.Auth.Store do
   @type account :: %{required(String.t()) => String.t()}
 
   @doc false
+  # Options: `:path` (required), `:name`, `:write_lock_timeout`, and
+  # `:credential_lock_timeout` (see the moduledoc).
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     name = Keyword.get(opts, :name)
@@ -84,10 +111,23 @@ defmodule Tackle.Auth.Store do
 
   @impl Tackle.Lib.CredentialStore
   def put(reference, namespace, credentials),
-    do: GenServer.call(reference, {:put, namespace, credentials})
+    do: GenServer.call(reference, {:put, namespace, credentials}, @change_call_timeout)
 
   @impl Tackle.Lib.CredentialStore
-  def delete(reference, namespace), do: GenServer.call(reference, {:delete, namespace})
+  def delete(reference, namespace),
+    do: GenServer.call(reference, {:delete, namespace}, @change_call_timeout)
+
+  # The lock is taken by the caller, not the store process, which stays free
+  # to serve `fun`'s fetches and changes; it is released with the caller.
+  @impl Tackle.Lib.CredentialStore
+  def with_lock(reference, namespace, fun) when is_function(fun, 0) do
+    with {:ok, lock_path, timeout} <- GenServer.call(reference, {:lock_path, namespace}),
+         {:ok, result} <- FileLock.with_lock(lock_path, [wait: timeout], fun) do
+      result
+    else
+      {:error, reason} -> {:error, {:credential_lock_failed, reason}}
+    end
+  end
 
   @doc false
   @spec status(GenServer.server(), String.t()) :: :stored | :missing | {:error, term()}
@@ -101,19 +141,33 @@ defmodule Tackle.Auth.Store do
   @doc false
   @spec put_account(GenServer.server(), String.t(), account()) :: :ok | {:error, term()}
   def put_account(reference, provider_id, account),
-    do: GenServer.call(reference, {:put_account, provider_id, account})
+    do: GenServer.call(reference, {:put_account, provider_id, account}, @change_call_timeout)
 
   @doc false
   @spec delete_account(GenServer.server(), String.t()) :: :ok | {:error, term()}
   def delete_account(reference, provider_id),
-    do: GenServer.call(reference, {:delete_account, provider_id})
+    do: GenServer.call(reference, {:delete_account, provider_id}, @change_call_timeout)
 
   @impl true
   def init(opts) do
     with {:ok, path} <- fetch_path(opts),
          path = Path.expand(path),
+         {:ok, write_timeout} <-
+           fetch_timeout(
+             opts,
+             :write_lock_timeout,
+             @max_write_lock_timeout,
+             @max_write_lock_timeout
+           ),
+         {:ok, credential_timeout} <-
+           fetch_timeout(opts, :credential_lock_timeout, @default_credential_lock_timeout, nil),
          {:ok, contents} <- load(path) do
-      {:ok, Map.put(contents, :path, path)}
+      {:ok,
+       Map.merge(contents, %{
+         path: path,
+         write_lock_timeout: write_timeout,
+         credential_lock_timeout: credential_timeout
+       })}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -133,6 +187,16 @@ defmodule Tackle.Auth.Store do
   end
 
   def handle_call(:accounts, _from, state), do: read(state, &{:ok, &1.accounts})
+
+  def handle_call({:lock_path, namespace}, _from, state) do
+    with :ok <- validate_namespace(namespace),
+         :ok <- ensure_private_directory(Path.dirname(state.path)) do
+      {:reply, {:ok, namespace_lock_path(state.path, namespace), state.credential_lock_timeout},
+       state}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
 
   def handle_call({:put, namespace, credentials}, _from, state) do
     with :ok <- validate_namespace(namespace),
@@ -236,12 +300,43 @@ defmodule Tackle.Auth.Store do
     do: {:file, stat.major_device, stat.minor_device, stat.inode, stat.size, stat.mtime}
 
   # Applies one change to the file's current contents, so that what other VMs
-  # wrote since the last read is kept. An unchanged result writes nothing.
+  # wrote since the last read is kept. The write lock keeps other VMs from
+  # changing the file between that read and the rename. An unchanged result
+  # writes nothing.
   defp change(state, fun) do
+    with :ok <- ensure_private_directory(Path.dirname(state.path)),
+         {:ok, reply} <- with_write_lock(state, fn -> change_locked(state, fun) end) do
+      reply
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp change_locked(state, fun) do
     case load(state.path) do
       {:ok, contents} -> apply_change(Map.merge(state, contents), fun)
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
+  end
+
+  defp with_write_lock(%{path: path} = state, fun) do
+    case FileLock.with_lock(write_lock_path(path), [wait: state.write_lock_timeout], fun) do
+      {:error, {:lock_timeout, _lock_path}} -> {:error, {:auth_file_locked, path}}
+      result -> result
+    end
+  end
+
+  defp write_lock_path(path), do: Path.join(Path.dirname(path), ".#{Path.basename(path)}.lock")
+
+  # Namespaces are arbitrary strings; the file is named from their hash.
+  defp namespace_lock_path(path, namespace) do
+    hash =
+      :sha256
+      |> :crypto.hash(namespace)
+      |> Base.url_encode64(padding: false)
+      |> binary_part(0, 22)
+
+    Path.join(Path.dirname(path), ".#{Path.basename(path)}.#{hash}.lock")
   end
 
   defp apply_change(%{providers: providers, accounts: accounts} = state, fun) do
@@ -265,6 +360,16 @@ defmodule Tackle.Auth.Store do
     case Keyword.fetch(opts, :path) do
       {:ok, path} when is_binary(path) and path != "" -> {:ok, path}
       _ -> {:error, :auth_path_required}
+    end
+  end
+
+  defp fetch_timeout(opts, key, default, max) do
+    case Keyword.get(opts, key, default) do
+      timeout when is_integer(timeout) and timeout >= 0 and (is_nil(max) or timeout <= max) ->
+        {:ok, timeout}
+
+      _invalid ->
+        {:error, {:invalid_option, key}}
     end
   end
 

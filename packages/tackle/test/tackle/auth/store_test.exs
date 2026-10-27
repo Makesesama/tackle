@@ -4,6 +4,7 @@ defmodule Tackle.Auth.StoreTest do
   import Bitwise
 
   alias Tackle.Auth.Store
+  alias Tackle.FileLock
   alias Tackle.Lib.CredentialStore
 
   setup do
@@ -300,6 +301,165 @@ defmodule Tackle.Auth.StoreTest do
     assert envelope["providers"]["provider-17"] == %{"generation" => 17}
   end
 
+  # Two stores on one file stand for two VMs: each change re-reads the file
+  # and renames its result over it, and without the write lock a rename
+  # landing between another store's re-read and rename dropped that change.
+  test "concurrent changes from stores sharing a file lose none", %{path: path} do
+    stores = [start_store(path, :first), start_store(path, :second)]
+
+    for(store <- stores, number <- 1..40, do: {store, number})
+    |> Task.async_stream(
+      fn {store, number} ->
+        Store.put(store, "provider-#{inspect(store)}-#{number}", %{"generation" => number})
+      end,
+      max_concurrency: 80,
+      timeout: 15_000
+    )
+    |> Enum.each(fn result -> assert {:ok, :ok} = result end)
+
+    assert map_size(JSON.decode!(File.read!(path))["providers"]) == 80
+  end
+
+  test "a change waits for the write lock and fails when it stays held", %{
+    home: home,
+    path: path
+  } do
+    store = start_store(path, Store, write_lock_timeout: 200)
+    assert :ok = Store.put(store, "openai-codex", %{"token" => "first"})
+    before = File.read!(path)
+
+    {:ok, lock} = FileLock.acquire(Path.join(home, ".auth.json.lock"))
+
+    assert {:error, {:auth_file_locked, ^path}} =
+             Store.put(store, "openai-codex", %{"token" => "second"})
+
+    assert {:error, {:auth_file_locked, ^path}} =
+             Store.put_account(store, "codex-work", %{"adapter" => "openai-codex"})
+
+    assert File.read!(path) == before
+
+    FileLock.release(lock)
+    assert :ok = Store.put(store, "openai-codex", %{"token" => "second"})
+    assert {:ok, %{"token" => "second"}} = Store.fetch(store, "openai-codex")
+  end
+
+  # A change may wait up to five seconds for the write lock; its call must
+  # outlast that wait and return the error instead of exiting the caller.
+  @tag timeout: 30_000
+  test "a change that waits out the default write lock returns an error", %{
+    home: home,
+    path: path
+  } do
+    store = start_store(path)
+    File.mkdir_p!(home)
+    {:ok, lock} = FileLock.acquire(Path.join(home, ".auth.json.lock"))
+
+    assert {:error, {:auth_file_locked, ^path}} =
+             Store.put(store, "openai-codex", %{"token" => "late"})
+
+    FileLock.release(lock)
+  end
+
+  test "lock timeouts must be non-negative integers, the write lock's at most 5000", %{
+    path: path
+  } do
+    assert {:error, {:invalid_option, :write_lock_timeout}} =
+             start_store_error(path, write_lock_timeout: 5_001)
+
+    assert {:error, {:invalid_option, :credential_lock_timeout}} =
+             start_store_error(path, credential_lock_timeout: :infinity)
+  end
+
+  describe "with_lock/3" do
+    test "runs the function, which can fetch and change credentials", %{
+      home: home,
+      path: path
+    } do
+      store = start_store(path)
+      assert :ok = Store.put(store, "openai-codex", %{"refresh_token" => "old"})
+
+      assert {:ok, %{"refresh_token" => "new"}} =
+               CredentialStore.with_lock({Store, store}, "openai-codex", fn ->
+                 {:ok, %{"refresh_token" => "old"}} = Store.fetch(store, "openai-codex")
+                 :ok = Store.put(store, "openai-codex", %{"refresh_token" => "new"})
+                 Store.fetch(store, "openai-codex")
+               end)
+
+      # The lock files are private, beside auth.json, and never name the
+      # namespace.
+      lock_files = home |> File.ls!() |> Enum.filter(&String.ends_with?(&1, ".lock"))
+      assert ".auth.json.lock" in lock_files
+      assert [_write_lock, _namespace_lock] = lock_files
+      refute Enum.any?(lock_files, &(&1 =~ "codex"))
+
+      for file <- lock_files do
+        assert (File.stat!(Path.join(home, file)).mode &&& 0o777) == 0o600
+      end
+    end
+
+    test "serializes holders of one namespace across stores sharing a file", %{path: path} do
+      first = start_store(path, :first)
+      second = start_store(path, :second)
+
+      holder = start_lock_holder(first, "openai-codex")
+      assert_receive {:holding, ^holder}
+
+      waiter = start_lock_holder(second, "openai-codex")
+      refute_receive {:holding, ^waiter}, 300
+
+      # Another namespace does not wait.
+      assert :other = Store.with_lock(second, "anthropic", fn -> :other end)
+
+      release_lock_holder(holder)
+      assert_receive {:holding, ^waiter}, 5_000
+      release_lock_holder(waiter)
+    end
+
+    test "a function that raises or throws releases the lock", %{path: path} do
+      store = start_store(path, Store, credential_lock_timeout: 1_000)
+
+      assert_raise RuntimeError, fn ->
+        Store.with_lock(store, "openai-codex", fn -> raise "refresh failed" end)
+      end
+
+      assert catch_throw(Store.with_lock(store, "openai-codex", fn -> throw(:stop) end)) ==
+               :stop
+
+      assert :again = Store.with_lock(store, "openai-codex", fn -> :again end)
+    end
+
+    test "a holder that dies releases the lock", %{path: path} do
+      first = start_store(path, :first)
+      second = start_store(path, :second)
+
+      holder = start_lock_holder(first, "openai-codex")
+      assert_receive {:holding, ^holder}
+      Process.exit(holder, :kill)
+
+      assert :after = Store.with_lock(second, "openai-codex", fn -> :after end)
+    end
+
+    test "gives up after the configured wait", %{path: path} do
+      store = start_store(path, Store, credential_lock_timeout: 200)
+
+      holder = start_lock_holder(store, "openai-codex")
+      assert_receive {:holding, ^holder}
+
+      assert {:error, {:credential_lock_failed, {:lock_timeout, lock_path}}} =
+               Store.with_lock(store, "openai-codex", fn -> flunk("ran unlocked") end)
+
+      assert Path.dirname(lock_path) == Path.dirname(path)
+      release_lock_holder(holder)
+    end
+
+    test "rejects an invalid namespace", %{path: path} do
+      store = start_store(path)
+
+      assert {:error, {:credential_lock_failed, :invalid_credential_namespace}} =
+               Store.with_lock(store, "", fn -> flunk("ran unlocked") end)
+    end
+  end
+
   # The temporary file was named after a counter that restarts with every VM,
   # so a file a killed VM left behind made a later VM's saves fail.
   test "a leftover temporary file from another VM does not break saving", %{
@@ -358,12 +518,34 @@ defmodule Tackle.Auth.StoreTest do
     assert {:error, {:unsafe_auth_file, ^path, :symlink}} = start_store_error(path)
   end
 
-  defp start_store(path, id \\ Store) do
-    start_supervised!(Supervisor.child_spec({Store, path: path, name: nil}, id: id))
+  defp start_store(path, id \\ Store, opts \\ []) do
+    start_supervised!(Supervisor.child_spec({Store, [path: path, name: nil] ++ opts}, id: id))
   end
 
-  defp start_store_error(path) do
+  defp start_store_error(path, opts \\ []) do
     Process.flag(:trap_exit, true)
-    Store.start_link(path: path)
+    Store.start_link([path: path] ++ opts)
+  end
+
+  # Holds the namespace lock in a separate process until told to release it.
+  defp start_lock_holder(store, namespace) do
+    test = self()
+
+    spawn(fn ->
+      Store.with_lock(store, namespace, fn ->
+        send(test, {:holding, self()})
+
+        receive do
+          :release -> :ok
+        end
+      end)
+
+      send(test, {:released, self()})
+    end)
+  end
+
+  defp release_lock_holder(holder) do
+    send(holder, :release)
+    assert_receive {:released, ^holder}, 5_000
   end
 end

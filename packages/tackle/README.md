@@ -997,10 +997,19 @@ Writes are atomic and serialized within one Tackle application. Several VMs
 (two CLIs, or a CLI and an SDK server) can share the file: every change
 re-reads it and applies only its own change to what it finds, and a read
 loads the file again when its device, inode, size, or modification time
-differs from the last read, or it was modified in the second that read began. The
-moment between a change's re-read and its rename is not locked across VMs, so
-two VMs changing the file at the same instant can still lose one change;
-cross-VM locking and OS keyrings are not implemented. A file that becomes
+differs from the last read, or it was modified in the second that read began.
+Every change holds a write lock, `.auth.json.lock` beside the file, from its
+re-read to its rename, so changes from two VMs at the same instant are applied
+one after the other; a change waits up to five seconds for it and then fails
+with `{:error, {:auth_file_locked, path}}`. `Tackle.Auth.with_lock/2` (the
+store's `Tackle.Lib.CredentialStore.with_lock/3`) runs a function while
+holding a lock on one provider namespace (`.auth.json.<hash>.lock`), such as
+an OAuth refresh that spends a rotating refresh token, so that only one VM
+refreshes at a time; it waits up to 60 seconds, is released when the function
+returns or raises or the caller dies, and does not block other namespaces.
+Both are `Tackle.FileLock`s: operating-system locks where `flock` exists,
+owner records only as strong as the recorded PID elsewhere. OS keyrings are
+not implemented. A file that becomes
 unreadable or invalid while the store runs makes reads and changes return
 `{:error, reason}` and is never overwritten. `Tackle.Auth.accounts/0`, the
 one way to read the accounts, returns `{:ok, accounts}`, or

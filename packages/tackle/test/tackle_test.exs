@@ -512,6 +512,20 @@ defmodule TackleTest do
     refute inspect(events) =~ "refreshed-integration-token"
   end
 
+  test "Tackle.Auth.with_lock/2 runs a function under the namespace lock of auth.json" do
+    namespace = "with-lock-#{System.unique_integer([:positive])}"
+    on_exit(fn -> Tackle.Auth.delete(namespace) end)
+
+    assert {:ok, %{"token" => "locked"}} =
+             Tackle.Auth.with_lock(namespace, fn ->
+               :ok = Tackle.Auth.put(namespace, %{"token" => "locked"})
+               Tackle.Auth.fetch(namespace)
+             end)
+
+    assert {:error, {:credential_lock_failed, :invalid_credential_namespace}} =
+             Tackle.Auth.with_lock("", fn -> flunk("ran unlocked") end)
+  end
+
   test "different scopes select different adapters without global configuration" do
     scope_a = start_scope(providers: [AdapterA, AdapterB], model: "provider-a/shared")
     scope_b = start_scope(providers: [AdapterA, AdapterB], model: "provider-b/shared")

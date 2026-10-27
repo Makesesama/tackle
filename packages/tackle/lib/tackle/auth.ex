@@ -37,6 +37,19 @@ defmodule Tackle.Auth do
   @spec delete(String.t()) :: :ok | {:error, term()}
   def delete(namespace), do: Store.delete(@store, namespace)
 
+  @doc """
+  Runs `fun` while holding the lock of one provider namespace, shared by every
+  process using `auth.json`, and returns its result.
+
+  See `Tackle.Lib.CredentialStore.with_lock/3`: fetch the credentials again
+  inside `fun`, since another process may have refreshed them meanwhile. A
+  failure to get the lock is `{:error, {:credential_lock_failed, reason}}`.
+  """
+  @spec with_lock(String.t(), (-> result)) ::
+          result | {:error, {:credential_lock_failed, term()}}
+        when result: term()
+  def with_lock(namespace, fun), do: Store.with_lock(@store, namespace, fun)
+
   @doc "Reports whether a provider namespace has stored credentials."
   @spec status(String.t()) :: :stored | :missing | {:error, term()}
   def status(namespace), do: Store.status(@store, namespace)
