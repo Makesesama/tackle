@@ -71,6 +71,14 @@ defmodule Tackle.Plugins.CatalogTest do
     def generate(_, _), do: {:error, :unused}
   end
 
+  defmodule SharedProviderAdapter do
+    @behaviour Tackle.Lib.LLM
+    def adapter_id, do: "shared-provider"
+    def default_providers, do: [{"own", %{}}, {"catalog-test", %{}}]
+    def models, do: ["small"]
+    def generate(_, _), do: {:error, :unused}
+  end
+
   defmodule DuplicateTool do
     @behaviour Tackle.Lib.Tool
     def name, do: "search"
@@ -133,6 +141,17 @@ defmodule Tackle.Plugins.CatalogTest do
                adapters: [],
                tools: [],
                hooks: [entry(Hook, :once), entry(Hook, :again)]
+             )
+  end
+
+  test "rejects adapters whose default providers share an id, naming both adapters" do
+    assert {:error,
+            {:invalid_plugin, :adapter, :plugin,
+             {:duplicate_provider_id, "catalog-test", Adapter, SharedProviderAdapter}}} =
+             Catalog.new(
+               adapters: [entry(Adapter, :cli), entry(SharedProviderAdapter, :plugin)],
+               tools: [],
+               hooks: []
              )
   end
 

@@ -2,6 +2,11 @@ defmodule Tackle.Plugins.Catalog do
   @moduledoc """
   Validated, provenance-preserving catalog of harness plugin contributions.
 
+  Adapters are unique by type id, and their default providers by provider id:
+  two adapters declaring a default provider with the same id are rejected with
+  `{:invalid_plugin, :adapter, source, {:duplicate_provider_id, id,
+  first_adapter, second_adapter}}`, naming the second entry's source.
+
   Catalog inputs are trusted modules explicitly supplied by the host. Tool
   lookup only selects from this catalog; it never grants additional tools.
   """
@@ -21,6 +26,7 @@ defmodule Tackle.Plugins.Catalog do
   def new(opts) when is_list(opts) do
     with :ok <- valid_options(opts),
          {:ok, adapters} <- validate_kind(Keyword.fetch!(opts, :adapters), :adapter),
+         :ok <- unique_provider_ids(adapters),
          {:ok, tools} <- validate_kind(Keyword.fetch!(opts, :tools), :tool),
          {:ok, hooks} <- validate_kind(Keyword.fetch!(opts, :hooks), :hook) do
       {:ok, %__MODULE__{adapters: adapters, tools: tools, hooks: hooks}}
@@ -193,6 +199,27 @@ defmodule Tackle.Plugins.Catalog do
 
       {:error, reason} ->
         entry_error(entry, :adapter, reason)
+    end
+  end
+
+  # Adapters of different types may not declare default providers with the
+  # same id: a model reference names the provider id, so every session would
+  # fail to expand them.
+  defp unique_provider_ids(entries) do
+    Enum.reduce_while(entries, {:ok, %{}}, fn %{module: module} = entry, {:ok, owners} ->
+      {:ok, providers} = Provider.defaults(module)
+
+      case Enum.find(providers, &Map.has_key?(owners, &1.id)) do
+        nil ->
+          {:cont, {:ok, Map.merge(owners, Map.new(providers, &{&1.id, module}))}}
+
+        %Provider{id: id} ->
+          {:halt, entry_error(entry, :adapter, {:duplicate_provider_id, id, owners[id], module})}
+      end
+    end)
+    |> case do
+      {:ok, _owners} -> :ok
+      error -> error
     end
   end
 

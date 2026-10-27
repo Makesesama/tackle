@@ -57,7 +57,8 @@ Tackle accepts trusted modules **already available to the running BEAM**:
 - `Tackle.Plugins.Catalog.new/1` (in `packages/tackle`) now validates explicit
   `%{module: ..., source: ...}` entries for adapters, tools, and hooks, keeps
   their declaration order and provenance, and rejects duplicate adapter IDs,
-  tool names, and repeated hook modules. Catalog-selected hooks must implement
+  default provider IDs shared by two adapters (naming both), tool names, and
+  repeated hook modules. Catalog-selected hooks must implement
   at least one Hook callback; this is stricter than direct `Config.new/1`.
   `Catalog.resolve_tools/2` only resolves names already in that catalog—it
   does not grant them. No external project discovery/loading is involved.
