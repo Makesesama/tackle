@@ -156,7 +156,8 @@ defmodule Tackle.Config do
 
   The project file is the nearest `.tackle/config.json` at or above the working
   directory, stopping at the Git root (`Tackle.ProjectFiles`). It is read
-  through the session executor, layered over `$TACKLE_HOME/config.json` with
+  through the session executor (the `:context` override's `:executor`, which
+  is validated before anything is read), layered over `$TACKLE_HOME/config.json` with
   JSON objects merged recursively, and may not declare `providers`: it selects
   models and settings among the providers the user configured.
 
@@ -194,11 +195,12 @@ defmodule Tackle.Config do
   def load(opts) when is_list(opts) do
     with :ok <- validate_keyword(opts),
          :ok <- validate_loader_options(opts),
+         {:ok, overrides} <- fetch_overrides(opts),
+         :ok <- validate_override_context(overrides),
          {:ok, adapters} <- fetch_available_adapters(opts),
          {:ok, accounts} <- fetch_accounts(opts),
          {:ok, builtin_skills} <- fetch_builtin_skills(opts),
          {:ok, instructions} <- fetch_instructions(opts),
-         {:ok, overrides} <- fetch_overrides(opts),
          {:ok, overrides} <- catalog_hooks(opts, overrides),
          {:ok, env} <- fetch_environment(opts),
          {:ok, cwd} <- fetch_cwd(opts, Keyword.get(overrides, :context, %{})),
@@ -515,6 +517,19 @@ defmodule Tackle.Config do
 
       true ->
         {:ok, overrides}
+    end
+  end
+
+  # The project file and instruction files are read through the context's
+  # executor, so it is validated before anything is read: a malformed one must
+  # not fall back to reading the workspace unjailed.
+  defp validate_override_context(overrides) do
+    case Keyword.fetch(overrides, :context) do
+      {:ok, context} ->
+        with :ok <- validate_map(:context, context), do: validate_executor(context)
+
+      :error ->
+        :ok
     end
   end
 

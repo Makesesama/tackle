@@ -188,6 +188,24 @@ defmodule Tackle.Config.ProjectFileTest do
     assert config.model_ref == "test/user"
   end
 
+  test "a malformed executor fails the load before any file is read", ctx do
+    # Reading this project file would fail the load with another error.
+    write(project(ctx.repo), "not json")
+
+    assert {:error, {:invalid_option, :executor, {NotAModule, nil}}} =
+             load(ctx, overrides: [context: %{executor: {NotAModule, nil}}])
+
+    assert {:error, {:invalid_option, :executor, :jailed}} =
+             load(ctx, overrides: [context: %{executor: :jailed}])
+
+    assert {:error, {:invalid_option, :context, :none}} =
+             load(ctx, overrides: [context: :none])
+
+    # Nor are the accounts read.
+    assert {:error, {:invalid_option, :executor, :jailed}} =
+             load(ctx, overrides: [context: %{executor: :jailed}], accounts: :unread)
+  end
+
   test "agent settings are validated against the providers", ctx do
     write(ctx.home, ~s({"model": "test/user"}))
 
