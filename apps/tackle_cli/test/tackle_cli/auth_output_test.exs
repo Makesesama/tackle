@@ -188,8 +188,7 @@ defmodule Tackle.CLI.Output.AuthTest do
        ~s(Provider "work" has an invalid "base_url" setting.)},
       {{:invalid_provider_settings, "work", {"api_key", "maybe"}},
        ~s(Provider "work" has invalid settings.)},
-      {{:accounts_unavailable, :noproc}, "accounts could not be read"},
-      {:no_providers_configured, "No providers are configured."}
+      {{:accounts_unavailable, :noproc}, "accounts could not be read"}
     ]
 
     for {reason, message} <- cases do

@@ -305,8 +305,6 @@ defmodule Tackle.CLI.Output.Auth do
   def error_message({:accounts_unavailable, _detail}),
     do: "The recorded provider accounts could not be read."
 
-  def error_message(:no_providers_configured), do: "No providers are configured."
-
   def error_message(%Tackle.Lib.LLM.Error{} = error), do: Exception.message(error) <> "."
 
   def error_message({:adapter_callback_failed, adapter, callback, detail}) do
