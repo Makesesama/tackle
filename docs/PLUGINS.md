@@ -72,7 +72,11 @@ Put the following in `$TACKLE_HOME/plugins.json` (separate from the existing
 `app` is the compiled project's OTP application name (not a Mix project module
 name); selected module names must belong to that application's `.app` metadata.
 An absent file enables no projects. Unknown keys, malformed entries, missing
-builds/dependencies, or conflicting application/module names fail startup.
+builds/dependencies, or conflicting application/module names fail startup. A
+dependency the host also runs, such as `tackle_lib`, must have the host's
+version and the same compiled code (compared by MD5, so it also works in an
+escript); a build without the named application's `.app` file fails with
+`{:plugin_project_app_not_found, path, app}`.
 Project paths must be absolute. The loader reads `_build/prod/lib` directly;
 it never runs Mix, evaluates `mix.exs`, or copies source or credentials. Its
 `Tackle.Plugins.Loader.load/1` API also accepts `path:` for embedding/tests.

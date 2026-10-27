@@ -153,8 +153,13 @@ copies of source, compiled output, or credentials.
 Initially users compile their own trusted projects and dependencies with a
 compatible installed toolchain. At startup the harness reads compiled `.app`
 metadata, checks selected modules belong to the enabled application, detects
-application/module collisions, and requires compatible host-provided dependency
-versions and matching compiled BEAM bytes before adding code paths. It then
+application/module collisions, and requires host-provided dependencies of the
+same version whose modules have the same code as the running ones (the MD5 of
+the built beam, `:beam_lib.md5/1`, against the loaded module's
+`module_info(:md5)`) before adding code paths. Comparing code rather than file
+bytes also works where the running beams are no readable files, as in an
+escript's archive, and ignores stripped debug information; a dependency built
+by another compiler version can still differ and is rejected. It then
 starts selected OTP applications and validates contribution callbacks. There
 is no general Elixir/OTP/ABI compatibility proof; incompatible or native builds
 may still fail when loaded. No implicit dependency fetch, Mix build inside a

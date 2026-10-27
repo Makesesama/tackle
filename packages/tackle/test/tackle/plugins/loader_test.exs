@@ -63,6 +63,68 @@ defmodule Tackle.Plugins.LoaderTest do
     refute String.to_charlist(ebin) in :code.get_path()
   end
 
+  test "a shared dependency's module is compared by its code, not by the runtime's file" do
+    root = temp_dir()
+    module = :"loader_shared_#{System.unique_integer([:positive])}"
+    running = beam!(module, 1)
+    rebuilt = beam!(module, 2)
+
+    on_exit(fn ->
+      :code.purge(module)
+      :code.delete(module)
+    end)
+
+    # Loaded from a binary, as from an escript's archive: no file to read.
+    {:module, ^module} = :code.load_binary(module, ~c"", running)
+    assert :code.which(module) == ~c""
+
+    same = Path.join(root, "same.beam")
+    File.write!(same, running)
+    assert Loader.same_code?(module, same)
+
+    other = Path.join(root, "other.beam")
+    File.write!(other, rebuilt)
+    refute Loader.same_code?(module, other)
+
+    refute Loader.same_code?(module, Path.join(root, "missing.beam"))
+    refute Loader.same_code?(Tackle.Plugins.Catalog, same)
+
+    # A module on the code path that is not loaded yet is loaded first.
+    unloaded = :"loader_unloaded_#{System.unique_integer([:positive])}"
+    ebin = Path.join(root, "ebin")
+    File.mkdir_p!(ebin)
+    unloaded_beam = Path.join(ebin, "#{unloaded}.beam")
+    File.write!(unloaded_beam, beam!(unloaded, 1))
+    true = :code.add_patha(String.to_charlist(ebin))
+
+    on_exit(fn ->
+      :code.del_path(String.to_charlist(ebin))
+      :code.purge(unloaded)
+      :code.delete(unloaded)
+    end)
+
+    refute :code.is_loaded(unloaded)
+    assert Loader.same_code?(unloaded, unloaded_beam)
+    assert {:file, _path} = :code.is_loaded(unloaded)
+  end
+
+  test "a project whose build lacks its application's .app file is reported as not found" do
+    root = temp_dir()
+    project = Path.join(root, "plugin")
+    File.mkdir_p!(Path.join(project, "_build/prod/lib/other/ebin"))
+    File.write!(Path.join(project, "mix.exs"), "# an external Mix project\n")
+
+    File.write!(
+      Path.join(project, "_build/prod/lib/other/ebin/other.app"),
+      "{application, other, [{vsn, \"0.1.0\"}, {modules, []}, {applications, [kernel]}]}.\n"
+    )
+
+    write_config(root, [entry(project, "demo", [])])
+
+    assert {:error, {:plugin_project_app_not_found, ^project, "demo"}} =
+             Loader.load(path: Path.join(root, "plugins.json"))
+  end
+
   test "precompiled Mix project starts its OTP application and validates a selected tool" do
     root = temp_dir()
     project = Path.join(root, "plugin")
@@ -116,6 +178,18 @@ defmodule Tackle.Plugins.LoaderTest do
       :code.purge(tool)
       :code.delete(tool)
     end
+  end
+
+  # A module whose `value/0` returns `value`, compiled without loading it.
+  defp beam!(module, value) do
+    forms = [
+      {:attribute, 1, :module, module},
+      {:attribute, 1, :export, [value: 0]},
+      {:function, 1, :value, 0, [{:clause, 1, [], [], [{:integer, 1, value}]}]}
+    ]
+
+    {:ok, ^module, binary} = :compile.forms(forms)
+    binary
   end
 
   defp entry(path, app, opts) do

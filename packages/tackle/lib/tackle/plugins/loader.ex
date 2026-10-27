@@ -195,7 +195,7 @@ defmodule Tackle.Plugins.Loader do
     with :ok <- require_project(root),
          :ok <- check_beams(beams, root),
          ownership = beam_ownership(beams),
-         {:ok, app, ebin} <- project_app(apps, app_name),
+         {:ok, app, ebin} <- project_app(apps, app_name, root),
          {:ok, app_specs} <- app_specs(apps, root),
          {:ok, private_apps} <- private_apps(app_specs, app, root),
          :ok <- owned_modules(names, ownership),
@@ -241,7 +241,7 @@ defmodule Tackle.Plugins.Loader do
     end
   end
 
-  defp project_app(app_files, source_app) do
+  defp project_app(app_files, source_app, root) do
     candidates =
       Enum.flat_map(app_files, fn file ->
         with {:ok, [{:application, app, _props}]} <- :file.consult(String.to_charlist(file)),
@@ -255,7 +255,7 @@ defmodule Tackle.Plugins.Loader do
 
     case candidates do
       [candidate] -> {:ok, elem(candidate, 0), elem(candidate, 1)}
-      [] -> {:error, {:plugin_project_app_not_found_or_ambiguous, app_files}}
+      [] -> {:error, {:plugin_project_app_not_found, root, source_app}}
       _ -> {:error, {:ambiguous_plugin_project_app, Enum.map(candidates, &elem(&1, 0))}}
     end
   end
@@ -353,18 +353,21 @@ defmodule Tackle.Plugins.Loader do
   end
 
   defp shared_module_conflict?(module, ebin) do
-    built = Path.join(ebin, Atom.to_string(module) <> ".beam")
-
-    case :code.which(module) do
-      path when is_list(path) -> beam_files_differ?(built, List.to_string(path))
-      _ -> true
-    end
+    not same_code?(module, Path.join(ebin, Atom.to_string(module) <> ".beam"))
   end
 
-  defp beam_files_differ?(built, runtime) do
-    case {File.read(built), File.read(runtime)} do
-      {{:ok, build_bytes}, {:ok, runtime_bytes}} -> build_bytes != runtime_bytes
-      _ -> true
+  @doc false
+  # Whether the beam file at `built_path` holds the code of `module` as this
+  # VM runs it, loading the module first if needed. Compares MD5s of the code,
+  # not files: in an escript the running beams live inside the archive, where
+  # `:code.which/1` names no readable file.
+  @spec same_code?(module(), Path.t()) :: boolean()
+  def same_code?(module, built_path) do
+    with {:ok, {^module, built_md5}} <- :beam_lib.md5(String.to_charlist(built_path)),
+         {:module, ^module} <- Code.ensure_loaded(module) do
+      module.module_info(:md5) == built_md5
+    else
+      _other -> false
     end
   end
 
