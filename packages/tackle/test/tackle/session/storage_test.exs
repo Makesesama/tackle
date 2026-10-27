@@ -69,7 +69,7 @@ defmodule Tackle.Session.StorageTest do
     refute File.exists?(dir)
   end
 
-  test "reclaims a lock when a PID is reused by another process", ctx do
+  test "a lock file naming a reused PID does not block the advisory lock", ctx do
     {:ok, dir} = Storage.ensure_session_dir(ctx.session_id, home: ctx.home)
     path = Lock.path(dir)
 
@@ -83,7 +83,10 @@ defmodule Tackle.Session.StorageTest do
     assert lock.owner["process_identity"] != stale_owner["process_identity"]
   end
 
-  test "reclaims a legacy lock acquired before the current VM started", ctx do
+  # With `flock` the lock file's contents are only informational; the
+  # process-identity fallback, which reads them, is covered by
+  # `Tackle.Session.Storage.LockTest`.
+  test "a lock file left by an earlier version does not block the advisory lock", ctx do
     {:ok, dir} = Storage.ensure_session_dir(ctx.session_id, home: ctx.home)
 
     File.write!(

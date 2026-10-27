@@ -9,6 +9,7 @@ defmodule Tackle.Session.CatalogTest do
   alias Tackle.Session.Journal
   alias Tackle.Session.Log
   alias Tackle.Session.Storage
+  alias Tackle.Test.LegacyJournals
 
   setup do
     home = tmp_home()
@@ -199,6 +200,41 @@ defmodule Tackle.Session.CatalogTest do
       assert %{indexed: 1, skipped: 0} = Catalog.rebuild(home: ctx.home)
       assert {:ok, %{title: "Journal title"}} = Catalog.get(session_id)
     end
+  end
+
+  test "an old sidecar is replayed, and is the stale fallback with what it has", ctx do
+    session_id = ID.generate()
+    journal = LegacyJournals.closed_then_resumed(session_id)
+    LegacyJournals.write!(session_id, [home: ctx.home], journal)
+    {:ok, summary} = Storage.summary_path(session_id, home: ctx.home)
+    File.write!(summary, LegacyJournals.sidecar(session_id, "Sidecar title", 10))
+
+    # No journal stat, no context tokens, and a status no longer produced.
+    assert {:ok, payload} = Catalog.read_sidecar_file(summary, session_id)
+    refute Map.has_key?(payload, "journal")
+
+    assert %Entry{status: :clean, context_tokens: nil, title: "Sidecar title"} =
+             Catalog.decode_summary(payload["summary"])
+
+    assert %{indexed: 1, stale: 0, skipped: 0} = Catalog.rebuild(home: ctx.home)
+
+    assert {:ok, %{title: nil, status: :clean, stale: false, context_tokens: tokens}} =
+             Catalog.get(session_id)
+
+    assert is_integer(tokens) and tokens > 0
+
+    report =
+      with_disk_log_stalled(fn ->
+        Catalog.rebuild(home: ctx.home, rebuild_session_timeout: 300)
+      end)
+
+    assert report == %{indexed: 1, stale: 1, skipped: 0}
+
+    assert {:ok, %{title: "Sidecar title", status: :clean, stale: true, context_tokens: nil}} =
+             Catalog.get(session_id)
+
+    assert {:ok, %{sessions: [%{session_id: ^session_id}]}} =
+             Tackle.search_sessions("before closing")
   end
 
   test "a replay that times out falls back to the sidecar, marked stale", ctx do

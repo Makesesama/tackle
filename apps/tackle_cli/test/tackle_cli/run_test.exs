@@ -4,6 +4,7 @@ defmodule Tackle.CLI.RunTest do
   import ExUnit.CaptureIO
 
   alias Tackle.CLI.Run
+  alias Tackle.CLI.Test.LegacyJournal
   alias Tackle.Lib.Message
   alias Tackle.Runtime.ID
   alias Tackle.Session.Journal
@@ -290,6 +291,36 @@ defmodule Tackle.CLI.RunTest do
     assert output =~ "repaired"
     {:ok, recovery_dir} = Storage.recovery_dir(session_id, home: home, cwd: File.cwd!())
     assert File.ls!(recovery_dir) != []
+  end
+
+  test "resume continues a session an earlier version closed", %{home: home} do
+    session_id =
+      LegacyJournal.write_closed!(home, File.cwd!(), "cli-test/echo", "before closing", "ok")
+
+    output =
+      capture_io(fn ->
+        assert 0 ==
+                 Run.run(%{
+                   model: nil,
+                   thinking: nil,
+                   prompt: "after closing",
+                   resume: session_id,
+                   abandon: false
+                 })
+      end)
+
+    assert output =~ "repaired"
+    assert completed_prompt?(session_id, "after closing", home, File.cwd!())
+
+    {:ok, session} = Tackle.inspect_session(session_id, home: home, cwd: File.cwd!())
+    assert session.status == :clean
+
+    assert Enum.map(session.messages, & &1["content"]) == [
+             "before closing",
+             "ok",
+             "after closing",
+             "repaired"
+           ]
   end
 
   test "resume without an id selects the newest session in the current project", %{home: home} do

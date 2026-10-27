@@ -200,8 +200,8 @@ defmodule Tackle.Test.Runtime do
   alias Tackle.Session.Journal
   alias Tackle.Session.Reader
   alias Tackle.Session.Spec, as: SessionSpec
-  alias Tackle.Session.Storage
   alias Tackle.Session.Store
+  alias Tackle.Test.LegacyJournals
 
   @doc "Builds a trusted agent spec using the deterministic test adapter."
   def agent_spec(name, opts \\ []) do
@@ -332,25 +332,8 @@ defmodule Tackle.Test.Runtime do
   location under `ctx.home`, without validating them.
   """
   def write_raw_journal!(%{home: home, session_id: session_id}, items) do
-    {:ok, dir} = Storage.ensure_session_dir(session_id, home: home)
-    path = Path.join(dir, "session.dlog")
-    name = {:tackle_test_raw, session_id}
-
-    {:ok, name} =
-      :disk_log.open(
-        name: name,
-        file: String.to_charlist(path),
-        type: :halt,
-        format: :internal,
-        mode: :read_write,
-        repair: false,
-        notify: false,
-        size: :infinity
-      )
-
-    Enum.each(items, fn item -> :ok = :disk_log.log(name, item) end)
-    :ok = :disk_log.sync(name)
-    :ok = :disk_log.close(name)
+    LegacyJournals.write!(session_id, [home: home], items)
+    :ok
   end
 
   @doc "Like `read_journal/2`, but returns the replayed projection."
