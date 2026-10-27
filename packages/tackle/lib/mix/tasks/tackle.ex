@@ -12,23 +12,24 @@ defmodule Mix.Tasks.Tackle do
       mix tackle run "Inspect this project"
       mix tackle auth status
 
-  Arguments, terminal input, terminal output, and the CLI exit status are passed
-  through to the frontend's `mix tackle` task.
+  Outside `apps/tackle_cli`, the arguments are passed to the frontend's
+  `mix tackle` task in a separate `mix` process, and its exit status becomes
+  this task's. That process does not own this one's terminal input, so
+  interactive commands such as `auth login` belong in the CLI project, where
+  this task calls the CLI in-process and the adapter's own prompts read the
+  terminal:
+
+      cd apps/tackle_cli && mix tackle auth login ID
   """
 
   @requirements ["compile"]
 
   @impl Mix.Task
   def run(args) do
-    cond do
-      Mix.Project.config()[:app] == :tackle_cli ->
-        run_cli(args)
-
-      args == ["auth", "login", "deepseek"] ->
-        login_deepseek()
-
-      true ->
-        run_frontend(args)
+    if Mix.Project.config()[:app] == :tackle_cli do
+      run_cli(args)
+    else
+      run_frontend(args)
     end
   end
 
@@ -66,30 +67,4 @@ defmodule Mix.Tasks.Tackle do
       status -> System.halt(status)
     end
   end
-
-  # The delegated frontend process does not own the parent Mix process's input
-  # device, so interactive credentials must be read before delegation.
-  defp login_deepseek do
-    with {:ok, _apps} <- Application.ensure_all_started(:tackle),
-         {:ok, api_key} <- read_deepseek_api_key(),
-         :ok <- Tackle.Auth.put("deepseek", %{"api_key" => api_key}) do
-      Mix.shell().info("Stored credentials for deepseek.")
-    else
-      {:error, reason} -> Mix.raise("could not store DeepSeek credentials: #{inspect(reason)}")
-    end
-  end
-
-  defp read_deepseek_api_key do
-    Mix.shell().prompt("DeepSeek API key: ")
-    |> normalize_api_key()
-  end
-
-  defp normalize_api_key(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> {:error, :empty_api_key}
-      api_key -> {:ok, api_key}
-    end
-  end
-
-  defp normalize_api_key(_value), do: {:error, :secret_input_eof}
 end

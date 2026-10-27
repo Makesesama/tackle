@@ -200,7 +200,9 @@ mix tackle
 
 The CLI keeps its terminal and provider dependencies outside the harness
 package. The harness's Mix task can still delegate to `apps/tackle_cli` when
-invoked from `packages/tackle`.
+invoked from `packages/tackle`, in a separate `mix` process that does not own
+the terminal's input; run interactive commands such as `mix tackle auth login
+ID` from `apps/tackle_cli`.
 
 ### Jailed execution on Linux
 

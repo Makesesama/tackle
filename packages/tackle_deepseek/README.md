@@ -39,8 +39,10 @@ credential-store namespace (`"api_key"` or `"key"`; `"deepseek"` for the
 default provider), then an environment variable: the provider's
 `"api_key_env"` setting, or `DEEPSEEK_API_KEY` for the default `"deepseek"`
 provider only. A missing key is
-`{:error, {:missing_deepseek_api_key, provider_id}}`. The bundled CLI can populate the store
-with `mix tackle auth login deepseek`; depending on terminal support, its prompt
+`{:error, {:missing_deepseek_api_key, provider_id}}`. The bundled CLI populates the store
+through the adapter's `login/1` with `tackle auth login deepseek` (during
+development, `mix tackle auth login deepseek` from `apps/tackle_cli`), which
+prompts for the key as secret input; depending on terminal support, the prompt
 may be visible. Supplying it explicitly or through a host-owned
 `Tackle.Lib.CredentialStore` is also supported.
 
