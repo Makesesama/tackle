@@ -2,21 +2,26 @@ defmodule Tackle.Session.Reader do
   @moduledoc """
   Bounded replay, validation, and controlled repair for a session journal.
 
-  A reader folds internal `:disk_log` items in sequence order: validate the
-  header and physical format, read items in bounded chunks, decode one durable
-  commit at a time, require contiguous sequence numbers, upcast older event
-  versions and then validate the events against the current schema
+  A reader reads a journal's internal `:disk_log` items in chunks of 100 with
+  `:disk_log.bchunk/3`, decodes each item with `:erlang.binary_to_term/2` and
+  `:safe`, and then folds the whole history in sequence order: validate the
+  header and its format version, require contiguous sequence numbers, upcast
+  older event versions and validate the events against the current schema
   (`Tackle.Session.Log.read_commit/4`), and apply them to a plain projection.
 
-  Ordinary replay uses `:disk_log.bchunk/3` plus
-  `:erlang.binary_to_term/2` with `:safe`, so replaying a journal cannot create
-  new atoms or external function references. The `:safe` option protects the VM
-  from specific External Term Format hazards; it does not establish that decoded
-  data is valid, so durable validation still runs after decoding.
+  `:safe` decoding means replaying a journal cannot create new atoms or
+  external function references. It protects the VM from specific External
+  Term Format hazards; it does not establish that decoded data is valid, so
+  durable validation still runs after decoding.
 
-  Repair is never silent. Detecting an uncleanly closed log preserves the
-  original file under `recovery/` before invoking internal repair, then records
-  the recovered-item and bad-byte counts so the session can be marked recovered.
+  Repair is never silent, and only the writable owner may repair. It opens the
+  log with `repair: false`; when `:disk_log` reports that the log was not
+  closed cleanly, it fails with `{:repair_required, path}` unless the caller
+  passed `repair: true`. Then the original file is first preserved under
+  `recovery/`, the log is reopened with internal repair, the recovered-item
+  and bad-byte counts are returned for the journal to record as
+  `session.recovered`, and the repaired history is replayed and validated
+  before it is used.
 
   The reader owns every `:disk_log` handle of a journal: it opens them, always
   with the same options (`:internal` format, `:halt` type, no size limit), and
@@ -51,7 +56,10 @@ defmodule Tackle.Session.Reader do
   @doc """
   Reads and validates a session journal without creating a writable owner.
 
-  Read-only replay works on an uncleanly closed journal and never repairs it.
+  Read-only replay never repairs. A journal that was not closed cleanly (its
+  owner crashed or is still running) is read as it is: intact, it replays
+  like any other; with a torn tail or damaged bytes it is
+  `{:error, {:journal_bad_bytes, count}}` until a writable owner repairs it.
   A compressed journal is replayed from a temporary decompressed copy.
   Callers receive a classified projection or an explicit error describing the
   first invalid commit.

@@ -23,16 +23,28 @@ defmodule Tackle.Session.Journal do
   intent without a durable result is reported as uncertain. Unlike `flush/1`,
   `await_durable/1` does not touch the disk when nothing is unsynced.
   `await_idle/1` waits behind earlier requests (for example a stalled sync)
-  without syncing. The derived catalog is updated at sync points, when a turn
-  starts or settles, and when the owner stops; it lists the session as
-  `:active` while the owner runs a turn and otherwise with the projection's
-  status.
+  without syncing. The derived catalog is updated when an existing journal is
+  opened, at sync points that made new commits durable, when a turn starts or
+  settles (whose commits are then appended but not yet synced), and when the
+  owner stops; it lists the session as `:active` while the owner runs a turn
+  and otherwise with the projection's status.
 
-  Durable operations are guarded by an independent deadline process. A missed
-  deadline stops the owner and its durable scope rather than abandoning a
-  request while execution continues. The commit outcome may be unknown: replay
-  is required before any retry. Diagnostics contain stage and stack
-  information, not payloads.
+  ## Deadlines
+
+  Every durable request passes through an independent deadline process
+  (`journal_timeout`, 15 seconds by default), which runs one request at a time
+  and queues at most 64 more (24 MiB of request data); beyond that a request
+  is refused with `{:error, :journal_busy}`. A `sync` that misses the deadline
+  only marks storage delayed (the session, which `Tackle.Session.Durable`
+  subscribes, receives `{:tackle_storage, session_id, :delayed | :ready}`) and
+  stays in flight; it is never retried. Any other stage that misses it,
+  including opening and the owner's cleanup, stops the owner and its durable
+  scope rather than abandoning a request while execution continues. The commit
+  outcome may then be unknown: replay is required before any retry. For a
+  missed deadline or an unexpected exit, the deadline process logs a
+  payload-free diagnostic (operation or failure category, stage, sequence, and
+  for a stall its stack frames) and saves it as `journal-failure.json` beside
+  the journal.
 
   ## Rejections and failures
 
@@ -47,9 +59,17 @@ defmodule Tackle.Session.Journal do
 
   Anything that fails once bytes may have been written (append, sync, a lost
   writer lock, a `:disk_log` error notification), and a storage failure while
-  opening, is fatal to further durable execution: the owner stops, which
-  terminates its durable scope rather than continuing with memory-only state,
-  and the caller receives `{:error, {:journal_failure, reason}}`.
+  materializing a new session, is fatal to further durable execution: the
+  owner stops, which terminates its durable scope rather than continuing with
+  memory-only state. The request that failed receives
+  `{:error, {:journal_failure, reason}}`; requests queued behind it, and any
+  made afterwards, fail too, for example with
+  `{:error, {:journal_unavailable, reason}}`, or with
+  `{:error, {:journal_stalled, diagnostic}}` after a missed deadline. An
+  existing journal that cannot be opened (for example
+  `{:journal_open_failed, session_id, {:repair_required, path}}` when it was
+  not closed cleanly and the session's spec does not allow repair) stops the
+  owner while it starts, so the scope does not start.
   """
 
   use GenServer, restart: :permanent
@@ -262,7 +282,8 @@ defmodule Tackle.Session.Journal do
   Records the explicit `tree.enabled` transition for a legacy linear session.
 
   The durable file is not rewritten; the event only records that later writes
-  may branch. An already-enabled or unmaterialized session is a no-op.
+  may branch. An already-enabled session is a no-op, and an unmaterialized
+  one writes nothing: its `session.created` will record `"tree" => true`.
   """
   @spec enable_tree(GenServer.server()) :: :ok | {:error, term()}
   def enable_tree(journal), do: durable_call(journal, :enable_tree)

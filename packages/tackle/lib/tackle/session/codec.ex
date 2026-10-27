@@ -14,7 +14,10 @@ defmodule Tackle.Session.Codec do
     * terms larger or deeper than the configured limits.
 
   `%Tackle.Lib.State{}` is never serialized. Conversation data is converted to
-  plain maps here and rebuilt into structs by `Tackle.Session.Loader`.
+  plain maps here, and back into structs (`decode_message/1`,
+  `decode_compaction/1`) when `Tackle.Session.Projection` folds the
+  conversation tree, which `Tackle.Session.Loader` then installs in a fresh
+  state.
 
   Message content parts (see `Tackle.Lib.Tool.Content`) are plain maps with
   binary keys, so a tool result that read an image round-trips unchanged.

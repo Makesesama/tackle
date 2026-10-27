@@ -6,8 +6,14 @@ defmodule Tackle.Session.Storage.Lock do
   does not prevent the same file from being opened under another name, in
   another BEAM, or on another node. On systems with `flock`, this lock holds an
   operating-system advisory lock on `writer.lock`, including across PID
-  namespaces. Other systems fall back to a process-identity record.
+  namespaces. The advisory lock is held by a port running `flock`, linked to
+  the process that acquired it, so it is released when that process dies.
+  Other systems fall back to a process-identity record.
 
+  Either way `writer.lock` records its owner (OS pid, node, start time, and
+  the process identity where the system reports one) as JSON, which a
+  conflict returns as `{:error, {:session_in_use, owner}}`; lock files
+  written by earlier versions without a process identity are still read.
   Stale fallback locks left behind by dead processes are reclaimed. Distributed
   leases and cross-node fencing are not promised; when ownership is uncertain
   Tackle fails rather than opening with automatic repair.

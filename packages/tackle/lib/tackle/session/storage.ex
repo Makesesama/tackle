@@ -2,26 +2,33 @@ defmodule Tackle.Session.Storage do
   @moduledoc """
   Local storage layout for durable sessions and the one-writer ownership lock.
 
-  The initial layout is rooted under `TACKLE_HOME`:
+  The layout is rooted under `TACKLE_HOME`:
 
       $TACKLE_HOME/
       └── sessions/
-          ├── catalog/       derived global data
-          ├── trash/         recoverable deletions
-          ├── archive/       archived sessions, mirroring the layout below
-          ├── <session-id>/      legacy sessions without a project
+          ├── catalog/            compression.marker: the last compression pass
+          ├── trash/              deleted session directories, <session-id>-<ms>
+          ├── archive/            archived sessions, mirroring the layout below
+          ├── <session-id>/       legacy sessions without a project
           └── --home-user-project--/
               └── <session-id>/
-                  ├── session.dlog       or session.dlog.zst once idle
-                  ├── summary.etf
-                  └── recovery/
+                  ├── session.dlog           the journal (session.dlog.zst once idle)
+                  ├── session.dlog.read-*    temporary decompressed copies
+                  ├── summary.etf            derived summary sidecar
+                  ├── writer.lock            the one-writer lock
+                  ├── journal-failure.json   report of a failed journal owner
+                  └── recovery/              copies kept before repair (*.bak[.zst])
 
-  The journal is the only required durable file. Summaries and catalog data
-  are disposable projections that can always be removed and rebuilt.
+  The journal is the only required durable file. The summary sidecar and the
+  catalog, an in-memory index rebuilt at startup, are disposable projections
+  that can always be removed and rebuilt. Replay checkpoints are planned, not
+  written.
 
   A journal idle for a while is stored compressed as `session.dlog.zst` (see
-  `Tackle.Session.Compression`). When both forms exist, the plain journal is
-  authoritative.
+  `Tackle.Session.Compression`); a reader replays it from a temporary
+  decompressed copy beside it, and a writer restores the plain journal first
+  (`Tackle.Session.CompressedFile`). When both forms exist, the plain journal
+  is authoritative.
 
   Archiving moves a complete session directory under `archive/`, keeping its
   project directory, so the session leaves the active listing but stays

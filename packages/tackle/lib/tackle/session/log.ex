@@ -8,7 +8,8 @@ defmodule Tackle.Session.Log do
 
   A commit is the unit of atomicity: the complete envelope is passed to one
   `:disk_log.log/2` call. Several separate calls are never treated as one
-  transaction.
+  transaction. Each commit carries a freshly generated `commit_id`; reading
+  requires one but does not check that ids are unique.
 
   ## Versions
 

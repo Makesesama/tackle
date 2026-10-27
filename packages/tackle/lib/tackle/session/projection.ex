@@ -4,7 +4,10 @@ defmodule Tackle.Session.ProjectionError do
 
   Replay treats this as corruption rather than repairing it: an invalid parent
   link, a duplicate entry id, an unknown active position, or a malformed
-  compaction record stops writable resume instead of silently dropping history.
+  compaction record makes `Tackle.Session.Reader` return
+  `{:error, {:invalid_projection, reason}}`, which stops resume instead of
+  silently dropping history. The journal folds every commit before appending
+  it and refuses one that raises this with `{:invalid_commit, reason}`.
   """
 
   defexception [:message, :reason]

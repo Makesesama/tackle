@@ -2,11 +2,14 @@ defmodule Tackle.Session.Catalog do
   @moduledoc """
   Derived, rebuildable index of durable sessions for listing and search.
 
-  The catalog is a projection over journals, never a second source of truth. It
-  receives updates only after journal commits have succeeded, and every indexed
-  record carries `last_indexed_seq` so startup and repair can detect a stale
-  projection. A failed catalog update never rolls back a durable commit; it
-  leaves the projection stale and rebuildable from the journal.
+  The catalog is a projection over journals, never a second source of truth,
+  held in memory (one ETS table) and rebuilt at every start. A journal owner
+  records its session's entry after commits were appended (see "Write-behind
+  appends" in `Tackle.Session.Journal`), and `Tackle.Session.Store` records
+  forks and moves. Every entry carries `last_indexed_seq`, the commit it
+  describes. A failed catalog update never rolls back a durable commit; it
+  leaves the projection stale until the session's next update or the next
+  rebuild.
 
   Default full-text search indexes the explicit or derived title, user and
   assistant message text, `cwd`, and explicit tags. It excludes reasoning,
@@ -20,9 +23,12 @@ defmodule Tackle.Session.Catalog do
   caches it on the entry until the session's next indexed commit. Startup
   indexing takes it from summary sidecars or the replay it already does.
 
-  At startup the catalog rebuilds its index (`rebuild/1`) in a task: a
-  session's summary sidecar is used as it is while its journal file is
-  unchanged, and other sessions are replayed. Journal updates are recorded
+  At startup the catalog rebuilds its index (`rebuild/1`) in a task. A
+  session's summary sidecar (`summary.etf`, written by its journal owner when
+  it stops and by compression) records the size and modification time of the
+  journal file it describes, and is used as it is while the file still has
+  them or is stored compressed; other sessions are replayed, falling back to a
+  sidecar marked stale when that takes too long. Journal updates are recorded
   meanwhile, and reads wait until the index is complete.
 
   Archived sessions are indexed too, marked `archived: true`. Listing excludes
