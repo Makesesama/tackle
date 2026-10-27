@@ -528,10 +528,25 @@ defmodule Tackle.CodingTest do
              SubagentCancel
            ]
 
-    assert spec.profiles["scout"].config.tools == [Read, Bash]
+    # Built-in profiles drop the tools the host configured away.
+    assert spec.profiles["scout"].config.tools == [Read]
+    assert spec.profiles["review-detector"].config.tools == [Read, ReportFindings]
     assert spec.profiles["scout"].config.max_iterations == 3
     assert spec.profiles["scout"].config.system_prompt =~ "Scout assignment"
     assert spec.profiles["scout"].config.system_prompt =~ "Custom base"
+  end
+
+  test "profile files cannot select tools the host configured away", %{opts: opts, cwd: cwd} do
+    opts = update_overrides(opts, tools: [Read])
+    path = Path.join([cwd, ".tackle", "agents", "writer.md"])
+    write_agent(path, "writer", "Writes", "Write files.", "tools: read, write, bash\n")
+
+    assert {:error, {:invalid_agent_profile, ^path, {:unknown_tool_names, ["bash", "write"]}}} =
+             Coding.scope_spec(opts)
+
+    write_agent(path, "writer", "Writes", "Write files.", "tools: read, report_findings\n")
+    assert {:ok, spec} = Coding.scope_spec(opts)
+    assert spec.profiles["writer"].config.tools == [Read, ReportFindings]
   end
 
   test "configuration failures are explicit", %{opts: opts} do

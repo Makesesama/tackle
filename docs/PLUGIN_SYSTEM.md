@@ -46,11 +46,14 @@ Tackle accepts trusted modules **already available to the running BEAM**:
   and thinking while idle.
 - `Tackle.Coding.scope_spec/2` assembles CLI coding scopes. A trusted host can
   pass additional `:root_tools` modules. Root tools are not automatically
-  available to every child: explicit profile tool names resolve against
-  trusted, already-available tools. Profiles with no explicit tool list inherit
-  the coding defaults, not every root-only tool. Markdown profiles under
-  `$TACKLE_HOME/agents` and `.tackle/agents` select from those tools; they
-  cannot load plugin modules. Invalid profile definitions cause scope
+  available to every child: explicit profile tool names resolve against the
+  root's tools plus the review output tools (`Tackle.Tools.review/0`).
+  Profiles with no explicit tool list inherit the configured tools, not every
+  root-only tool. Markdown profiles under `$TACKLE_HOME/agents` and
+  `.tackle/agents` select from those tools, and naming any other tool fails
+  the scope, so a host that restricts its tools to `read` cannot get `write`
+  through a project profile; they cannot load plugin modules. Built-in
+  profiles drop the tools the host did not configure. Invalid profile definitions cause scope
   construction to fail. `Tackle.Lib.Tool.Registry` materializes the selected
   modules for execution; it is not a global plugin registry.
 - The CLI bundles the Codex, DeepSeek, Anthropic, OpenRouter, and Ollama

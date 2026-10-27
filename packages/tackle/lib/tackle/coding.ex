@@ -11,7 +11,9 @@ defmodule Tackle.Coding do
   (`Tackle.Config`) then replaces a profile's `model` and `thinking` by name;
   names without a discovered profile are ignored. Profile
   files may select only tools already available to the trusted root harness,
-  plus the review output tools of `Tackle.Tools.review/0`.
+  plus the review output tools of `Tackle.Tools.review/0`; naming any other
+  tool fails the scope. Built-in profiles drop the tools the host did not
+  configure, so a host that restricts its tools restricts them too.
   """
 
   alias Tackle.Agents
@@ -230,10 +232,10 @@ defmodule Tackle.Coding do
   end
 
   defp profile_tools(%Definition{tools: names} = definition, _default_tools, trusted_tools) do
-    resolution_tools =
-      Enum.uniq(trusted_tools ++ Tackle.Tools.default() ++ Tackle.Tools.review())
+    available = Enum.uniq(trusted_tools ++ Tackle.Tools.review())
+    names = if definition.source == :builtin, do: available_names(names, available), else: names
 
-    with {:ok, tools} <- Tackle.Tools.resolve_names(names, resolution_tools) do
+    with {:ok, tools} <- Tackle.Tools.resolve_names(names, available) do
       tools =
         if definition.allow_delegation,
           do: append_tool(tools, Subagent),
@@ -241,6 +243,11 @@ defmodule Tackle.Coding do
 
       {:ok, Enum.uniq(tools)}
     end
+  end
+
+  defp available_names(names, tools) do
+    available = MapSet.new(tools, & &1.name())
+    Enum.filter(names, &MapSet.member?(available, &1))
   end
 
   defp append_tool(tools, tool) do

@@ -223,7 +223,9 @@ block list (`YamlFrontmatter.list/1`); an empty `tools:` leaves the list unset,
 so the profile gets the default tools, while `tools: []` selects none.
 `timeoutMs` is at most `300000` (five minutes). Unknown fields, invalid
 values, duplicate definitions within one source, unavailable models, and tools
-not already available to the harness package fail startup explicitly.
+the root agent does not have (other than the review output tools) fail startup
+explicitly. Built-in profiles instead drop the tools a host did not configure,
+so a host that restricts its tools restricts them too.
 
 Default profiles are implemented as modules conforming to
 `Tackle.Agents.Default`; each returns an inert `Tackle.Agents.Definition`.
