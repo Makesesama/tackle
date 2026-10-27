@@ -214,7 +214,7 @@ defmodule Tackle.LocalReview.RulesTest do
       assert [
                {"b-duplicate.md", duplicate},
                {"c-invalid.md", "id must use lowercase letters, numbers, and single hyphens"},
-               {"d-binary.md", "file is not valid UTF-8"},
+               {"d-binary.md", "could not be read (file is not valid UTF-8)"},
                {"e-large.md", "rule body is 101 bytes; the limit is 100"}
              ] = Enum.map(warnings, &{Path.basename(&1.path), &1.message})
 

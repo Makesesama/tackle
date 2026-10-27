@@ -199,18 +199,13 @@ defmodule Tackle.Skills do
   def load(%Skill{source: :file, path: path}, opts) when is_binary(path) do
     files = ProjectFiles.new(executor: Keyword.get(opts, :executor))
 
-    with {:ok, contents} <- ProjectFiles.read(files, path),
-         :ok <- ensure_utf8(contents),
+    with {:ok, contents} <- ProjectFiles.read_text(files, path),
          {:ok, document} <- Frontmatter.parse_document(contents) do
       {:ok, document.body}
     end
   end
 
   def load(skill, _opts), do: {:error, {:invalid_skill, skill}}
-
-  defp ensure_utf8(contents) do
-    if String.valid?(contents), do: :ok, else: {:error, :invalid_utf8}
-  end
 
   @doc """
   Returns the skills offered to an agent with the given tools.
@@ -296,16 +291,12 @@ defmodule Tackle.Skills do
   end
 
   defp read(files, path) do
-    case ProjectFiles.read(files, path) do
+    case ProjectFiles.read_text(files, path) do
       {:ok, contents} ->
-        if String.valid?(contents) do
-          {:ok, contents}
-        else
-          {:error, warning(path, "file is not valid UTF-8")}
-        end
+        {:ok, contents}
 
       {:error, reason} ->
-        {:error, warning(path, "could not be read (#{Executor.format_reason(reason)})")}
+        {:error, warning(path, "could not be read (#{ProjectFiles.format_error(reason)})")}
     end
   end
 

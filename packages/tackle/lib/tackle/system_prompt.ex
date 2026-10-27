@@ -308,17 +308,10 @@ defmodule Tackle.SystemPrompt do
   end
 
   defp read_prompt_file(files, path) do
-    case ProjectFiles.read(files, path) do
-      {:ok, content} -> validate_content(path, strip_bom(content))
+    case ProjectFiles.read_text(files, path) do
+      {:ok, content} -> {:ok, strip_bom(content)}
+      {:error, :invalid_utf8} -> {:error, {:invalid_system_prompt_file, path, :invalid_utf8}}
       {:error, reason} -> {:error, {:system_prompt_file_unreadable, path, reason}}
-    end
-  end
-
-  defp validate_content(path, content) do
-    if String.valid?(content) do
-      {:ok, content}
-    else
-      {:error, {:invalid_system_prompt_file, path, :invalid_utf8}}
     end
   end
 

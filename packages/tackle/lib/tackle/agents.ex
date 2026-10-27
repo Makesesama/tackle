@@ -17,7 +17,7 @@ defmodule Tackle.Agents do
   """
 
   alias Tackle.Agents.Definition
-  alias Tackle.{Executor, Paths, ProjectFiles}
+  alias Tackle.{Paths, ProjectFiles}
   alias YamlFrontmatter, as: Frontmatter
 
   @known_fields MapSet.new(
@@ -166,12 +166,9 @@ defmodule Tackle.Agents do
   end
 
   defp read(files, path) do
-    case ProjectFiles.read(files, path) do
-      {:ok, contents} ->
-        if String.valid?(contents), do: {:ok, contents}, else: {:error, "file is not valid UTF-8"}
-
-      {:error, reason} ->
-        {:error, "could not be read (#{Executor.format_reason(reason)})"}
+    case ProjectFiles.read_text(files, path) do
+      {:ok, contents} -> {:ok, contents}
+      {:error, reason} -> {:error, "could not be read (#{ProjectFiles.format_error(reason)})"}
     end
   end
 

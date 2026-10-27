@@ -101,6 +101,23 @@ defmodule Tackle.ProjectFiles do
   end
 
   @doc """
+  Reads a text file as `read/3` does; contents that are not valid UTF-8 are
+  `{:error, :invalid_utf8}`.
+  """
+  @spec read_text(t(), Path.t(), max_bytes: pos_integer()) ::
+          {:ok, String.t()} | {:error, :invalid_utf8 | Executor.reason()}
+  def read_text(files, path, opts \\ []) do
+    with {:ok, contents} <- read(files, path, opts) do
+      if String.valid?(contents), do: {:ok, contents}, else: {:error, :invalid_utf8}
+    end
+  end
+
+  @doc "Describes an error of `read_text/3` or `list_files/3` for a warning or message."
+  @spec format_error(:invalid_utf8 | Executor.reason()) :: String.t()
+  def format_error(:invalid_utf8), do: "file is not valid UTF-8"
+  def format_error(reason), do: Executor.format_reason(reason)
+
+  @doc """
   Writes a file through the same routing as reads.
 
   Options are executor write options: `:mode` (`:replace`, `:append`, or
@@ -278,6 +295,24 @@ defmodule Tackle.ProjectFiles do
     with {:ok, executor, path} <- route(files, path),
          {:ok, names} <- Executor.list(executor, path) do
       {:ok, names |> Enum.sort() |> Enum.take(@max_dir_entries)}
+    end
+  end
+
+  @doc """
+  Lists the regular files directly in `dir` whose names end in `extension`
+  (such as `".md"`), as sorted paths; see `list/2` for the entry limit.
+  """
+  @spec list_files(t(), Path.t(), String.t()) :: {:ok, [Path.t()]} | {:error, Executor.reason()}
+  def list_files(files, dir, extension) do
+    with {:ok, names} <- list(files, dir) do
+      {:ok,
+       for(
+         name <- names,
+         String.ends_with?(name, extension),
+         path = Path.join(dir, name),
+         regular?(files, path),
+         do: path
+       )}
     end
   end
 

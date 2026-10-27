@@ -90,7 +90,7 @@ defmodule Tackle.Workflows do
 
     case candidate do
       {source, path} ->
-        with {:ok, script} <- read_script(files, path) do
+        with {:ok, script} <- ProjectFiles.read_text(files, path) do
           {:ok, workflow(name, path, source, script), script}
         end
 
@@ -122,7 +122,8 @@ defmodule Tackle.Workflows do
            "Unknown workflow #{inspect(name)}. Available workflows: #{Enum.join(names, ", ")}."}
 
         {:error, reason} ->
-          {:error, "Could not read workflow #{inspect(name)}: #{read_reason(reason)}"}
+          {:error,
+           "Could not read workflow #{inspect(name)}: #{ProjectFiles.format_error(reason)}"}
       end
     end
   end
@@ -234,19 +235,15 @@ defmodule Tackle.Workflows do
     do: ProjectFiles.tackle_dirs(files, cwd(opts), tackle_home(opts), "workflows")
 
   defp load_directory(files, dir, source, {workflows, warnings} = acc) do
-    case ProjectFiles.list(files, dir) do
-      {:ok, entries} ->
-        entries
-        |> Enum.filter(&String.ends_with?(&1, ".lua"))
-        |> Enum.map(&Path.join(dir, &1))
-        |> Enum.filter(&ProjectFiles.regular?(files, &1))
-        |> Enum.reduce(acc, &load_file(files, &1, source, &2))
+    case ProjectFiles.list_files(files, dir, ".lua") do
+      {:ok, paths} ->
+        Enum.reduce(paths, acc, &load_file(files, &1, source, &2))
 
       {:error, :enoent} ->
         acc
 
       {:error, reason} ->
-        message = "could not list directory (#{Executor.format_reason(reason)})"
+        message = "could not list directory (#{ProjectFiles.format_error(reason)})"
         {workflows, [%{path: dir, message: message} | warnings]}
     end
   end
@@ -255,7 +252,7 @@ defmodule Tackle.Workflows do
     name = Path.basename(path, ".lua")
 
     with true <- valid_name?(name),
-         {:ok, script} <- read_script(files, path) do
+         {:ok, script} <- ProjectFiles.read_text(files, path) do
       {Map.put(workflows, name, workflow(name, path, source, script)), warnings}
     else
       false ->
@@ -263,22 +260,13 @@ defmodule Tackle.Workflows do
         {workflows, [%{path: path, message: message} | warnings]}
 
       {:error, reason} ->
-        message = "could not be read (#{read_reason(reason)})"
+        message = "could not be read (#{ProjectFiles.format_error(reason)})"
         {workflows, [%{path: path, message: message} | warnings]}
     end
   end
 
   defp workflow(name, path, source, script),
     do: %Workflow{name: name, description: description(script), path: path, source: source}
-
-  defp read_script(files, path) do
-    with {:ok, script} <- ProjectFiles.read(files, path) do
-      if String.valid?(script), do: {:ok, script}, else: {:error, :invalid_utf8}
-    end
-  end
-
-  defp read_reason(:invalid_utf8), do: "file is not valid UTF-8"
-  defp read_reason(reason), do: Executor.format_reason(reason)
 
   defp description(script) do
     case script |> String.split("\n", parts: 2) |> hd() |> String.trim_leading() do

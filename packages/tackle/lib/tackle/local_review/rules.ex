@@ -89,32 +89,28 @@ defmodule Tackle.LocalReview.Rules do
   end
 
   defp read_directory(files, dir, required?, max_bytes) do
-    case ProjectFiles.list(files, dir) do
-      {:ok, entries} ->
-        entries
-        |> Enum.filter(&String.ends_with?(&1, ".md"))
-        |> Enum.map(&Path.join(dir, &1))
-        |> Enum.filter(&ProjectFiles.regular?(files, &1))
-        |> Enum.map(&{&1, read(files, &1, max_bytes)})
+    case ProjectFiles.list_files(files, dir, ".md") do
+      {:ok, paths} ->
+        Enum.map(paths, &{&1, read(files, &1, max_bytes)})
 
       {:error, :enoent} when not required? ->
         []
 
       {:error, reason} ->
-        [{dir, {:error, "could not list rule directory (#{Executor.format_reason(reason)})"}}]
+        [{dir, {:error, "could not list rule directory (#{ProjectFiles.format_error(reason)})"}}]
     end
   end
 
   defp read(files, path, max_bytes) do
-    case ProjectFiles.read(files, path, max_bytes: max_bytes) do
+    case ProjectFiles.read_text(files, path, max_bytes: max_bytes) do
       {:ok, contents} ->
-        if String.valid?(contents), do: {:ok, contents}, else: {:error, "file is not valid UTF-8"}
+        {:ok, contents}
 
       {:error, :too_large} ->
         {:error, "file is larger than #{max_bytes} bytes"}
 
       {:error, reason} ->
-        {:error, "could not be read (#{Executor.format_reason(reason)})"}
+        {:error, "could not be read (#{ProjectFiles.format_error(reason)})"}
     end
   end
 end

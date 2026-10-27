@@ -53,6 +53,37 @@ defmodule Tackle.ProjectFilesTest do
     end
   end
 
+  describe "text files" do
+    test "read_text rejects invalid UTF-8 and format_error describes it", %{workspace: workspace} do
+      files = ProjectFiles.new(executor: FakeJail.new(workspace))
+      File.write!(Path.join(workspace, "text.md"), "héllo")
+      File.write!(Path.join(workspace, "bytes.md"), <<0xFF, 0xFE>>)
+
+      assert ProjectFiles.read_text(files, Path.join(workspace, "text.md")) == {:ok, "héllo"}
+
+      assert ProjectFiles.read_text(files, Path.join(workspace, "bytes.md")) ==
+               {:error, :invalid_utf8}
+
+      assert {:error, :enoent} = ProjectFiles.read_text(files, Path.join(workspace, "none.md"))
+      assert ProjectFiles.format_error(:invalid_utf8) == "file is not valid UTF-8"
+      assert ProjectFiles.format_error(:enoent) == "no such file or directory"
+    end
+
+    test "list_files lists the regular files with an extension, sorted", %{workspace: workspace} do
+      files = ProjectFiles.new(executor: FakeJail.new(workspace))
+      File.mkdir_p!(Path.join(workspace, "dir.md"))
+
+      for name <- ["b.md", "a.md", "c.lua", ".hidden.md"],
+          do: File.write!(Path.join(workspace, name), "")
+
+      assert ProjectFiles.list_files(files, workspace, ".md") ==
+               {:ok, Enum.map([".hidden.md", "a.md", "b.md"], &Path.join(workspace, &1))}
+
+      assert ProjectFiles.list_files(files, Path.join(workspace, "missing"), ".md") ==
+               {:error, :enoent}
+    end
+  end
+
   test "a parent of the working directory inside the jail's mount goes through the jail", %{
     workspace: workspace,
     secret: secret,

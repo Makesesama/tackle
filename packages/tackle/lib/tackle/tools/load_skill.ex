@@ -15,8 +15,7 @@ defmodule Tackle.Tools.LoadSkill do
 
   use Tackle.Lib.Tool
 
-  alias Tackle.Executor
-  alias Tackle.Skills
+  alias Tackle.{Executor, ProjectFiles, Skills}
   alias Tackle.Skills.Skill
 
   tool_name("load_skill")
@@ -71,8 +70,7 @@ defmodule Tackle.Tools.LoadSkill do
     "unknown skill #{inspect(name)}; available: " <> Enum.map_join(skills, ", ", & &1.name)
   end
 
-  defp describe(:invalid_utf8), do: "the file is not valid UTF-8"
   defp describe(:unterminated_frontmatter), do: "the frontmatter is not terminated"
   defp describe(:malformed_frontmatter), do: "the frontmatter is malformed"
-  defp describe(reason), do: Executor.format_reason(reason)
+  defp describe(reason), do: ProjectFiles.format_error(reason)
 end
