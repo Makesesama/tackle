@@ -5,6 +5,7 @@ defmodule Tackle.Session.CompressionTest do
 
   alias Tackle.Session.Catalog
   alias Tackle.Session.Compression
+  alias Tackle.Session.Journal
   alias Tackle.Session.Storage
   alias Tackle.Session.Storage.Lock
 
@@ -160,6 +161,43 @@ defmodule Tackle.Session.CompressionTest do
     assert File.regular?(copy <> ".zst")
     refute File.exists?(stale)
     assert File.regular?(path)
+  end
+
+  test "a compressed journal that was not closed cleanly is repaired when resumed", ctx do
+    {session_id, cwd} = closed_session(ctx, "Crashed")
+    location = [home: ctx.home, cwd: cwd]
+    {:ok, path} = Storage.journal_path(session_id, location)
+    mark_journal_unclean!(path)
+    age(path)
+    {:ok, before} = Tackle.inspect_session(session_id, location)
+
+    assert {:ok, %{compressed: 1}} = compress(ctx)
+    refute File.exists?(path)
+
+    # Reading never repairs; only a writable owner that is allowed to does.
+    assert {:ok, %{messages: messages}} = Tackle.inspect_session(session_id, location)
+    assert messages == before.messages
+
+    Process.flag(:trap_exit, true)
+    journal_opts = [session_id: session_id] ++ location
+
+    assert {:error, {:journal_open_failed, ^session_id, {:repair_required, _path}}} =
+             Journal.start_link(journal_opts)
+
+    # The owner restored the plain journal under its lock before it found the
+    # journal needed repair.
+    assert File.regular?(path)
+
+    {:ok, journal} = Journal.start_link([repair: true] ++ journal_opts)
+    assert {:ok, projection} = Journal.projection(journal)
+    assert %{"bad_bytes" => 0} = projection.recovered
+    assert projection.status == :recovered
+    assert projection.messages == before.messages
+    GenServer.stop(journal)
+
+    refute File.exists?(Storage.compressed_path(path))
+    {:ok, recovery} = Storage.recovery_dir(session_id, location)
+    assert [_preserved] = File.ls!(recovery)
   end
 
   test "a truncated compressed journal is an error and is kept", ctx do

@@ -14,6 +14,7 @@ defmodule Tackle.Session.JournalTest do
   alias Tackle.Session.Persistence
   alias Tackle.Session.Reader
   alias Tackle.Session.Storage
+  alias Tackle.Test.LegacyJournals
 
   defmodule BlockingReportHandler do
     def log(%{meta: %{mfa: {Watchdog, :report, 2}}}, %{config: test_pid}) do
@@ -922,7 +923,92 @@ defmodule Tackle.Session.JournalTest do
     end
   end
 
+  describe "repairing damaged files" do
+    setup ctx do
+      # A journal that fails to open stops its own start.
+      Process.flag(:trap_exit, true)
+      items = LegacyJournals.closed_then_resumed(ctx.session_id)
+      path = LegacyJournals.write!(ctx.session_id, [home: ctx.home], items)
+      {:ok, path: path, items: items}
+    end
+
+    test "a truncated last item is dropped and the turn it settled is interrupted", ctx do
+      %{size: size} = File.stat!(ctx.path)
+      {:ok, file} = :file.open(ctx.path, [:read, :write, :raw, :binary])
+      {:ok, _position} = :file.position(file, size - 7)
+      :ok = :file.truncate(file)
+      :ok = :file.close(file)
+      mark_unclean!(ctx)
+
+      # Read-only replay never repairs.
+      assert {:error, {:journal_bad_bytes, _bytes}} = Reader.read(ctx.session_id, home: ctx.home)
+      assert {:error, {:journal_open_failed, _id, {:repair_required, _path}}} = start_journal(ctx)
+
+      {:ok, journal} = start_journal(ctx, repair: true)
+      assert {:ok, projection} = Journal.projection(journal)
+      assert {:ok, [_preserved]} = recovery_files(ctx)
+
+      # Everything but the torn terminal event, then `session.recovered`.
+      assert %{"bad_bytes" => bad_bytes, "recovered_items" => items} = projection.recovered
+      assert bad_bytes > 0
+      assert items == length(ctx.items) - 1
+      assert projection.last_seq == length(ctx.items) - 1
+      assert %{turn_id: "turn-2"} = projection.active_turn
+      assert projection.status == :interrupted
+
+      assert :ok = Journal.settle_turn(journal, "turn.abandoned", %{"turn_id" => "turn-2"})
+      assert {:ok, %{status: :recovered}} = Journal.projection(journal)
+      stop_journal(journal)
+
+      assert {:ok, %{status: :recovered}} = Reader.read(ctx.session_id, home: ctx.home)
+    end
+
+    test "bad bytes mid-file make the repaired history invalid instead of resuming it", ctx do
+      corrupt_item_header!(ctx.path, Enum.at(ctx.items, 4))
+
+      assert {:error, {:journal_bad_bytes, _bytes}} = Reader.read(ctx.session_id, home: ctx.home)
+
+      # A cleanly closed log is not repaired: it is not a crash's torn tail.
+      assert {:error, {:journal_read_failed, {:corrupt_log_file, _file}, _position}} =
+               Reader.open_writable(ctx.session_id, home: ctx.home, repair: true)
+
+      mark_unclean!(ctx)
+      original = File.read!(ctx.path)
+
+      # Repair skips the damaged commit, which leaves a gap in the sequence.
+      assert {:error,
+              {:journal_open_failed, _id, {:repaired_history_invalid, {:sequence_mismatch, 4, 5}}}} =
+               start_journal(ctx, repair: true)
+
+      # The file as it was before repair is kept for diagnosis; the repaired
+      # file stays unreadable, so the session is never resumed with the gap.
+      assert {:ok, [preserved]} = recovery_files(ctx)
+      {:ok, dir} = Storage.recovery_dir(ctx.session_id, home: ctx.home)
+      assert File.read!(Path.join(dir, preserved)) == original
+
+      assert {:error, {:journal_open_failed, _id, {:sequence_mismatch, 4, 5}}} =
+               start_journal(ctx, repair: true)
+
+      assert {:error, {:sequence_mismatch, 4, 5}} = Reader.read(ctx.session_id, home: ctx.home)
+    end
+  end
+
   describe "validation during replay" do
+    test "reads a journal with only its header as an empty session that continues", ctx do
+      write_raw_journal!(ctx, [header(ctx)])
+
+      assert {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
+      assert %{status: :clean, last_seq: 0, commits: []} = replay
+      assert replay.projection.messages == []
+
+      {:ok, journal} = start_journal(ctx)
+      assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
+      assert :ok = Journal.settle_turn(journal, "turn.completed", %{})
+      stop_journal(journal)
+
+      assert {:ok, %{last_seq: 2, status: :clean}} = Reader.read(ctx.session_id, home: ctx.home)
+    end
+
     test "rejects a sequence gap", ctx do
       write_raw_journal!(ctx, [
         header(ctx),
@@ -1320,9 +1406,17 @@ defmodule Tackle.Session.JournalTest do
 
   defp mark_unclean!(ctx) do
     {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
-    <<magic::binary-size(4), _status::binary-size(4), rest::binary>> = File.read!(path)
-    File.write!(path, magic <> <<6, 7, 8, 9>> <> rest)
-    :ok
+    mark_journal_unclean!(path)
+  end
+
+  # Overwrites the item header `:disk_log` wrote before `item`, so the item
+  # can no longer be found.
+  defp corrupt_item_header!(path, item) do
+    contents = File.read!(path)
+    {offset, _length} = :binary.match(contents, :erlang.term_to_binary(item))
+    {:ok, file} = :file.open(path, [:read, :write, :raw, :binary])
+    :ok = :file.pwrite(file, offset - 4, <<0, 0, 0, 0>>)
+    :ok = :file.close(file)
   end
 
   defp header(ctx) do

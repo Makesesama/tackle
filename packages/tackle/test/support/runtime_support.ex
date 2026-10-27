@@ -336,6 +336,16 @@ defmodule Tackle.Test.Runtime do
     :ok
   end
 
+  @doc """
+  Marks the journal file at `path` as not closed cleanly, as a crash leaves
+  it, so a writable open needs repair.
+  """
+  def mark_journal_unclean!(path) do
+    <<magic::binary-size(4), _status::binary-size(4), rest::binary>> = File.read!(path)
+    File.write!(path, magic <> <<6, 7, 8, 9>> <> rest)
+    :ok
+  end
+
   @doc "Like `read_journal/2`, but returns the replayed projection."
   def read_projection(session_id, opts) do
     flush_live(session_id)
