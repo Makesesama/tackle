@@ -4,7 +4,10 @@ defmodule Tackle.WatchdogTest do
   import ExUnit.CaptureLog
   import Tackle.Test.Runtime
 
+  alias Tackle.Config.Watchdog, as: Settings
   alias Tackle.Lib.Decision.{Answer, Result}
+  alias Tackle.Lib.Event
+  alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.Registry
   alias Tackle.Watchdog
   alias Tackle.Watchdog.Digest
@@ -297,6 +300,46 @@ defmodule Tackle.WatchdogTest do
     refute log =~ "line 1"
   end
 
+  test "reaps a decision that outlives its timeout and keeps watching" do
+    scope = start_scope()
+    {:ok, settings} = Settings.new([model: "judge/fake", after_seconds: 0.05], [Judge])
+    task_supervisor = start_supervised!(Task.Supervisor)
+
+    watchdog =
+      start_supervised!(
+        {Watchdog,
+         agent_ref: scope.root_agent_ref,
+         task_supervisor: task_supervisor,
+         settings: settings,
+         decision_opts: [receive_timeout: 50]}
+      )
+
+    log =
+      capture_log(fn ->
+        start =
+          Event.new(:tool_start, %{
+            tool_call_id: "w1",
+            name: "bash",
+            arguments: %{"command" => "yes"}
+          })
+
+        send(watchdog, {:tackle_event, "session", "turn", start})
+
+        # The judge never answers; the watchdog kills it once the timeout and
+        # its grace have passed, then asks again after backing off.
+        assert_receive {:judge_called, stuck, _request, asked_at}, 2_000
+        assert_receive {:judge_called, judge, _request, again_at}, 2_000
+        refute Process.alive?(stuck)
+        assert again_at - asked_at >= 100
+
+        send(judge, {:judge_reply, verdict("progressing", 0.99)})
+        assert eventually(fn -> :sys.get_state(watchdog).inflight == nil end) == :ok
+      end)
+
+    assert log =~ "watchdog decision model judge/fake failed: :timeout"
+    assert Map.keys(:sys.get_state(watchdog).calls) == ["w1"]
+  end
+
   test "retries its subscription after a restart in the middle of a turn" do
     scope = start_watched_scope(arguments: %{"command" => "make", "timeout" => 30})
     {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
@@ -368,9 +411,17 @@ defmodule Tackle.WatchdogTest do
         profiles: %{
           "child" =>
             agent_spec("child",
-              mode: :manual,
               providers: [Tackle.Test.Adapter, Judge],
-              watchdog: [model: "judge/fake"]
+              tools: [SlowBash],
+              context: %{test_pid: self()},
+              mode: :tools_then_answer,
+              llm_opts: [
+                tool_calls: [
+                  %{"id" => "c1", "name" => "bash", "arguments" => %{"command" => "yes"}}
+                ]
+              ],
+              content: "child done",
+              watchdog: [model: "judge/fake", after_seconds: 0.05, threshold: 0.85]
             )
         }
       )
@@ -383,6 +434,16 @@ defmodule Tackle.WatchdogTest do
 
     assert is_pid(watchdog_pid(run_ref.agent_ref))
     assert Registry.service_task_supervisor(scope.root_agent_ref) == {:error, :not_found}
+
+    # The child's watchdog stops the child's own stuck command.
+    assert_receive {:bash_started, "yes", _tool}, 5_000
+    assert_receive {:judge_called, judge, request, _at}, 2_000
+    assert request.state["command"] == "yes"
+    send(judge, {:judge_reply, verdict("stalled", 0.95)})
+
+    assert %Outcome{status: :ok, agent_state: state} = Tackle.Runtime.await(run_ref, 5_000)
+    assert tool_content(state, "c1") =~ "Command stopped by watchdog after"
+    assert tool_content(state, "c1") =~ "likely stalled (p=0.95)"
   end
 
   defp start_watched_scope(opts \\ []) do

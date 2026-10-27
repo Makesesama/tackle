@@ -305,11 +305,15 @@ defmodule Tackle.Watchdog do
         Decision.ask(selection, observed, [question()], opts)
       end)
 
+    # The adapter enforces its receive timeout; the timer only reaps a request
+    # that ignores it, after a grace no longer than the timeout itself.
+    timeout = Keyword.fetch!(opts, :receive_timeout)
+
     timer =
       Process.send_after(
         self(),
         {:decision_timeout, task.ref},
-        Keyword.fetch!(opts, :receive_timeout) + @decision_grace_ms
+        timeout + min(timeout, @decision_grace_ms)
       )
 
     %{state | inflight: %{task: task, timer: timer, call_id: id}}
