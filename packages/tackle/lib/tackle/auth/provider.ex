@@ -10,11 +10,13 @@ defmodule Tackle.Auth.Provider do
   `:provider_id` and `:provider_settings` (`Tackle.Lib.LLM.Provider.opts/1`),
   so one adapter can keep a separate login per provider.
 
-  Credential storage stays host-owned. `login/2` persists the map returned by
-  the adapter under the provider id through `Tackle.Auth`; `logout/2` and
-  `status/2` fall back to that store when the adapter does not implement the
-  callback. `Tackle.Auth.credential_store/0` is injected into the adapter
-  options so adapters that manage their own credentials can still read them.
+  Credential storage stays host-owned, and `Tackle.Auth` is its only store.
+  `login/2` persists the map returned by the adapter under the provider id
+  through `Tackle.Auth`; `logout/2` and `status/2` fall back to that store when
+  the adapter does not implement the callback. Adapters always receive
+  `Tackle.Auth.credential_store/0` as `:credential_store`, so those that manage
+  their own credentials read and refresh the same store; a caller's
+  `:credential_store` option is replaced.
 
   ## Named accounts
 
@@ -32,7 +34,7 @@ defmodule Tackle.Auth.Provider do
   `:adapters`, `:accounts`, `:config_providers`, and `:env` select where
   providers come from (see `Tackle.Plugins.available_providers/1`) and are not
   passed to adapters. Every other option, such as `:interaction`, is passed to
-  the adapter callback.
+  the adapter callback, except `:credential_store` (see above).
   """
 
   alias Tackle.Auth
@@ -369,7 +371,7 @@ defmodule Tackle.Auth.Provider do
     opts
     |> Keyword.drop(@plugin_keys)
     |> Keyword.merge(Provider.opts(provider))
-    |> Keyword.put_new(:credential_store, Auth.credential_store())
+    |> Keyword.put(:credential_store, Auth.credential_store())
   end
 
   defp call(adapter, callback, args) do

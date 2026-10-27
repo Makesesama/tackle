@@ -161,6 +161,22 @@ defmodule Tackle.Auth.ProviderTest do
     assert {:ok, %{"token" => "secret"}} = Auth.fetch("full")
   end
 
+  # Login stores, logout deletes, and status reads through Tackle.Auth, so an
+  # adapter given another store would refresh or read credentials elsewhere.
+  test "adapters always receive the store the flows use" do
+    opts = [adapters: [FullAdapter], credential_store: {Tackle.Auth.Store, :another_store}]
+
+    assert :ok = Provider.login("full", opts)
+    assert :ok = Provider.logout("full", opts)
+    assert {:ok, :expired} = Provider.status("full", opts)
+    assert {:ok, %{"plan" => "pro"}} = Provider.usage("full", opts)
+
+    for flow <- [:login, :logout, :status, :usage] do
+      assert_received {^flow, flow_opts}
+      assert flow_opts[:credential_store] == Auth.credential_store()
+    end
+  end
+
   test "flows resolve providers by id and pass that provider's settings" do
     opts = [adapters: [MultiAdapter], config_providers: %{}]
 
