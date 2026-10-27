@@ -81,7 +81,7 @@ defmodule Tackle.Auth.StoreTest do
 
     store = start_store(path)
     assert {:ok, %{"token" => "v1"}} = Store.fetch(store, "openai-codex")
-    assert Store.accounts(store) == %{}
+    assert Store.accounts(store) == {:ok, %{}}
 
     assert :ok = Store.put_account(store, "codex-work", %{"adapter" => "openai-codex"})
 
@@ -127,12 +127,12 @@ defmodule Tackle.Auth.StoreTest do
       "cloud2" => %{"adapter" => "ollama", "base" => "ollama-cloud"}
     }
 
-    assert Store.accounts(store) == accounts
+    assert Store.accounts(store) == {:ok, accounts}
     assert {:ok, %{"token" => "work"}} = Store.fetch(store, "codex-work")
 
     # Deleting credentials keeps the account; the two are managed separately.
     assert :ok = Store.delete(store, "codex-work")
-    assert Store.accounts(store) == accounts
+    assert Store.accounts(store) == {:ok, accounts}
   end
 
   test "malformed accounts are rejected without overwriting the file", %{
@@ -192,7 +192,9 @@ defmodule Tackle.Auth.StoreTest do
     assert {:ok, %{"token" => "persisted"}} = Store.fetch(reloaded_store, "openai-codex")
   end
 
-  test "a failed replacement leaves memory and existing disk data unchanged", %{path: path} do
+  test "a file replaced by a directory fails reads and changes without touching it", %{
+    path: path
+  } do
     store = start_store(path)
     original = %{"token" => "original"}
     assert :ok = Store.put(store, "openai-codex", original)
@@ -206,15 +208,77 @@ defmodule Tackle.Auth.StoreTest do
     assert {:error, {:unsafe_auth_file, ^path, :not_regular}} =
              Store.put(store, "openai-codex", %{"token" => "replacement"})
 
-    assert {:ok, ^original} = Store.fetch(store, "openai-codex")
-
-    assert File.read!(backup) |> JSON.decode!() == %{
-             "version" => 2,
-             "providers" => %{"openai-codex" => original},
-             "accounts" => %{}
-           }
+    assert {:error, {:unsafe_auth_file, ^path, :not_regular}} =
+             Store.fetch(store, "openai-codex")
 
     assert File.read!(marker) == "keep"
+
+    File.rm_rf!(path)
+    File.rename!(backup, path)
+    assert {:ok, ^original} = Store.fetch(store, "openai-codex")
+  end
+
+  # Several VMs share auth.json. Each change must start from the file's
+  # current contents, and reads must not serve contents another VM replaced.
+  test "stores sharing a file see and keep each other's changes", %{path: path} do
+    first = start_store(path, :first)
+    second = start_store(path, :second)
+
+    assert :ok = Store.put(first, "openai-codex", %{"refresh_token" => "first"})
+    assert :ok = Store.put(second, "anthropic", %{"api_key" => "second"})
+    assert :ok = Store.put_account(second, "codex-work", %{"adapter" => "openai-codex"})
+
+    assert {:ok, %{"api_key" => "second"}} = Store.fetch(first, "anthropic")
+    assert :stored = Store.status(first, "anthropic")
+    assert {:ok, %{"codex-work" => %{"adapter" => "openai-codex"}}} = Store.accounts(first)
+
+    # A rotated token written by one store is what the other reads next.
+    assert :ok = Store.put(second, "openai-codex", %{"refresh_token" => "rotated"})
+    assert {:ok, %{"refresh_token" => "rotated"}} = Store.fetch(first, "openai-codex")
+
+    assert :ok = Store.delete(first, "anthropic")
+    assert :error = Store.fetch(second, "anthropic")
+
+    assert path |> File.read!() |> JSON.decode!() == %{
+             "version" => 2,
+             "providers" => %{"openai-codex" => %{"refresh_token" => "rotated"}},
+             "accounts" => %{"codex-work" => %{"adapter" => "openai-codex"}}
+           }
+  end
+
+  test "a file another VM replaced after the last read is read again", %{path: path} do
+    store = start_store(path)
+    assert :ok = Store.put(store, "openai-codex", %{"token" => "old"})
+    assert {:ok, %{"token" => "old"}} = Store.fetch(store, "openai-codex")
+
+    # Written like another VM's store would: a new file renamed over the old.
+    replacement = path <> ".other"
+
+    File.write!(
+      replacement,
+      JSON.encode!(%{"version" => 2, "providers" => %{"openai-codex" => %{"token" => "new"}}})
+    )
+
+    File.rename!(replacement, path)
+    assert {:ok, %{"token" => "new"}} = Store.fetch(store, "openai-codex")
+    assert Store.accounts(store) == {:ok, %{}}
+  end
+
+  test "a file made invalid while the store runs is reported and never overwritten", %{
+    path: path
+  } do
+    store = start_store(path)
+    assert :ok = Store.put(store, "openai-codex", %{"token" => "secret"})
+
+    File.write!(path, "{not json")
+
+    assert {:error, {:malformed_auth_file, ^path}} = Store.fetch(store, "openai-codex")
+    assert {:error, {:malformed_auth_file, ^path}} = Store.accounts(store)
+
+    assert {:error, {:malformed_auth_file, ^path}} =
+             Store.put(store, "anthropic", %{"api_key" => "key"})
+
+    assert File.read!(path) == "{not json"
   end
 
   test "concurrent writes remain valid and preserve every namespace", %{path: path} do
@@ -294,8 +358,8 @@ defmodule Tackle.Auth.StoreTest do
     assert {:error, {:unsafe_auth_file, ^path, :symlink}} = start_store_error(path)
   end
 
-  defp start_store(path) do
-    start_supervised!({Store, path: path, name: nil})
+  defp start_store(path, id \\ Store) do
+    start_supervised!(Supervisor.child_spec({Store, path: path, name: nil}, id: id))
   end
 
   defp start_store_error(path) do

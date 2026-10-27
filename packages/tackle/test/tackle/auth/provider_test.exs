@@ -207,10 +207,10 @@ defmodule Tackle.Auth.ProviderTest do
     refute Keyword.has_key?(login_opts, :as)
 
     # The account is recorded only after the adapter's login succeeded.
-    assert_receive {:accounts_during_login, accounts}
+    assert_receive {:accounts_during_login, {:ok, accounts}}
     refute Map.has_key?(accounts, "work")
 
-    assert Auth.accounts()["work"] == %{"adapter" => "multi"}
+    assert accounts()["work"] == %{"adapter" => "multi"}
     assert {:ok, %{"token" => "for-work"}} = Auth.fetch("work")
     assert :error = Auth.fetch("multi-local")
 
@@ -218,7 +218,7 @@ defmodule Tackle.Auth.ProviderTest do
     assert :ok = Provider.login("multi-cloud", Keyword.put(opts, :as, "mine"))
     assert_receive {:login, login_opts}
     assert login_opts[:provider_settings] == %{"models" => ["big"]}
-    assert Auth.accounts()["mine"] == %{"adapter" => "multi", "base" => "multi-cloud"}
+    assert accounts()["mine"] == %{"adapter" => "multi", "base" => "multi-cloud"}
 
     assert {:ok, providers} = Provider.list(opts)
     assert %{source: :account, adapter: "multi"} = Enum.find(providers, &(&1.id == "work"))
@@ -226,11 +226,11 @@ defmodule Tackle.Auth.ProviderTest do
 
     # Logging in from an account reuses its base instead of chaining accounts.
     assert :ok = Provider.login("mine", Keyword.put(opts, :as, "mine2"))
-    assert Auth.accounts()["mine2"] == %{"adapter" => "multi", "base" => "multi-cloud"}
+    assert accounts()["mine2"] == %{"adapter" => "multi", "base" => "multi-cloud"}
 
     # Logging in again keeps the account and replaces its credentials.
     assert :ok = Provider.login("multi", Keyword.put(opts, :as, "work"))
-    assert Auth.accounts()["work"] == %{"adapter" => "multi"}
+    assert accounts()["work"] == %{"adapter" => "multi"}
   end
 
   test "login as a name merges config.json settings declared for that name" do
@@ -252,13 +252,13 @@ defmodule Tackle.Auth.ProviderTest do
     opts = [adapters: [MultiAdapter], config_providers: %{}, as: "work"]
 
     assert {:error, :denied} = Provider.login("multi", Keyword.put(opts, :fail_with, :denied))
-    refute Map.has_key?(Auth.accounts(), "work")
+    refute Map.has_key?(accounts(), "work")
     assert :error = Auth.fetch("work")
 
     # A failed re-login keeps the account and the credentials that existed.
     assert :ok = Provider.login("multi", opts)
     assert {:error, :denied} = Provider.login("multi", Keyword.put(opts, :fail_with, :denied))
-    assert Auth.accounts()["work"] == %{"adapter" => "multi"}
+    assert accounts()["work"] == %{"adapter" => "multi"}
     assert {:ok, %{"token" => "for-work"}} = Auth.fetch("work")
   end
 
@@ -293,9 +293,9 @@ defmodule Tackle.Auth.ProviderTest do
              Provider.login("store-only", adapters: [StoreAdapter], as: "work")
 
     refute_received {:login, _opts}
-    refute Map.has_key?(Auth.accounts(), "work")
-    refute Map.has_key?(Auth.accounts(), "full")
-    refute Map.has_key?(Auth.accounts(), "local")
+    refute Map.has_key?(accounts(), "work")
+    refute Map.has_key?(accounts(), "full")
+    refute Map.has_key?(accounts(), "local")
     assert :error = Auth.fetch("work")
   end
 
@@ -310,7 +310,7 @@ defmodule Tackle.Auth.ProviderTest do
              Provider.login("multi", Keyword.put(opts, :as, "work"))
 
     refute_received {:login, _opts}
-    assert Auth.accounts()["work"] == %{"adapter" => "not-installed"}
+    assert accounts()["work"] == %{"adapter" => "not-installed"}
     assert {:ok, %{"token" => "other-host"}} = Auth.fetch("work")
   end
 
@@ -322,7 +322,7 @@ defmodule Tackle.Auth.ProviderTest do
 
     assert :ok = Provider.logout("work", opts)
     assert :error = Auth.fetch("work")
-    refute Map.has_key?(Auth.accounts(), "work")
+    refute Map.has_key?(accounts(), "work")
 
     assert {:error, {:unsupported_auth_provider, "work", _supported}} =
              Provider.status("work", opts)
@@ -336,7 +336,7 @@ defmodule Tackle.Auth.ProviderTest do
     assert :ok = Auth.put_account("full", %{"adapter" => "not-installed"})
 
     assert :ok = Provider.logout("full", adapters: [FullAdapter], config_providers: %{})
-    assert Auth.accounts()["full"] == %{"adapter" => "not-installed"}
+    assert accounts()["full"] == %{"adapter" => "not-installed"}
   end
 
   test "accounts whose adapter is not configured are skipped" do
@@ -385,5 +385,10 @@ defmodule Tackle.Auth.ProviderTest do
   test "rejects non-map credentials returned by an adapter" do
     assert {:error, {:invalid_credentials, :not_a_map}} =
              Provider.login("invalid-credentials", adapters: [InvalidCredentialsAdapter])
+  end
+
+  defp accounts do
+    assert {:ok, accounts} = Auth.accounts()
+    accounts
   end
 end

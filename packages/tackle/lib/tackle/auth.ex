@@ -41,7 +41,7 @@ defmodule Tackle.Auth do
   def status(namespace), do: Store.status(@store, namespace)
 
   @doc ~S'Returns the recorded accounts: provider id to `%{"adapter" => type_id}`, plus `"base"` when set.'
-  @spec accounts() :: %{optional(String.t()) => Store.account()}
+  @spec accounts() :: {:ok, %{optional(String.t()) => Store.account()}} | {:error, term()}
   def accounts, do: Store.accounts(@store)
 
   @doc """

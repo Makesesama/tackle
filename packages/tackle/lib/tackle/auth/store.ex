@@ -4,10 +4,27 @@ defmodule Tackle.Auth.Store do
   provider accounts created by `tackle auth login --as`.
 
   The file is plaintext JSON protected by directory mode `0700` and file mode
-  `0600`; it is not encrypted. Mutations are serialized within one Tackle
-  application and persisted by replacing `auth.json` atomically, so readers do
-  not observe partial JSON. Power-loss durability after the rename, cross-VM
-  locking, and operating-system keyrings are intentionally outside this store.
+  `0600`; it is not encrypted. Every write replaces `auth.json` atomically (a
+  temporary file renamed over it), so readers never observe partial JSON.
+
+  Several VMs may share the file, such as two CLIs or a CLI and an SDK server,
+  so the file, not the store's memory, is the source of truth:
+
+    * Every change re-reads and re-validates the file, applies its one change
+      to those contents, and writes the result, keeping what other VMs wrote.
+    * Reads are served from the contents last read only while the file keeps
+      its device, inode, size, and modification time, and was last modified
+      before that read began; otherwise the file is read again. Each atomic
+      replacement creates a new inode.
+
+  Changes are serialized within one store process but not across VMs: the
+  window between a change's re-read and its rename is not locked, so when two
+  VMs change the file at the same moment, the rename that lands first can be
+  overwritten by the other. Power-loss durability after the rename and
+  operating-system keyrings are also outside this store.
+
+  A file that becomes unreadable or invalid while the store runs makes reads
+  and changes return `{:error, reason}`; such a file is never overwritten.
 
   The file is a version 2 envelope. Credentials live under `"providers"`, keyed
   by provider id; accounts live under `"accounts"`, mapping a provider id to
@@ -39,8 +56,17 @@ defmodule Tackle.Auth.Store do
   @type state :: %{
           path: Path.t(),
           providers: %{optional(String.t()) => map()},
-          accounts: %{optional(String.t()) => account()}
+          accounts: %{optional(String.t()) => account()},
+          stamp: stamp() | nil
         }
+
+  # The file's identity when it was last read, and the second that read
+  # began; `nil` after a write, so the next read loads the file again.
+  @typep stamp :: {identity(), integer()}
+  @typep identity ::
+           :missing
+           | {:file, non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer(),
+              integer()}
 
   @typedoc ~S'An account record: `%{"adapter" => type_id}`, plus `"base" => provider_id` when set.'
   @type account :: %{required(String.t()) => String.t()}
@@ -68,7 +94,8 @@ defmodule Tackle.Auth.Store do
   def status(reference, namespace), do: GenServer.call(reference, {:status, namespace})
 
   @doc false
-  @spec accounts(GenServer.server()) :: %{optional(String.t()) => account()}
+  @spec accounts(GenServer.server()) ::
+          {:ok, %{optional(String.t()) => account()}} | {:error, term()}
   def accounts(reference), do: GenServer.call(reference, :accounts)
 
   @doc false
@@ -84,8 +111,9 @@ defmodule Tackle.Auth.Store do
   @impl true
   def init(opts) do
     with {:ok, path} <- fetch_path(opts),
-         {:ok, {providers, accounts}} <- load(path) do
-      {:ok, %{path: Path.expand(path), providers: providers, accounts: accounts}}
+         path = Path.expand(path),
+         {:ok, contents} <- load(path) do
+      {:ok, Map.put(contents, :path, path)}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -93,59 +121,25 @@ defmodule Tackle.Auth.Store do
 
   @impl true
   def handle_call({:fetch, namespace}, _from, state) do
-    reply =
-      with :ok <- validate_namespace(namespace) do
-        Map.fetch(state.providers, namespace)
-      end
-
-    {:reply, reply, state}
-  end
-
-  def handle_call(:accounts, _from, state), do: {:reply, state.accounts, state}
-
-  def handle_call({:put_account, provider_id, account}, _from, state) do
-    with {:ok, account} <- normalize_account(provider_id, account),
-         accounts = Map.put(state.accounts, provider_id, account),
-         :ok <- persist(state.path, state.providers, accounts) do
-      {:reply, :ok, %{state | accounts: accounts}}
-    else
-      {:error, reason} -> {:reply, {:error, reason}, state}
-    end
-  end
-
-  def handle_call({:delete_account, provider_id}, _from, state) do
-    cond do
-      not Provider.valid_id?(provider_id) ->
-        {:reply, {:error, {:invalid_account, provider_id}}, state}
-
-      Map.has_key?(state.accounts, provider_id) ->
-        accounts = Map.delete(state.accounts, provider_id)
-
-        case persist(state.path, state.providers, accounts) do
-          :ok -> {:reply, :ok, %{state | accounts: accounts}}
-          {:error, reason} -> {:reply, {:error, reason}, state}
-        end
-
-      true ->
-        {:reply, :ok, state}
-    end
+    read(state, namespace, &Map.fetch(&1.providers, namespace))
   end
 
   def handle_call({:status, namespace}, _from, state) do
-    reply =
-      with :ok <- validate_namespace(namespace) do
-        if Map.has_key?(state.providers, namespace), do: :stored, else: :missing
-      end
-
-    {:reply, reply, state}
+    read(
+      state,
+      namespace,
+      &if(Map.has_key?(&1.providers, namespace), do: :stored, else: :missing)
+    )
   end
+
+  def handle_call(:accounts, _from, state), do: read(state, &{:ok, &1.accounts})
 
   def handle_call({:put, namespace, credentials}, _from, state) do
     with :ok <- validate_namespace(namespace),
-         {:ok, credentials} <- normalize_credentials(credentials),
-         providers = Map.put(state.providers, namespace, credentials),
-         :ok <- persist(state.path, providers, state.accounts) do
-      {:reply, :ok, %{state | providers: providers}}
+         {:ok, credentials} <- normalize_credentials(credentials) do
+      change(state, fn providers, accounts ->
+        {Map.put(providers, namespace, credentials), accounts}
+      end)
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -153,8 +147,31 @@ defmodule Tackle.Auth.Store do
 
   def handle_call({:delete, namespace}, _from, state) do
     case validate_namespace(namespace) do
-      :ok -> delete_namespace(namespace, state)
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      :ok ->
+        change(state, fn providers, accounts -> {Map.delete(providers, namespace), accounts} end)
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:put_account, provider_id, account}, _from, state) do
+    case normalize_account(provider_id, account) do
+      {:ok, account} ->
+        change(state, fn providers, accounts ->
+          {providers, Map.put(accounts, provider_id, account)}
+        end)
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:delete_account, provider_id}, _from, state) do
+    if Provider.valid_id?(provider_id) do
+      change(state, fn providers, accounts -> {providers, Map.delete(accounts, provider_id)} end)
+    else
+      {:reply, {:error, {:invalid_account, provider_id}}, state}
     end
   end
 
@@ -164,28 +181,85 @@ defmodule Tackle.Auth.Store do
   @impl true
   def format_status(status), do: StatusRedaction.format_status(status, &redact_state/1)
 
-  defp redact_state(%{providers: providers} = state) when is_map(providers),
-    do: %{
-      state
-      | providers: Map.new(providers, fn {namespace, _credentials} -> {namespace, :redacted} end)
-    }
+  defp redact_state(%{providers: providers} = state) when is_map(providers) do
+    %{state | providers: Map.new(providers, fn {namespace, _} -> {namespace, :redacted} end)}
+  end
 
   defp redact_state(state), do: state
 
-  defp delete_namespace(namespace, state) do
-    if Map.has_key?(state.providers, namespace) do
-      providers = Map.delete(state.providers, namespace)
-      delete_reply(persist(state.path, providers, state.accounts), providers, state)
-    else
-      {:reply, :ok, state}
+  defp read(state, namespace, fun) do
+    case validate_namespace(namespace) do
+      :ok -> read(state, fun)
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
-  defp delete_reply(:ok, providers, state),
-    do: {:reply, :ok, %{state | providers: providers}}
+  defp read(state, fun) do
+    case current(state) do
+      {:ok, state} -> {:reply, fun.(state), state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
 
-  defp delete_reply({:error, reason}, _providers, state),
-    do: {:reply, {:error, reason}, state}
+  defp current(state) do
+    if unchanged?(state) do
+      {:ok, state}
+    else
+      with {:ok, contents} <- load(state.path), do: {:ok, Map.merge(state, contents)}
+    end
+  end
+
+  # A file modified in the second its last read began may have changed after
+  # that read without changing its identity (an inode reused within the same
+  # second, at the same size), so it is read again.
+  defp unchanged?(%{stamp: nil}), do: false
+
+  defp unchanged?(%{path: path, stamp: {identity, read_at}}) do
+    case identity(path) do
+      {:ok, ^identity} -> modified_before?(identity, read_at)
+      _changed -> false
+    end
+  end
+
+  defp modified_before?(:missing, _read_at), do: true
+  defp modified_before?({:file, _, _, _, _, mtime}, read_at), do: mtime < read_at
+
+  defp identity(path) do
+    case File.lstat(path, time: :posix) do
+      {:ok, %File.Stat{type: :regular} = stat} -> {:ok, file_identity(stat)}
+      {:error, :enoent} -> {:ok, :missing}
+      _other -> :error
+    end
+  end
+
+  defp file_identity(%File.Stat{} = stat),
+    do: {:file, stat.major_device, stat.minor_device, stat.inode, stat.size, stat.mtime}
+
+  # Applies one change to the file's current contents, so that what other VMs
+  # wrote since the last read is kept. An unchanged result writes nothing.
+  defp change(state, fun) do
+    case load(state.path) do
+      {:ok, contents} -> apply_change(Map.merge(state, contents), fun)
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp apply_change(%{providers: providers, accounts: accounts} = state, fun) do
+    case fun.(providers, accounts) do
+      {^providers, ^accounts} ->
+        {:reply, :ok, state}
+
+      {changed_providers, changed_accounts} ->
+        case persist(state.path, changed_providers, changed_accounts) do
+          :ok ->
+            {:reply, :ok,
+             %{state | providers: changed_providers, accounts: changed_accounts, stamp: nil}}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+    end
+  end
 
   defp fetch_path(opts) do
     case Keyword.fetch(opts, :path) do
@@ -194,10 +268,18 @@ defmodule Tackle.Auth.Store do
     end
   end
 
+  # The stamp is taken before the file is read, so any later change shows in
+  # its identity or modification time.
   defp load(path) do
-    case File.lstat(path) do
-      {:ok, %File.Stat{type: :regular}} ->
-        with :ok <- secure_existing_file(path), do: read_envelope(path)
+    read_at = System.os_time(:second)
+
+    case File.lstat(path, time: :posix) do
+      {:ok, %File.Stat{type: :regular} = stat} ->
+        with :ok <- secure_existing_file(path),
+             {:ok, {providers, accounts}} <- read_envelope(path) do
+          {:ok,
+           %{providers: providers, accounts: accounts, stamp: {file_identity(stat), read_at}}}
+        end
 
       {:ok, %File.Stat{type: :symlink}} ->
         {:error, {:unsafe_auth_file, path, :symlink}}
@@ -206,7 +288,7 @@ defmodule Tackle.Auth.Store do
         {:error, {:unsafe_auth_file, path, :not_regular}}
 
       {:error, :enoent} ->
-        {:ok, {%{}, %{}}}
+        {:ok, %{providers: %{}, accounts: %{}, stamp: {:missing, read_at}}}
 
       {:error, reason} ->
         {:error, {:auth_file_unreadable, path, reason}}

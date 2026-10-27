@@ -475,12 +475,17 @@ defmodule Tackle.Config do
         {:error, {:invalid_option, :accounts, accounts}}
 
       :error ->
-        try do
-          {:ok, Tackle.Auth.accounts()}
-        catch
-          :exit, reason -> {:error, {:accounts_unavailable, reason}}
-        end
+        stored_accounts()
     end
+  end
+
+  defp stored_accounts do
+    case Tackle.Auth.accounts() do
+      {:ok, accounts} -> {:ok, accounts}
+      {:error, reason} -> {:error, {:accounts_unavailable, reason}}
+    end
+  catch
+    :exit, reason -> {:error, {:accounts_unavailable, reason}}
   end
 
   defp catalog_hooks(opts, overrides) do

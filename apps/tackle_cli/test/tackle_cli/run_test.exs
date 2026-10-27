@@ -589,10 +589,8 @@ defmodule Tackle.CLI.RunTest do
     assert opts[:provider_id] == "cli-auth-work"
     assert {:ok, %{"token" => "value"}} = Tackle.Auth.fetch("cli-auth-work")
     # "cli-auth" is also the default provider's id, so it is the account's base.
-    assert Tackle.Auth.accounts()["cli-auth-work"] == %{
-             "adapter" => "cli-auth",
-             "base" => "cli-auth"
-           }
+    assert {:ok, %{"cli-auth-work" => %{"adapter" => "cli-auth", "base" => "cli-auth"}}} =
+             Tackle.Auth.accounts()
 
     assert :missing == Tackle.Auth.status("cli-auth")
 
@@ -618,7 +616,8 @@ defmodule Tackle.CLI.RunTest do
 
     assert output =~ ~s("Bad Name" is not a valid provider name.)
     refute output =~ "invalid_provider_id"
-    refute Map.has_key?(Tackle.Auth.accounts(), "Bad Name")
+    assert {:ok, accounts} = Tackle.Auth.accounts()
+    refute Map.has_key?(accounts, "Bad Name")
   end
 
   test "auth login --as refuses a name recorded for another adapter" do
@@ -633,7 +632,7 @@ defmodule Tackle.CLI.RunTest do
 
     assert output =~ ~s(The name "cli-auth-taken" already belongs to a provider or account)
     refute_received {:auth_login, _opts}
-    assert Tackle.Auth.accounts()["cli-auth-taken"] == %{"adapter" => "not-installed"}
+    assert {:ok, %{"cli-auth-taken" => %{"adapter" => "not-installed"}}} = Tackle.Auth.accounts()
     assert :missing == Tackle.Auth.status("cli-auth-taken")
   end
 

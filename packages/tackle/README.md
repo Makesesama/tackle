@@ -950,8 +950,14 @@ the next change. Credential-shaped `llm_opts` keys (including nested token, API-
 password, and authorization fields) are rejected; provider secrets belong only
 in the credential store. The file is plaintext protected by filesystem
 permissions (`0700` for the directory and `0600` for the file), not encryption.
-Writes are atomic and serialized within one Tackle application; cross-VM
-locking and OS keyrings are deferred.
+Writes are atomic and serialized within one Tackle application. Several VMs
+(two CLIs, or a CLI and an SDK server) can share the file: every change
+re-reads it and applies only its own change to what it finds, and reads load
+the file again once it was replaced or modified since the last read. The
+moment between a change's re-read and its rename is not locked across VMs, so
+two VMs changing the file at the same instant can still lose one change;
+cross-VM locking and OS keyrings are deferred. `Tackle.Auth.accounts/0`
+returns `{:ok, accounts}`, or `{:error, reason}` when the file cannot be read.
 
 ## Development
 

@@ -191,7 +191,10 @@ defmodule Tackle.Plugins do
   end
 
   defp stored_accounts do
-    {:ok, Tackle.Auth.accounts()}
+    case Tackle.Auth.accounts() do
+      {:ok, accounts} -> {:ok, accounts}
+      {:error, reason} -> {:error, {:accounts_unavailable, reason}}
+    end
   catch
     :exit, reason -> {:error, {:accounts_unavailable, reason}}
   end
