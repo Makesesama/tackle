@@ -28,10 +28,11 @@ defmodule Tackle.Session.Journal do
   `:active` while the owner runs a turn and otherwise with the projection's
   status.
 
-  Durable operations are guarded by an independent watchdog. A missed deadline
-  stops the owner and its durable scope rather than abandoning a request while
-  execution continues. The commit outcome may be unknown: replay is required
-  before any retry. Diagnostics contain stage and stack information, not payloads.
+  Durable operations are guarded by an independent deadline process. A missed
+  deadline stops the owner and its durable scope rather than abandoning a
+  request while execution continues. The commit outcome may be unknown: replay
+  is required before any retry. Diagnostics contain stage and stack
+  information, not payloads.
 
   ## Rejections and failures
 
@@ -64,7 +65,7 @@ defmodule Tackle.Session.Journal do
   alias Tackle.Session.Catalog.Entry
   alias Tackle.Session.Codec
   alias Tackle.Session.CompressedFile
-  alias Tackle.Session.Journal.Watchdog
+  alias Tackle.Session.Journal.Deadline
   alias Tackle.Session.Log
   alias Tackle.Session.Projection
   alias Tackle.Session.ProjectionError
@@ -75,7 +76,7 @@ defmodule Tackle.Session.Journal do
 
   @registry Tackle.Session.JournalRegistry
   @call_timeout 60_000
-  # Lets the watchdog's guarded cleanup deadline expire before the supervisor
+  # Lets the deadline process's cleanup deadline expire before the supervisor
   # kills the owner, so a stalled cleanup still leaves its diagnostic.
   @shutdown_margin 1_000
 
@@ -107,9 +108,9 @@ defmodule Tackle.Session.Journal do
   end
 
   # Closing the log, writing the summary sidecar, and releasing the lock may
-  # take up to the journal timeout, which the watchdog enforces.
+  # take up to the journal timeout, which the deadline process enforces.
   defp shutdown(opts) do
-    case Watchdog.timeout(opts) do
+    case Deadline.timeout(opts) do
       timeout when is_integer(timeout) and timeout > 0 -> timeout + @shutdown_margin
       _invalid -> 5_000
     end
@@ -314,10 +315,10 @@ defmodule Tackle.Session.Journal do
     Process.flag(:trap_exit, true)
     session_id = Keyword.fetch!(opts, :session_id)
 
-    with {:ok, _watchdog} <- Watchdog.start(self(), session_id, opts),
+    with {:ok, _deadline} <- Deadline.start(self(), session_id, opts),
          {:ok, path} <- Storage.journal_path(session_id, opts),
          {:ok, state} <- open_or_defer(session_id, path, opts) do
-      Watchdog.ready(self())
+      Deadline.ready(self())
       {:ok, state}
     else
       {:error, reason} -> {:stop, reason}
@@ -363,11 +364,11 @@ defmodule Tackle.Session.Journal do
   # what opening requires. Anything that fails after the lock is held closes
   # the log, if it was opened, and releases the lock.
   defp materialize(session_id, opts, acquire_lock) do
-    Watchdog.stage(self(), :acquire_lock)
+    Deadline.stage(self(), :acquire_lock)
 
     with {:ok, lock} <- acquire_lock.(session_id, opts) do
-      Watchdog.lock(self(), lock)
-      Watchdog.stage(self(), :open_replay)
+      Deadline.lock(self(), lock)
+      Deadline.stage(self(), :open_replay)
 
       case open_locked(session_id, lock, opts) do
         {:ok, state} ->
@@ -375,7 +376,7 @@ defmodule Tackle.Session.Journal do
 
         {:error, reason} ->
           _ = Storage.release_lock(lock)
-          Watchdog.lock(self(), nil)
+          Deadline.lock(self(), nil)
           {:error, reason}
       end
     end
@@ -461,7 +462,7 @@ defmodule Tackle.Session.Journal do
   end
 
   def handle_call({:append_message, %Message{} = message, parent, sync?}, _from, state) do
-    Watchdog.stage(self(), :encode_message, state.next_seq)
+    Deadline.stage(self(), :encode_message, state.next_seq)
 
     with {:ok, turn_id} <- active_turn_id(state),
          {:ok, parent} <- journal_parent(state.projection, parent),
@@ -597,7 +598,7 @@ defmodule Tackle.Session.Journal do
   end
 
   # A port's exit signal is never fatal here: the lock port's loss arrives as
-  # `{port, {:exit_status, status}}` above (and through the watchdog's
+  # `{port, {:exit_status, status}}` above (and through the deadline process's
   # monitor). A linked process, such as the log backend, exiting is.
   def handle_info({:EXIT, port, _reason}, state) when is_port(port), do: {:noreply, state}
   def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
@@ -611,21 +612,21 @@ defmodule Tackle.Session.Journal do
   # directory: only the log is closed (its buffered writes cannot be avoided);
   # nothing else is synced, written, or released there.
   def terminate({:journal_failure, {:writer_lock_lost, _status}}, state) do
-    Watchdog.cleanup(self())
+    Deadline.cleanup(self())
     cleanup_step(:cleanup_close, fn -> Reader.close(state.name) end)
     record_final_summary(state)
-    Watchdog.lock(self(), nil)
+    Deadline.lock(self(), nil)
     :ok
   end
 
   def terminate(_reason, state) do
-    Watchdog.cleanup(self())
+    Deadline.cleanup(self())
     cleanup_step(:cleanup_sync, fn -> Reader.sync(state.name) end)
     cleanup_step(:cleanup_close, fn -> Reader.close(state.name) end)
     cleanup_step(:cleanup_summary, fn -> write_summary_sidecar(state) end)
     record_final_summary(state)
     cleanup_step(:cleanup_lock, fn -> Storage.release_lock(state.lock) end)
-    Watchdog.lock(self(), nil)
+    Deadline.lock(self(), nil)
     :ok
   end
 
@@ -927,7 +928,7 @@ defmodule Tackle.Session.Journal do
   end
 
   defp cleanup_step(stage, fun) do
-    Watchdog.stage(self(), stage)
+    Deadline.stage(self(), stage)
 
     case fun.() do
       :ok -> :ok
@@ -940,13 +941,13 @@ defmodule Tackle.Session.Journal do
   end
 
   defp stage(stage, seq, fun) do
-    Watchdog.stage(self(), stage, seq)
+    Deadline.stage(self(), stage, seq)
     fun.()
   end
 
   defp durable_call(journal, message) do
     case GenServer.whereis(journal) do
-      pid when is_pid(pid) -> Watchdog.request(pid, message)
+      pid when is_pid(pid) -> Deadline.request(pid, message)
       nil -> {:error, {:journal_unavailable, :not_found}}
     end
   end

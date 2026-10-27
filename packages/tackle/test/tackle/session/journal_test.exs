@@ -9,7 +9,7 @@ defmodule Tackle.Session.JournalTest do
   alias Tackle.Runtime.ID
   alias Tackle.Session.Catalog
   alias Tackle.Session.Journal
-  alias Tackle.Session.Journal.Watchdog
+  alias Tackle.Session.Journal.Deadline
   alias Tackle.Session.Log
   alias Tackle.Session.Persistence
   alias Tackle.Session.Projection
@@ -18,7 +18,7 @@ defmodule Tackle.Session.JournalTest do
   alias Tackle.Test.LegacyJournals
 
   defmodule BlockingReportHandler do
-    def log(%{meta: %{mfa: {Watchdog, :report, 2}}}, %{config: test_pid}) do
+    def log(%{meta: %{mfa: {Deadline, :report, 2}}}, %{config: test_pid}) do
       send(test_pid, {:report_blocked, self()})
 
       receive do
@@ -290,15 +290,15 @@ defmodule Tackle.Session.JournalTest do
       assert :ok = Journal.await_idle(journal)
       assert collect_syncs(journal) == 0
 
-      [{watchdog, _}] =
-        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+      [{deadline, _}] =
+        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_deadline, journal})
 
       log = Reader.name(ctx.session_id)
       :ok = :disk_log.block(log, true)
 
       try do
         sync = Task.async(fn -> Journal.flush(journal) end)
-        assert eventually(fn -> :sys.get_state(watchdog).stage == :sync end) == :ok
+        assert eventually(fn -> :sys.get_state(deadline).stage == :sync end) == :ok
         idle = Task.async(fn -> Journal.await_idle(journal) end)
         assert Task.yield(idle, 200) == nil
         :ok = :disk_log.unblock(log)
@@ -377,7 +377,7 @@ defmodule Tackle.Session.JournalTest do
       {:ok, journal} = start_journal(ctx, journal_timeout: 100)
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       assert :ok = Journal.append_message(journal, Message.user("hello"))
-      assert :ready = Watchdog.subscribe(journal, self())
+      assert :ready = Deadline.subscribe(journal, self())
       log = Reader.name(ctx.session_id)
       assert :ok = :disk_log.block(log, true)
       ref = Process.monitor(journal)
@@ -387,12 +387,12 @@ defmodule Tackle.Session.JournalTest do
         session_id = ctx.session_id
         assert_receive {:tackle_storage, ^session_id, :delayed}, 1_000
 
-        [{watchdog, _}] =
-          Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+        [{deadline, _}] =
+          Registry.lookup(Tackle.Session.JournalRegistry, {:journal_deadline, journal})
 
-        [request] = Map.keys(:sys.get_state(watchdog).pending)
+        [request] = Map.keys(:sys.get_state(deadline).pending)
         Process.sleep(250)
-        assert Map.keys(:sys.get_state(watchdog).pending) == [request]
+        assert Map.keys(:sys.get_state(deadline).pending) == [request]
         assert Task.yield(task, 20) == nil
         refute_receive {:DOWN, ^ref, :process, ^journal, _}, 20
         refute_receive {:tackle_storage, ^session_id, :delayed}, 20
@@ -414,7 +414,7 @@ defmodule Tackle.Session.JournalTest do
     test "paused admission is bounded and queued commits stay behind sync", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 100)
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
-      assert :ready = Watchdog.subscribe(journal, self())
+      assert :ready = Deadline.subscribe(journal, self())
       log = Reader.name(ctx.session_id)
       :ok = :disk_log.block(log, true)
 
@@ -423,8 +423,8 @@ defmodule Tackle.Session.JournalTest do
         session_id = ctx.session_id
         assert_receive {:tackle_storage, ^session_id, :delayed}, 1_000
 
-        [{watchdog, _}] =
-          Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+        [{deadline, _}] =
+          Registry.lookup(Tackle.Session.JournalRegistry, {:journal_deadline, journal})
 
         tasks =
           for n <- 1..64,
@@ -433,9 +433,9 @@ defmodule Tackle.Session.JournalTest do
                   Journal.append_message(journal, Message.assistant(content: "answer #{n}"))
                 end)
 
-        assert eventually(fn -> :queue.len(:sys.get_state(watchdog).queued) == 64 end) == :ok
+        assert eventually(fn -> :queue.len(:sys.get_state(deadline).queued) == 64 end) == :ok
         assert {:error, :journal_busy} = Journal.flush(journal)
-        assert map_size(:sys.get_state(watchdog).pending) == 1
+        assert map_size(:sys.get_state(deadline).pending) == 1
         assert :ok = :disk_log.unblock(log)
         assert Task.await(sync) == :ok
         assert Enum.all?(Task.await_many(tasks), &(&1 == :ok))
@@ -452,7 +452,7 @@ defmodule Tackle.Session.JournalTest do
     test "paused admission also bounds retained payload bytes", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 100)
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
-      assert :ready = Watchdog.subscribe(journal, self())
+      assert :ready = Deadline.subscribe(journal, self())
       log = Reader.name(ctx.session_id)
       :ok = :disk_log.block(log, true)
 
@@ -476,12 +476,12 @@ defmodule Tackle.Session.JournalTest do
       {:ok, journal} = start_journal(ctx, journal_timeout: 100)
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
 
-      [{watchdog, _}] =
-        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+      [{deadline, _}] =
+        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_deadline, journal})
 
-      lock = :sys.get_state(watchdog).lock
+      lock = :sys.get_state(deadline).lock
       assert is_port(lock.port)
-      assert :ready = Watchdog.subscribe(journal, self())
+      assert :ready = Deadline.subscribe(journal, self())
       log = Reader.name(ctx.session_id)
       :ok = :disk_log.block(log, true)
 
@@ -548,16 +548,16 @@ defmodule Tackle.Session.JournalTest do
 
       ref = Process.monitor(owner)
 
-      {:ok, watchdog} =
-        Watchdog.start(owner, ctx.session_id,
+      {:ok, deadline} =
+        Deadline.start(owner, ctx.session_id,
           home: ctx.home,
           journal_timeout: 100
         )
 
-      watcher_ref = Process.monitor(watchdog)
+      watcher_ref = Process.monitor(deadline)
 
       assert_receive {:DOWN, ^ref, :process, ^owner, :killed}, 1_000
-      assert_receive {:DOWN, ^watcher_ref, :process, ^watchdog, :normal}, 3_000
+      assert_receive {:DOWN, ^watcher_ref, :process, ^deadline, :normal}, 3_000
       {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
       diagnostic = JSON.decode!(File.read!(Path.join(Path.dirname(path), "journal-failure.json")))
       assert diagnostic["stage"] == "initializing"
@@ -573,21 +573,21 @@ defmodule Tackle.Session.JournalTest do
       stop_journal(journal)
     end
 
-    test "a failed diagnostic write does not keep the watchdog alive", ctx do
+    test "a failed diagnostic write does not keep the deadline process alive", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 250)
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
 
-      [{watchdog, _}] =
-        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+      [{deadline, _}] =
+        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_deadline, journal})
 
       # Make publication fail without interfering with stall detection.
       {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
       report = Path.join(Path.dirname(path), "journal-failure.json")
       :ok = File.mkdir!(report)
       :ok = :sys.suspend(journal)
-      ref = Process.monitor(watchdog)
+      ref = Process.monitor(deadline)
       assert {:error, {:journal_stalled, _}} = Journal.flush(journal)
-      assert_receive {:DOWN, ^ref, :process, ^watchdog, :normal}, 3_000
+      assert_receive {:DOWN, ^ref, :process, ^deadline, :normal}, 3_000
     end
 
     test "a timeout releases fallback ownership only after the log backend closes", ctx do
@@ -614,30 +614,30 @@ defmodule Tackle.Session.JournalTest do
       end
     end
 
-    test "a crashing watchdog stops a waiting caller only after owner death", ctx do
+    test "a crashing deadline process stops a waiting caller only after owner death", ctx do
       {:ok, journal} = start_journal(ctx)
       :ok = :sys.suspend(journal)
       message = Message.assistant(content: "answer")
       task = Task.async(fn -> Journal.append_message(journal, message) end)
       await_queued_append(journal, message.id)
 
-      [{watchdog, _}] =
-        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+      [{deadline, _}] =
+        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_deadline, journal})
 
-      Process.exit(watchdog, :kill)
+      Process.exit(deadline, :kill)
       assert {:error, {:journal_unavailable, :killed}} = Task.await(task, 1_000)
       refute Process.alive?(journal)
     end
 
-    test "a crashing watchdog kills even a suspended owner", ctx do
+    test "a crashing deadline process kills even a suspended owner", ctx do
       {:ok, journal} = start_journal(ctx)
       :ok = :sys.suspend(journal)
       ref = Process.monitor(journal)
 
-      [{watchdog, _}] =
-        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+      [{deadline, _}] =
+        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_deadline, journal})
 
-      Process.exit(watchdog, :kill)
+      Process.exit(deadline, :kill)
       assert_receive {:DOWN, ^ref, :process, ^journal, :killed}, 1_000
     end
 
@@ -696,10 +696,10 @@ defmodule Tackle.Session.JournalTest do
         {:ok, journal} = start_journal(ctx)
         {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
 
-        [{watchdog, _}] =
-          Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+        [{deadline, _}] =
+          Registry.lookup(Tackle.Session.JournalRegistry, {:journal_deadline, journal})
 
-        ref = Process.monitor(watchdog)
+        ref = Process.monitor(deadline)
         {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
         lock_path = Path.join(Path.dirname(path), "writer.lock")
         assert File.exists?(lock_path)
@@ -707,7 +707,7 @@ defmodule Tackle.Session.JournalTest do
         Process.exit(journal, :kill)
         assert_receive {:report_blocked, _reporter}, 1_000
         assert eventually(fn -> not File.exists?(lock_path) end) == :ok
-        assert_receive {:DOWN, ^ref, :process, ^watchdog, :normal}, 3_000
+        assert_receive {:DOWN, ^ref, :process, ^deadline, :normal}, 3_000
       after
         :logger.remove_handler(handler)
         if old_path, do: System.put_env("PATH", old_path), else: System.delete_env("PATH")
@@ -722,12 +722,12 @@ defmodule Tackle.Session.JournalTest do
           end
         end)
 
-      {:ok, watchdog} = Watchdog.start(owner, ctx.session_id, home: ctx.home)
-      Watchdog.ready(owner)
-      ref = Process.monitor(watchdog)
+      {:ok, deadline} = Deadline.start(owner, ctx.session_id, home: ctx.home)
+      Deadline.ready(owner)
+      ref = Process.monitor(deadline)
       reason = Enum.reduce(1..10_000, :disk_full, fn _, acc -> {:journal_failure, acc} end)
       send(owner, {:stop, reason})
-      assert_receive {:DOWN, ^ref, :process, ^watchdog, :normal}, 3_000
+      assert_receive {:DOWN, ^ref, :process, ^deadline, :normal}, 3_000
       diagnostic = await_failure_report(ctx)
       assert diagnostic["failure"] == "journal_failure/unexpected_owner_exit"
       assert byte_size(JSON.encode!(diagnostic)) < 1_000
@@ -762,12 +762,12 @@ defmodule Tackle.Session.JournalTest do
       {:ok, journal} = start_journal(ctx)
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
 
-      [{watchdog, _}] =
-        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+      [{deadline, _}] =
+        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_deadline, journal})
 
-      ref = Process.monitor(watchdog)
+      ref = Process.monitor(deadline)
       stop_journal(journal)
-      assert_receive {:DOWN, ^ref, :process, ^watchdog, :normal}, 3_000
+      assert_receive {:DOWN, ^ref, :process, ^deadline, :normal}, 3_000
 
       {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
       refute File.exists?(Path.join(Path.dirname(path), "journal-failure.json"))
@@ -1152,12 +1152,12 @@ defmodule Tackle.Session.JournalTest do
       assert status =~ "last_seq: 3"
     end
 
-    test "the watchdog redacts queued request payloads", ctx do
+    test "the deadline process redacts queued request payloads", ctx do
       {:ok, journal} = start_journal(ctx, env: %{"TACKLE_SECRET" => "secret env"})
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
 
-      [{watchdog, _}] =
-        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
+      [{deadline, _}] =
+        Registry.lookup(Tackle.Session.JournalRegistry, {:journal_deadline, journal})
 
       :ok = :sys.suspend(journal)
 
@@ -1167,9 +1167,9 @@ defmodule Tackle.Session.JournalTest do
         dispatched = Task.async(fn -> Journal.append_message(journal, first) end)
         await_queued_append(journal, first.id)
         waiting = Task.async(fn -> Journal.append_message(journal, queued) end)
-        assert eventually(fn -> :queue.len(:sys.get_state(watchdog).queued) == 1 end) == :ok
+        assert eventually(fn -> :queue.len(:sys.get_state(deadline).queued) == 1 end) == :ok
 
-        status = inspect(:sys.get_status(watchdog), limit: :infinity, printable_limit: :infinity)
+        status = inspect(:sys.get_status(deadline), limit: :infinity, printable_limit: :infinity)
         refute status =~ "secret"
         assert status =~ "append_message"
 
@@ -1386,9 +1386,9 @@ defmodule Tackle.Session.JournalTest do
 
   defp owner_stage(session_id) do
     with {:ok, owner} <- Journal.whereis(session_id),
-         [{watchdog, _}] <-
-           Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, owner}) do
-      :sys.get_state(watchdog).stage
+         [{deadline, _}] <-
+           Registry.lookup(Tackle.Session.JournalRegistry, {:journal_deadline, owner}) do
+      :sys.get_state(deadline).stage
     else
       _other -> nil
     end

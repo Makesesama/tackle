@@ -498,19 +498,19 @@ defmodule Tackle.Session.StoragePauseTest do
   defp await_sync(session_id) do
     {:ok, journal} = Journal.whereis(session_id)
 
-    [{watchdog, _}] =
-      Registry.lookup(JournalRegistry, {:journal_watchdog, journal})
+    [{deadline, _}] =
+      Registry.lookup(JournalRegistry, {:journal_deadline, journal})
 
-    assert eventually(fn -> :sys.get_state(watchdog).stage == :sync end) == :ok
+    assert eventually(fn -> :sys.get_state(deadline).stage == :sync end) == :ok
   end
 
   defp await_queued(session_id) do
     {:ok, journal} = Journal.whereis(session_id)
 
-    [{watchdog, _}] =
-      Registry.lookup(JournalRegistry, {:journal_watchdog, journal})
+    [{deadline, _}] =
+      Registry.lookup(JournalRegistry, {:journal_deadline, journal})
 
-    assert eventually(fn -> not :queue.is_empty(:sys.get_state(watchdog).queued) end) == :ok
+    assert eventually(fn -> not :queue.is_empty(:sys.get_state(deadline).queued) end) == :ok
   end
 
   defp assert_storage(session_id, storage) do

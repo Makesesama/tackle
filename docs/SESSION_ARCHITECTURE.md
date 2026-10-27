@@ -576,7 +576,7 @@ The implementation must propagate full-disk, permission, device, sync, and log-p
 
 ### Slow live sync: pause and recover
 
-The harness watchdog treats its default 15-second deadline as a soft threshold
+The journal's deadline process treats its default 15-second deadline as a soft threshold
 only for a live `sync` stage. The journal keeps the original sync in flight and
 the pending commit ID/sequence unchanged; it never re-appends or issues a second
 sync on expiry. Durability hooks and queued writes remain behind that barrier.

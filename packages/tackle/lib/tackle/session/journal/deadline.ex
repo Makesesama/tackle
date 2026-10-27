@@ -1,5 +1,12 @@
-defmodule Tackle.Session.Journal.Watchdog do
+defmodule Tackle.Session.Journal.Deadline do
   @moduledoc false
+
+  # The deadline process of one journal owner (`Tackle.Session.Journal`).
+  # Every durable request passes through it: it admits and queues requests,
+  # bounds each with the journal timeout (a live sync only pauses storage, any
+  # other stage stops the owner), tells subscribers when storage is delayed,
+  # watches the writer lock, and reports a failed owner without payloads. It
+  # is not the agent's command watchdog, `Tackle.Watchdog`.
 
   use GenServer
   require Logger
@@ -51,7 +58,7 @@ defmodule Tackle.Session.Journal.Watchdog do
   @doc "The deadline of each durable request and of the owner's cleanup, in milliseconds."
   def timeout(opts), do: Keyword.get(opts, :journal_timeout, @default_timeout)
 
-  defp via(owner), do: {:via, Registry, {@registry, {:journal_watchdog, owner}}}
+  defp via(owner), do: {:via, Registry, {@registry, {:journal_deadline, owner}}}
 
   @impl true
   def init({owner, session_id, opts}) do
@@ -60,11 +67,12 @@ defmodule Tackle.Session.Journal.Watchdog do
 
     if is_integer(timeout) and timeout > 0 do
       owner_ref = Process.monitor(owner)
-      watchdog = self()
+      deadline = self()
 
-      # A crashing watchdog must also stop an owner blocked outside its mailbox.
+      # A crashing deadline process must also stop an owner blocked outside its
+      # mailbox.
       # Linking alone is insufficient because the journal traps exits.
-      {_guard, guard_ref} = spawn_monitor(fn -> guard(owner, watchdog) end)
+      {_guard, guard_ref} = spawn_monitor(fn -> guard(owner, deadline) end)
       token = make_ref()
       timer = Process.send_after(self(), {:expired, token}, timeout)
 
@@ -277,7 +285,7 @@ defmodule Tackle.Session.Journal.Watchdog do
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{guard_ref: ref} = state) do
     Process.exit(state.owner, :kill)
-    {:stop, :watchdog_guard_failed, state}
+    {:stop, :deadline_guard_failed, state}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{reporters: reporters} = state)
@@ -527,18 +535,18 @@ defmodule Tackle.Session.Journal.Watchdog do
     end
   end
 
-  defp guard(owner, watchdog) do
+  defp guard(owner, deadline) do
     owner_ref = Process.monitor(owner)
-    watchdog_ref = Process.monitor(watchdog)
+    deadline_ref = Process.monitor(deadline)
 
     receive do
       {:DOWN, ^owner_ref, :process, ^owner, _reason} ->
         # Stay alive until the watcher has processed owner DOWN as well.
         receive do
-          {:DOWN, ^watchdog_ref, :process, ^watchdog, _reason} -> :ok
+          {:DOWN, ^deadline_ref, :process, ^deadline, _reason} -> :ok
         end
 
-      {:DOWN, ^watchdog_ref, :process, ^watchdog, _reason} ->
+      {:DOWN, ^deadline_ref, :process, ^deadline, _reason} ->
         Process.exit(owner, :kill)
     end
   end

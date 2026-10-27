@@ -15,7 +15,7 @@
 #      raw `:file.write` + fsync/fdatasync for reference, an fsync with nothing
 #      pending (what the provider gate flush costs), and term_to_binary vs
 #      JSON.encode! for the same commit envelope.
-#   B1. Journal API: a real `Tackle.Session.Journal` owner (watchdog included)
+#   B1. Journal API: a real `Tackle.Session.Journal` owner (deadline process included)
 #       timing begin_turn, append_message (user, assistant, tool result),
 #       tool_started, settle_turn, and flush individually, bucketed by session
 #       length (commit #10, #1000, #5000).
@@ -26,7 +26,7 @@
 #       Projection.apply_commit, the catalog entry (rebuilt with the public
 #       Catalog.Entry.from_projection/2 because `catalog_entry/2` is private;
 #       search text is built only when searching), and the Catalog.record/1 cast. The append/sync themselves are
-#       section A. Watchdog `stage` casts and the watchdog request hop are not
+#       section A. Deadline `stage` casts and the deadline process request hop are not
 #       separately reachable; the report estimates the hop as B1 flush minus
 #       the raw empty-sync floor and decomposes B1 into B2 + the rest.
 #   C. End-to-end ReAct turn through Tackle.Runtime: a fake LLM returns K tool
@@ -42,7 +42,7 @@
 #      WARNING: contention slows every fsync on that filesystem, including the
 #      journals of any live Tackle session whose TACKLE_HOME is on the same
 #      disk. A live session fails closed when a journal stage exceeds its
-#      watchdog bound, so do not run contention mode (BENCH_CONTENTION=1/both)
+#      journal deadline, so do not run contention mode (BENCH_CONTENTION=1/both)
 #      while an agent session on the same disk is running, including one that
 #      launched this script. A contended run took down the parent session
 #      once; the cause was never confirmed.
@@ -690,7 +690,7 @@ end
 
 defmodule Bench.JournalAPI do
   @moduledoc false
-  # B1: a real journal owner, its watchdog, disk_log, and the live Catalog.
+  # B1: a real journal owner, its deadline process, disk_log, and the live Catalog.
   import Bench.Stats, only: [time: 1, summarize: 1]
   alias Tackle.Session.Journal
   alias Tackle.Runtime.ID
@@ -1406,7 +1406,7 @@ defmodule Bench.Report do
     """
     ### B1. Journal API — #{label}
 
-    Real `Tackle.Session.Journal` owner (+ watchdog, disk_log, live Catalog);
+    Real `Tackle.Session.Journal` owner (+ deadline process, disk_log, live Catalog);
     #{b1.commits} commits; message content = BENCH_MSG_BYTES. First
     begin_turn (materializes the journal): #{fmt(b1.first_begin_turn_us)}; close: #{fmt(b1.close_us)}.
 
@@ -1417,7 +1417,7 @@ defmodule Bench.Report do
     #{table(["commit window"] ++ stat_header() ++ ["assistant p50", "tool result p50", "tool_started p50"], window_rows)}
 
     - `flush` (provider gate, nothing pending): #{stat_line(b1.flush)}
-    - `await_idle` round trip (through the watchdog, no disk): #{stat_line(b1.idle_roundtrip)}
+    - `await_idle` round trip (through the deadline process, no disk): #{stat_line(b1.idle_roundtrip)}
     """
   end
 
@@ -1479,7 +1479,7 @@ defmodule Bench.Report do
     """
     #{table(["commit window", "API p50", "in-process stages p50", "API − stages (disk + hops)", "stages share"], rows)}
 
-    Same-run references: disk_log log+sync p50 #{log_sync}. Watchdog hop
+    Same-run references: disk_log log+sync p50 #{log_sync}. Deadline process hop
     estimate: B1 flush p50 #{fmt(b1.flush.p50)} − raw empty sync p50
     #{fmt(empty_sync)} = #{fmt(b1.flush.p50 - empty_sync)} (fsync jitter between
     runs is of the same order, so treat small or negative values as ≈ 0).

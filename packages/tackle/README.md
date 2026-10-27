@@ -443,7 +443,7 @@ that would not replay) returns an error and leaves the journal usable; a
 message refused that way fails the turn with `{:message_not_journaled, reason}`,
 and the session rebuilds its state from the journal.
 
-An independent watchdog uses a 15-second threshold. A live `sync` that exceeds
+An independent deadline process uses a 15-second threshold. A live `sync` that exceeds
 it pauses durable progress instead of killing the session. The original sync
 stays in flight with the same pending commit ID and sequence: it is neither
 re-appended nor retried. Successful completion resumes automatically. Session
@@ -475,13 +475,13 @@ Direct journal inspection retains its 60-second client deadline; Session
 snapshots do not wait for storage.
 
 A fatal stall automatically captures the operation, stage, sequence, elapsed time,
-queue length, and payload-free stack frames. The watchdog logs this diagnostic
+queue length, and payload-free stack frames. The deadline process logs this diagnostic
 and makes a bounded, best-effort attempt to save `journal-failure.json` beside
 `session.dlog` with private file permissions, including when the TUI mutes console
 logging. Unexpected journal exits (including disk errors and writer-lock loss)
 also produce a report with a payload-free failure category and the last
 stage/sequence before cleanup. Crash reports and `:sys.get_status/1` of the
-journal, its watchdog, the catalog, and the bash watchdog show no transcript,
+journal, its deadline process, the catalog, and the bash watchdog show no transcript,
 command, or option values either. Normal shutdown does not create a
 failure report. Check `recorded_at`: a report from an earlier crash is retained
 when the session resumes. If storage itself is stuck, saving that diagnostic may

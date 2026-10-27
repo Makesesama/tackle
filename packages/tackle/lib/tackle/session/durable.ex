@@ -24,7 +24,7 @@ defmodule Tackle.Session.Durable do
   alias Tackle.Runtime.AgentRef
   alias Tackle.Session.Committer
   alias Tackle.Session.Journal
-  alias Tackle.Session.Journal.Watchdog
+  alias Tackle.Session.Journal.Deadline
   alias Tackle.Session.Loader
   alias Tackle.Session.Persistence
   alias Tackle.Session.Projection
@@ -107,7 +107,7 @@ defmodule Tackle.Session.Durable do
              override_config: spec.override_config,
              tree: spec.tree
            ) do
-      {:ok, %{opened | storage: Watchdog.subscribe(journal, self())}}
+      {:ok, %{opened | storage: Deadline.subscribe(journal, self())}}
     end
   end
 
