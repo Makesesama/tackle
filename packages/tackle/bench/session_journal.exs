@@ -23,9 +23,9 @@
 #       `commit/3` calls, in the same order and on a growing projection —
 #       event encoding, Log.commit, Log.validate_commit + Codec.validate,
 #       term_to_binary (what `:disk_log.log/2` does in the caller),
-#       Projection.apply_commit, the catalog summary (rebuilt from the public
-#       Projection.metadata/1 because `build_summary/1` is private; search text
-#       is built only when searching), and the Catalog.record/1 cast. The append/sync themselves are
+#       Projection.apply_commit, the catalog entry (rebuilt with the public
+#       Catalog.Entry.from_projection/2 because `catalog_entry/2` is private;
+#       search text is built only when searching), and the Catalog.record/1 cast. The append/sync themselves are
 #       section A. Watchdog `stage` casts and the watchdog request hop are not
 #       separately reachable; the report estimates the hop as B1 flush minus
 #       the raw empty-sync floor and decomposes B1 into B2 + the rest.
@@ -819,6 +819,7 @@ defmodule Bench.Stages do
   import Bench.Stats, only: [time: 1, summarize: 1]
   alias Bench.Workload
   alias Tackle.Session.Catalog
+  alias Tackle.Session.Catalog.Entry
   alias Tackle.Session.Codec
   alias Tackle.Session.Log
   alias Tackle.Session.Projection
@@ -1007,13 +1008,10 @@ defmodule Bench.Stages do
      }}
   end
 
-  # Mirrors the journal's private build_summary/1.
+  # Mirrors the journal's private catalog_entry/2.
   defp build_summary(state) do
     status = if state.active?, do: :active, else: state.projection.status
-
-    state.projection
-    |> Map.put(:status, status)
-    |> Projection.metadata()
+    Entry.from_projection(state.projection, status: status)
   end
 
   defp now, do: DateTime.to_iso8601(DateTime.utc_now())
@@ -1491,8 +1489,8 @@ defmodule Bench.Report do
     Codec.validate of tool/settle data), `envelope` = Log.commit, `validate` =
     Log.validate_commit + Codec.validate of the whole commit, `term_to_binary` =
     the encoding `:disk_log.log/2` performs in the journal process, `projection`
-    = Projection.apply_commit, `summary` = the private build_summary/1 rebuilt
-    from Projection.metadata/1, `catalog` = Catalog.record/1
+    = Projection.apply_commit, `summary` = the private catalog_entry/2 rebuilt
+    with Catalog.Entry.from_projection/2, `catalog` = Catalog.record/1
     (a cast). Disk append+sync come on top (A: ~#{fmt(raw_log_sync_p50)} p50 for 4 KB).
 
     #{table(["commit window" | Enum.map(stage_names, &to_string/1)], rows ++ [overall])}

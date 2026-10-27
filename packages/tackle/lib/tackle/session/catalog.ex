@@ -43,15 +43,6 @@ defmodule Tackle.Session.Catalog do
   @rebuild_session_timeout 2_000
   @search_text_timeout 5_000
 
-  # The statuses an entry can have, by name. Earlier versions recorded
-  # `"closed"` for a session that is clean now.
-  @statuses %{
-    "clean" => :clean,
-    "interrupted" => :interrupted,
-    "recovered" => :recovered,
-    "active" => :active
-  }
-
   @type filters :: %{
           optional(:text) => String.t() | nil,
           optional(:cwd) => String.t() | nil,
@@ -82,16 +73,17 @@ defmodule Tackle.Session.Catalog do
   end
 
   @doc """
-  Records a summary produced by a durable journal commit.
+  Records the entry of a session, such as one a durable journal commit
+  produced (`Tackle.Session.Catalog.Entry.from_projection/2`).
 
   Safe to call before the catalog is started and from any process; a missing
   catalog is a stale projection, not a durable failure.
   """
-  @spec record(map()) :: :ok
-  def record(summary) when is_map(summary) do
+  @spec record(Entry.t()) :: :ok
+  def record(%Entry{} = entry) do
     case Process.whereis(__MODULE__) do
       nil -> :ok
-      _pid -> GenServer.cast(__MODULE__, {:record, summary})
+      _pid -> GenServer.cast(__MODULE__, {:record, entry})
     end
 
     :ok
@@ -169,40 +161,10 @@ defmodule Tackle.Session.Catalog do
     GenServer.call(__MODULE__, {:rebuild, opts}, :infinity)
   end
 
-  @doc "Encodes one summary map into durable sidecar plain data."
-  @spec encode_summary(map()) :: map()
-  def encode_summary(summary) do
-    summary
-    |> Enum.map(fn {key, value} -> {to_string(key), encode_value(value)} end)
-    |> Map.new()
-  end
-
-  @doc "Decodes a sidecar summary back into the internal entry shape."
-  @spec decode_summary(map()) :: Entry.t()
-  def decode_summary(data) when is_map(data) do
-    %Entry{
-      session_id: data["session_id"],
-      title: data["title"],
-      cwd: data["cwd"],
-      created_at: data["created_at"],
-      updated_at: data["updated_at"],
-      status: decode_status(data["status"]),
-      model: data["model"],
-      tags: data["tags"] || [],
-      message_count: data["message_count"] || 0,
-      preview: data["preview"],
-      last_indexed_seq: data["last_indexed_seq"] || 0,
-      parent_session_id: data["parent_session_id"],
-      archived: data["archived"] == true,
-      context_tokens: data["context_tokens"],
-      search_text: data["search_text"]
-    }
-  end
-
   @doc false
-  # Encodes the summary sidecar of a projection. `journal` is what
-  # `journal_stat/1` returned for the journal file the projection describes,
-  # so a rebuild can tell whether the file changed since.
+  # Encodes the summary sidecar of a projection, with its search text.
+  # `journal` is what `journal_stat/1` returned for the journal file the
+  # projection describes, so a rebuild can tell whether the file changed since.
   @spec sidecar(Projection.t(), map() | nil) :: binary()
   def sidecar(%Projection{} = projection, journal) do
     payload = %{
@@ -210,7 +172,7 @@ defmodule Tackle.Session.Catalog do
       "session_id" => projection.session_id,
       "last_indexed_seq" => projection.last_seq,
       "journal" => journal,
-      "summary" => projection |> summary_for() |> encode_summary()
+      "summary" => projection |> Entry.from_projection(search_text: true) |> Entry.to_sidecar()
     }
 
     :erlang.term_to_binary(payload, [:compressed])
@@ -262,8 +224,7 @@ defmodule Tackle.Session.Catalog do
   def handle_continue(:rebuild, state), do: {:noreply, start_rebuild(state, state.opts, nil)}
 
   @impl true
-  def handle_cast({:record, summary}, state) do
-    entry = to_entry(summary)
+  def handle_cast({:record, %Entry{} = entry}, state) do
     insert(state.table, entry)
     {:noreply, touch(state, entry.session_id, :recorded)}
   end
@@ -449,7 +410,7 @@ defmodule Tackle.Session.Catalog do
   defp from_sidecar(session_id, opts) do
     case read_sidecar(session_id, opts) do
       {:ok, sidecar} ->
-        entry = sidecar["summary"] |> decode_summary() |> located(session_id, opts)
+        entry = sidecar["summary"] |> Entry.from_sidecar() |> located(session_id, opts)
         if current?(sidecar, session_id, opts), do: {:current, entry}, else: {:replay, entry}
 
       :error ->
@@ -473,7 +434,7 @@ defmodule Tackle.Session.Catalog do
 
   defp from_journal(session_id, opts) do
     with {:ok, projection} <- Reader.projection(session_id, opts) do
-      {:ok, projection |> summary_for() |> to_entry() |> located(session_id, opts)}
+      {:ok, projection |> Entry.from_projection(search_text: true) |> located(session_id, opts)}
     end
   end
 
@@ -522,43 +483,9 @@ defmodule Tackle.Session.Catalog do
     ArgumentError -> :error
   end
 
-  defp summary_for(%Projection{} = projection) do
-    projection
-    |> Projection.metadata()
-    |> Map.put(:search_text, Projection.search_text(projection))
-  end
-
   defp insert(table, %{} = entry) do
     :ets.insert(table, {entry.session_id, entry})
     :ok
-  end
-
-  defp to_entry(summary) do
-    %Entry{
-      session_id: fetch_value(summary, :session_id),
-      title: fetch_value(summary, :title),
-      cwd: fetch_value(summary, :cwd),
-      created_at: fetch_value(summary, :created_at),
-      updated_at: fetch_value(summary, :updated_at),
-      status: summary |> fetch_value(:status) |> decode_status(),
-      model: fetch_value(summary, :model),
-      tags: fetch_value(summary, :tags, []),
-      message_count: fetch_value(summary, :message_count, 0),
-      preview: fetch_value(summary, :preview),
-      last_indexed_seq: fetch_value(summary, :last_indexed_seq, 0),
-      parent_session_id: fetch_value(summary, :parent_session_id),
-      archived: fetch_value(summary, :archived, false) == true,
-      context_tokens: fetch_value(summary, :context_tokens),
-      search_text: fetch_value(summary, :search_text),
-      journal_path: fetch_value(summary, :journal_path)
-    }
-  end
-
-  defp fetch_value(summary, key, default \\ nil) do
-    case Map.get(summary, key) do
-      nil -> Map.get(summary, to_string(key), default)
-      value -> value
-    end
   end
 
   defp filter(entries, filters) do
@@ -729,20 +656,12 @@ defmodule Tackle.Session.Catalog do
 
   # A status may be named by a string, as a JSON host sends it; one that names
   # no status matches nothing.
-  defp normalize_filters(%{status: status} = filters) when is_binary(status),
-    do: %{filters | status: Map.get(@statuses, status, status)}
+  defp normalize_filters(%{status: status} = filters) when is_binary(status) do
+    case Entry.status_named(status) do
+      {:ok, status} -> %{filters | status: status}
+      :error -> filters
+    end
+  end
 
   defp normalize_filters(filters) when is_map(filters), do: filters
-
-  defp decode_status(nil), do: nil
-  defp decode_status(status) when is_atom(status), do: status
-
-  defp decode_status(status) when is_binary(status), do: Map.get(@statuses, status, :clean)
-
-  defp encode_value(nil), do: nil
-  defp encode_value(value) when is_boolean(value), do: value
-  defp encode_value(value) when is_atom(value), do: Atom.to_string(value)
-  defp encode_value(value) when is_list(value), do: Enum.map(value, &encode_value/1)
-  defp encode_value(value) when is_map(value), do: encode_summary(value)
-  defp encode_value(value), do: value
 end

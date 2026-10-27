@@ -61,6 +61,7 @@ defmodule Tackle.Session.Journal do
   alias Tackle.Lib.Tree.Change
   alias Tackle.Runtime.ID
   alias Tackle.Session.Catalog
+  alias Tackle.Session.Catalog.Entry
   alias Tackle.Session.Codec
   alias Tackle.Session.Compression
   alias Tackle.Session.Journal.Watchdog
@@ -729,7 +730,7 @@ defmodule Tackle.Session.Journal do
 
     case recovered do
       nil ->
-        Catalog.record(build_summary(state))
+        Catalog.record(catalog_entry(state))
         {:ok, state}
 
       info ->
@@ -799,7 +800,7 @@ defmodule Tackle.Session.Journal do
   end
 
   defp record_catalog(state, seq),
-    do: stage(:catalog, seq, fn -> Catalog.record(build_summary(state)) end)
+    do: stage(:catalog, seq, fn -> Catalog.record(catalog_entry(state)) end)
 
   defp commit_validation(commit) do
     with :ok <- Log.validate_commit(commit, commit["session_id"], commit["seq"]),
@@ -919,16 +920,16 @@ defmodule Tackle.Session.Journal do
     if Log.terminal_event?(type), do: :ok, else: {:rejected, {:invalid_terminal_event, type}}
   end
 
-  # The live summary carries no search text: building it costs O(session), so
+  # The live entry carries no search text: building it costs O(session), so
   # the catalog builds it only when a search needs it. `journal_path` lets the
   # catalog find this session's file later. While this owner runs a turn the
   # session is listed as `:active`; otherwise, and once the owner stops, with
   # the projection's status, which is what replay reports.
-  defp build_summary(state, status \\ nil) do
-    state.projection
-    |> Map.put(:status, status || live_status(state))
-    |> Projection.metadata()
-    |> Map.put(:journal_path, state.path)
+  defp catalog_entry(state, status \\ nil) do
+    Entry.from_projection(state.projection,
+      status: status || live_status(state),
+      journal_path: state.path
+    )
   end
 
   defp live_status(%{live_turn?: true}), do: :active
@@ -936,7 +937,7 @@ defmodule Tackle.Session.Journal do
 
   # The owner is stopping: a turn it still runs is interrupted from now on.
   defp record_final_summary(state) do
-    Catalog.record(build_summary(state, state.projection.status))
+    Catalog.record(catalog_entry(state, state.projection.status))
   end
 
   # Written once, when the owner stops and its log is closed, so the next

@@ -125,8 +125,8 @@ defmodule Tackle.Session.CatalogTest do
   test "filters by a status given as an atom or a string", ctx do
     cwd = unique_cwd(ctx, "status")
     Catalog.rebuild(home: ctx.home)
-    Catalog.record(%{session_id: "running", cwd: cwd, status: :active, updated_at: "2"})
-    Catalog.record(%{session_id: "stopped", cwd: cwd, status: :clean, updated_at: "1"})
+    Catalog.record(%Entry{session_id: "running", cwd: cwd, status: :active, updated_at: "2"})
+    Catalog.record(%Entry{session_id: "stopped", cwd: cwd, status: :clean, updated_at: "1"})
 
     for status <- [:active, "active"] do
       assert {:ok, %{sessions: [%{session_id: "running"}]}} =
@@ -214,7 +214,7 @@ defmodule Tackle.Session.CatalogTest do
     refute Map.has_key?(payload, "journal")
 
     assert %Entry{status: :clean, context_tokens: nil, title: "Sidecar title"} =
-             Catalog.decode_summary(payload["summary"])
+             Entry.from_sidecar(payload["summary"])
 
     assert %{indexed: 1, stale: 0, skipped: 0} = Catalog.rebuild(home: ctx.home)
 
@@ -272,7 +272,7 @@ defmodule Tackle.Session.CatalogTest do
         # The rebuild is replaying the journal once its open waits.
         assert eventually(fn -> disk_log_waiting?() end) == :ok
 
-        Catalog.record(%{session_id: "live", title: "Live", updated_at: "9"})
+        Catalog.record(%Entry{session_id: "live", title: "Live", updated_at: "9"})
         listed = Catalog.list(%{})
         Task.await(rebuild, :infinity)
         {listed, Catalog.get("live")}
@@ -328,7 +328,7 @@ defmodule Tackle.Session.CatalogTest do
     # An entry recorded earlier still points at the file; searching it falls
     # back to the entry's metadata.
     {:ok, path} = Storage.journal_path(broken.session_id, home: ctx.home)
-    Catalog.record(%{session_id: broken.session_id, title: "Broken", journal_path: path})
+    Catalog.record(%Entry{session_id: broken.session_id, title: "Broken", journal_path: path})
 
     assert {:ok, %{sessions: [%{session_id: id}]}} = Tackle.search_sessions("Broken")
     assert id == broken.session_id

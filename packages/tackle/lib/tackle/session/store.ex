@@ -16,6 +16,7 @@ defmodule Tackle.Session.Store do
 
   alias Tackle.Runtime.ID
   alias Tackle.Session.Catalog
+  alias Tackle.Session.Catalog.Entry
   alias Tackle.Session.Journal
   alias Tackle.Session.Log
   alias Tackle.Session.Projection
@@ -114,12 +115,12 @@ defmodule Tackle.Session.Store do
 
   @doc "Lists durable sessions with stable cursor pagination."
   @spec list(map() | keyword()) ::
-          {:ok, %{sessions: [Catalog.Entry.t()], next_cursor: String.t() | nil}}
+          {:ok, %{sessions: [Entry.t()], next_cursor: String.t() | nil}}
   def list(filters \\ %{}), do: Catalog.list(filters)
 
   @doc "Searches durable sessions using the default indexed fields."
   @spec search(String.t(), map() | keyword()) ::
-          {:ok, %{sessions: [Catalog.Entry.t()], next_cursor: String.t() | nil}}
+          {:ok, %{sessions: [Entry.t()], next_cursor: String.t() | nil}}
   def search(query, filters \\ %{}), do: Catalog.search(query, filters)
 
   @doc """
@@ -256,21 +257,26 @@ defmodule Tackle.Session.Store do
   defp reindex(session_id, location, journal_path) do
     archived = Keyword.fetch!(location, :archived)
 
-    summary =
+    entry =
       case catalog_entry(session_id) do
-        {:ok, entry} ->
-          {:ok, entry}
+        {:ok, public} ->
+          {:ok,
+           struct!(Entry, Map.merge(public, %{archived: archived, journal_path: journal_path}))}
 
         {:error, _not_indexed} ->
-          with {:ok, projection} <- Reader.projection(session_id, location),
-               do: {:ok, summary_map(projection)}
+          with {:ok, projection} <- Reader.projection(session_id, location) do
+            {:ok,
+             Entry.from_projection(projection,
+               search_text: true,
+               archived: archived,
+               journal_path: journal_path
+             )}
+          end
       end
 
-    case summary do
-      {:ok, summary} ->
-        summary
-        |> Map.merge(%{archived: archived, journal_path: journal_path})
-        |> Catalog.record()
+    case entry do
+      {:ok, entry} ->
+        Catalog.record(entry)
 
       {:error, _reason} ->
         # The move succeeded; a stale catalog is rebuilt from the journal.
@@ -296,23 +302,15 @@ defmodule Tackle.Session.Store do
   Returns the derived catalog summary for a session, read from its journal
   when the catalog does not index it or is not running.
   """
-  @spec summary(String.t(), keyword()) :: {:ok, Catalog.Entry.t()} | {:error, term()}
+  @spec summary(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def summary(session_id, opts \\ []) do
     case catalog_entry(session_id) do
-      {:ok, entry} -> {:ok, entry}
-      {:error, _not_indexed} -> summary_from_journal(session_id, opts)
-    end
-  end
+      {:ok, entry} ->
+        {:ok, entry}
 
-  defp summary_from_journal(session_id, opts) do
-    with {:ok, projection} <- Reader.projection(session_id, opts) do
-      entry =
-        projection
-        |> summary_map()
-        |> Catalog.encode_summary()
-        |> Catalog.decode_summary()
-
-      {:ok, Catalog.Entry.public(entry)}
+      {:error, _not_indexed} ->
+        with {:ok, projection} <- Reader.projection(session_id, opts),
+             do: {:ok, projection |> Entry.from_projection() |> Entry.public()}
     end
   end
 
@@ -338,15 +336,9 @@ defmodule Tackle.Session.Store do
 
   defp index_fork(new_id, opts) do
     case Reader.projection(new_id, opts) do
-      {:ok, projection} -> Catalog.record(summary_map(projection))
+      {:ok, projection} -> Catalog.record(Entry.from_projection(projection, search_text: true))
       {:error, _reason} -> :ok
     end
-  end
-
-  defp summary_map(%Projection{} = projection) do
-    projection
-    |> Projection.metadata()
-    |> Map.put(:search_text, Projection.search_text(projection))
   end
 
   defp select_commits(commits, opts) do

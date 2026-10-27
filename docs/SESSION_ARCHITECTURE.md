@@ -819,7 +819,7 @@ replay it already performs.
 
 ### 12.3 Rebuild behavior
 
-Derived catalog data uses atomically replaced ETF sidecars (`summary.etf`) to avoid replaying every complete journal during normal startup. Each sidecar includes its schema version, session ID, projected sequence, and the size and modification time of the journal file it was built from. A journal owner writes it when it stops, after closing its log; compression writes it from a full replay before it replaces the journal with its compressed copy.
+Derived catalog data uses atomically replaced ETF sidecars (`summary.etf`) to avoid replaying every complete journal during normal startup. Each sidecar includes its schema version, session ID, projected sequence, the size and modification time of the journal file it was built from, and the session's catalog entry with its search text (`Tackle.Session.Catalog.Entry.to_sidecar/1`; `from_sidecar/1` reads what any version wrote). A journal owner writes it when it stops, after closing its log; compression writes it from a full replay before it replaces the journal with its compressed copy.
 
 On startup the catalog rebuilds its index in a task:
 
