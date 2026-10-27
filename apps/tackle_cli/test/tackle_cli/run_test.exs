@@ -5,6 +5,7 @@ defmodule Tackle.CLI.RunTest do
 
   alias Tackle.CLI.Run
   alias Tackle.Lib.Message
+  alias Tackle.Runtime.ID
   alias Tackle.Session.Journal
   alias Tackle.Session.Storage
 
@@ -265,7 +266,7 @@ defmodule Tackle.CLI.RunTest do
     {:ok, journal} = Journal.start_link(session_id: session_id, home: home, cwd: File.cwd!())
     Process.unlink(journal)
 
-    assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "before crash")
+    assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "before crash", ID.generate())
     assert :ok = Journal.append_message(journal, Message.user("before crash"))
     assert :ok = Journal.settle_turn(journal, "turn.completed", %{})
     GenServer.stop(journal)
@@ -691,7 +692,7 @@ defmodule Tackle.CLI.RunTest do
     {:ok, journal} = Journal.start_link([session_id: session_id, home: home] ++ opts)
     Process.unlink(journal)
 
-    assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, prompt)
+    assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, prompt, ID.generate())
     assert :ok = Journal.append_message(journal, Message.user(prompt))
     assert :ok = Journal.settle_turn(journal, "turn.completed", %{})
     GenServer.stop(journal)
@@ -706,7 +707,7 @@ defmodule Tackle.CLI.RunTest do
     {:ok, journal} = Journal.start_link(session_id: session_id, home: home, cwd: File.cwd!())
     Process.unlink(journal)
 
-    assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "before crash")
+    assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "before crash", ID.generate())
     assert :ok = Journal.tool_started(journal, %{id: "call-1", name: "bash", arguments: %{}})
     GenServer.stop(journal)
 

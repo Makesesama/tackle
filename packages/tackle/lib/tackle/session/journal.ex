@@ -87,7 +87,6 @@ defmodule Tackle.Session.Journal do
           synced_seq: non_neg_integer() | nil,
           projection: Projection.t() | nil,
           live_turn?: boolean(),
-          recovered: map() | nil,
           materialized?: boolean(),
           open_opts: keyword() | nil
         }
@@ -135,13 +134,6 @@ defmodule Tackle.Session.Journal do
       [{pid, _value}] when is_pid(pid) -> {:ok, pid}
       _other -> {:error, :not_found}
     end
-  end
-
-  @spec begin_turn(GenServer.server(), :run | :continue | :repair, String.t() | nil) ::
-          {:ok, String.t()} | {:error, term()}
-  def begin_turn(journal, operation, input)
-      when operation in [:run, :continue, :repair] do
-    begin_turn(journal, operation, input, ID.generate())
   end
 
   @doc """
@@ -276,38 +268,6 @@ defmodule Tackle.Session.Journal do
   @spec projection(GenServer.server()) :: {:ok, Projection.t()} | {:error, term()}
   def projection(journal), do: call(journal, :projection)
 
-  @doc "Returns the derived catalog summary for this session."
-  @spec summary(GenServer.server()) :: {:ok, map() | nil} | {:error, term()}
-  def summary(journal), do: call(journal, :summary)
-
-  @doc "Returns the live journal status (session id, last sequence, health)."
-  @spec status(GenServer.server()) :: {:ok, map()} | {:error, term()}
-  def status(journal), do: call(journal, :status)
-
-  @doc """
-  Persistence-hook entry point: persists a settled message by session id.
-
-  Sessions without a journal — ephemeral delegated agents — are a no-op so the
-  same hook module can be installed unconditionally. `parent` is `:none` or
-  `{:tree, parent_id}`; see `append_message/4`.
-  """
-  @spec persist_message(String.t(), Message.t(), term()) :: :ok | {:error, term()}
-  def persist_message(session_id, %Message{} = message, parent \\ :none) do
-    with_journal(session_id, &append_message(&1, message, parent))
-  end
-
-  @doc "Persistence-hook entry point: persists a tool intent by session id."
-  @spec persist_tool_started(String.t(), map()) :: :ok | {:error, term()}
-  def persist_tool_started(session_id, call) do
-    with_journal(session_id, &tool_started(&1, call))
-  end
-
-  @doc "Persistence-hook entry point: persists a compaction replacement by session id."
-  @spec persist_compaction(String.t(), map()) :: :ok | {:error, term()}
-  def persist_compaction(session_id, data) do
-    with_journal(session_id, &context_compacted(&1, data))
-  end
-
   @impl true
   def init(opts) do
     Process.flag(:trap_exit, true)
@@ -378,7 +338,6 @@ defmodule Tackle.Session.Journal do
       synced_seq: nil,
       projection: nil,
       live_turn?: false,
-      recovered: nil,
       materialized?: false,
       open_opts: opts
     }
@@ -596,37 +555,6 @@ defmodule Tackle.Session.Journal do
     {:reply, {:ok, state.projection}, state}
   end
 
-  def handle_call(:summary, _from, %{materialized?: false} = state),
-    do: {:reply, {:ok, nil}, state}
-
-  def handle_call(:summary, _from, state) do
-    {:reply, {:ok, build_summary(state)}, state}
-  end
-
-  def handle_call(:status, _from, %{materialized?: false} = state) do
-    status = %{
-      session_id: state.session_id,
-      last_seq: 0,
-      active_turn_id: nil,
-      recovered: nil,
-      materialized?: false
-    }
-
-    {:reply, {:ok, status}, state}
-  end
-
-  def handle_call(:status, _from, state) do
-    status = %{
-      session_id: state.session_id,
-      last_seq: state.projection.last_seq,
-      active_turn_id: live_turn_id(state),
-      recovered: state.recovered,
-      materialized?: true
-    }
-
-    {:reply, {:ok, status}, state}
-  end
-
   @impl true
   def handle_info({port, {:exit_status, status}}, %{lock: %Lock{port: port}} = state) do
     {:stop, {:journal_failure, {:writer_lock_lost, status}}, state}
@@ -713,7 +641,6 @@ defmodule Tackle.Session.Journal do
       synced_seq: nil,
       projection: nil,
       live_turn?: false,
-      recovered: nil,
       materialized?: true,
       open_opts: nil
     }
@@ -809,7 +736,7 @@ defmodule Tackle.Session.Journal do
         event = Log.event("session.recovered", info)
 
         case commit(state, [event], nil) do
-          {:ok, state, _seq} -> {:ok, %{state | recovered: info}}
+          {:ok, state, _seq} -> {:ok, state}
           {_rejected_or_error, reason} -> {:error, reason}
         end
     end
@@ -1044,20 +971,6 @@ defmodule Tackle.Session.Journal do
 
   defp fail(state, reason) do
     {:stop, {:journal_failure, reason}, {:error, {:journal_failure, reason}}, state}
-  end
-
-  defp with_journal(session_id, fun) do
-    case whereis(session_id) do
-      {:ok, journal} ->
-        try do
-          fun.(journal)
-        catch
-          :exit, reason -> {:error, {:journal_unavailable, reason}}
-        end
-
-      {:error, :not_found} ->
-        :ok
-    end
   end
 
   defp cleanup_step(stage, fun) do

@@ -39,16 +39,15 @@ defmodule Tackle.Session.LoaderTest do
         end
       )
 
-    projection =
-      Projection.new(
-        %{
-          "session_id" => "persisted-session",
-          "created_at" => "2026-01-01T00:00:00Z",
-          "cwd" => nil,
-          "parent" => nil
-        },
-        model_ref: config.model_ref
-      )
+    projection = %{
+      Projection.new(%{
+        "session_id" => "persisted-session",
+        "created_at" => "2026-01-01T00:00:00Z",
+        "cwd" => nil,
+        "parent" => nil
+      })
+      | model_ref: config.model_ref
+    }
 
     assert {:ok, %{state: state}} = Loader.load(projection, config)
     assert state.session_id == "persisted-session"
@@ -58,17 +57,16 @@ defmodule Tackle.Session.LoaderTest do
   test "installs the replayed tree of a branching session as it is" do
     {:ok, config} = Config.new(providers: [Adapter], model: "loader-test/model", tools: [])
 
-    projection =
-      Projection.new(
-        %{
-          "session_id" => "tree-session",
-          "created_at" => "2026-01-01T00:00:00Z",
-          "cwd" => nil,
-          "parent" => nil
-        },
-        model_ref: config.model_ref,
-        tree: true
-      )
+    projection = %{
+      Projection.new(%{
+        "session_id" => "tree-session",
+        "created_at" => "2026-01-01T00:00:00Z",
+        "cwd" => nil,
+        "parent" => nil
+      })
+      | model_ref: config.model_ref,
+        tree_enabled?: true
+    }
 
     projection =
       [{"u1", :user, nil}, {"a1", :assistant, "u1"}, {"u2", :user, nil}]
@@ -101,16 +99,15 @@ defmodule Tackle.Session.LoaderTest do
   test "loads a journal without branching, compactions included, into a tree" do
     {:ok, config} = Config.new(providers: [Adapter], model: "loader-test/model", tools: [])
 
-    projection =
-      Projection.new(
-        %{
-          "session_id" => "linear-session",
-          "created_at" => "2026-01-01T00:00:00Z",
-          "cwd" => nil,
-          "parent" => nil
-        },
-        model_ref: config.model_ref
-      )
+    projection = %{
+      Projection.new(%{
+        "session_id" => "linear-session",
+        "created_at" => "2026-01-01T00:00:00Z",
+        "cwd" => nil,
+        "parent" => nil
+      })
+      | model_ref: config.model_ref
+    }
 
     messages =
       for {id, role} <- [{"u1", :user}, {"a1", :assistant}, {"u2", :user}] do
@@ -233,16 +230,16 @@ defmodule Tackle.Session.LoaderTest do
   end
 
   defp selection_projection(model_ref, thinking) do
-    Projection.new(
-      %{
+    %{
+      Projection.new(%{
         "session_id" => "selection-session",
         "created_at" => "2026-01-01T00:00:00Z",
         "cwd" => nil,
         "parent" => nil
-      },
-      model_ref: model_ref,
-      thinking: thinking
-    )
+      })
+      | model_ref: model_ref,
+        thinking: thinking
+    }
   end
 
   defp message_event(message) do

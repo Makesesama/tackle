@@ -693,10 +693,11 @@ defmodule Bench.JournalAPI do
   # B1: a real journal owner, its watchdog, disk_log, and the live Catalog.
   import Bench.Stats, only: [time: 1, summarize: 1]
   alias Tackle.Session.Journal
+  alias Tackle.Runtime.ID
   alias Bench.Workload
 
   def run(knobs, home, commits) do
-    session_id = Tackle.Runtime.ID.generate()
+    session_id = ID.generate()
 
     {:ok, journal} =
       Journal.start_link(
@@ -708,8 +709,11 @@ defmodule Bench.JournalAPI do
 
     # The first begin_turn materializes the journal (lock, open, header, created).
     plan = Workload.plan(commits, knobs.turn_commits)
-    {first_us, {:ok, _}} = time(fn -> Journal.begin_turn(journal, :run, "bench") end)
-    {:ok, %{last_seq: base_seq}} = Journal.status(journal)
+
+    {first_us, {:ok, _}} =
+      time(fn -> Journal.begin_turn(journal, :run, "bench", ID.generate()) end)
+
+    {:ok, %{last_seq: base_seq}} = Journal.projection(journal)
 
     {samples, _parent} =
       plan
@@ -720,30 +724,30 @@ defmodule Bench.JournalAPI do
         {%{op: Workload.op_name(op), seq: seq, us: us}, parent}
       end)
 
-    {:ok, status} = Journal.status(journal)
+    {:ok, %{last_seq: last_seq}} = Journal.projection(journal)
 
     flush =
       for _ <- 1..knobs.flush_samples//1,
           do: elem(time(fn -> :ok = Journal.flush(journal) end), 0)
 
-    status_rt =
+    idle_rt =
       for _ <- 1..knobs.flush_samples//1,
-          do: elem(time(fn -> {:ok, _} = Journal.status(journal) end), 0)
+          do: elem(time(fn -> :ok = Journal.await_idle(journal) end), 0)
 
     {close_us, :ok} = time(fn -> GenServer.stop(journal, :normal, 60_000) end)
 
     windows =
-      windows(samples, Enum.filter(knobs.checkpoints, &(&1 <= status.last_seq)), knobs.window)
+      windows(samples, Enum.filter(knobs.checkpoints, &(&1 <= last_seq)), knobs.window)
 
     %{
-      commits: status.last_seq,
+      commits: last_seq,
       first_begin_turn_us: first_us,
       close_us: close_us,
       ops: by_op(samples),
       all: summarize(Enum.map(samples, & &1.us)),
       windows: windows,
       flush: summarize(flush),
-      status_roundtrip: summarize(status_rt)
+      idle_roundtrip: summarize(idle_rt)
     }
   end
 
@@ -754,7 +758,7 @@ defmodule Bench.JournalAPI do
   end
 
   defp run_op(journal, {:begin, _t}, parent, _bytes) do
-    {us, {:ok, _}} = time(fn -> Journal.begin_turn(journal, :run, "bench") end)
+    {us, {:ok, _}} = time(fn -> Journal.begin_turn(journal, :run, "bench", ID.generate()) end)
     {us, parent}
   end
 
@@ -1163,7 +1167,7 @@ defmodule Bench.E2E do
 
   defp sync_count({journal, counter}) do
     # A round trip to the owner orders its earlier trace messages before ours.
-    {:ok, _status} = Journal.status(journal)
+    {:ok, _projection} = Journal.projection(journal)
     :erlang.trace(journal, false, [:call])
     :erlang.trace_pattern({Tackle.Session.Reader, :sync, 1}, false, [:global])
     Process.sleep(20)
@@ -1224,7 +1228,7 @@ defmodule Bench.E2E do
   defp last_seq(session_id) do
     case Journal.whereis(session_id) do
       {:ok, journal} ->
-        {:ok, %{last_seq: seq}} = Journal.status(journal)
+        {:ok, %{last_seq: seq}} = Journal.projection(journal)
         seq
 
       {:error, :not_found} ->
@@ -1454,7 +1458,7 @@ defmodule Bench.Report do
     #{table(["commit window"] ++ stat_header() ++ ["assistant p50", "tool result p50", "tool_started p50"], window_rows)}
 
     - `flush` (provider gate, nothing pending): #{stat_line(b1.flush)}
-    - `status` round trip (plain GenServer.call, no watchdog, no disk): #{stat_line(b1.status_roundtrip)}
+    - `await_idle` round trip (through the watchdog, no disk): #{stat_line(b1.idle_roundtrip)}
     """
   end
 

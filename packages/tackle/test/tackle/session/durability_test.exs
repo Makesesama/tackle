@@ -205,7 +205,7 @@ defmodule Tackle.Session.DurabilityTest do
     session_id = ID.generate()
 
     {:ok, journal} = Journal.start_link(session_id: session_id, home: ctx.home)
-    {:ok, turn_id} = Journal.begin_turn(journal, :run, "interrupted")
+    {:ok, turn_id} = Journal.begin_turn(journal, :run, "interrupted", ID.generate())
     assert :ok = Journal.tool_started(journal, %{id: "call-1", name: "bash", arguments: %{}})
     assert :ok = Journal.append_message(journal, Message.tool_result("call-1", "bash", "output"))
     :ok = GenServer.stop(journal)
@@ -226,7 +226,7 @@ defmodule Tackle.Session.DurabilityTest do
     session_id = ID.generate()
 
     {:ok, journal} = Journal.start_link(session_id: session_id, home: ctx.home)
-    {:ok, _turn_id} = Journal.begin_turn(journal, :run, "interrupted")
+    {:ok, _turn_id} = Journal.begin_turn(journal, :run, "interrupted", ID.generate())
     :ok = GenServer.stop(journal)
 
     scope =
@@ -248,7 +248,7 @@ defmodule Tackle.Session.DurabilityTest do
     session_id = ID.generate()
 
     {:ok, journal} = Journal.start_link(session_id: session_id, home: ctx.home)
-    {:ok, _turn_id} = Journal.begin_turn(journal, :run, "interrupted")
+    {:ok, _turn_id} = Journal.begin_turn(journal, :run, "interrupted", ID.generate())
 
     assert :ok = Journal.append_message(journal, Message.user("interrupted"))
 
@@ -295,7 +295,7 @@ defmodule Tackle.Session.DurabilityTest do
     session_id = ID.generate()
 
     {:ok, journal} = Journal.start_link(session_id: session_id, home: ctx.home)
-    {:ok, turn_id} = Journal.begin_turn(journal, :run, "run tools")
+    {:ok, turn_id} = Journal.begin_turn(journal, :run, "run tools", ID.generate())
 
     assert :ok = Journal.append_message(journal, Message.user("run tools"))
 

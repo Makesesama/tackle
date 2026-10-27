@@ -11,6 +11,9 @@ defmodule Tackle.Session.TreeProjectionTest do
     Log.header(session_id: "session-1", created_at: "2026-01-01T00:00:00Z")
   end
 
+  # A session created with branching, as `session.created` with `"tree"` sets.
+  defp branching_projection, do: %{Projection.new(header()) | tree_enabled?: true}
+
   defp commit(seq, events) do
     Log.commit(
       session_id: "session-1",
@@ -43,12 +46,13 @@ defmodule Tackle.Session.TreeProjectionTest do
   end
 
   test "tree metadata registers the new event types" do
-    assert Log.known_event?("tree.enabled")
-    assert Log.known_event?("tree.navigated")
+    %{versions: versions} = Log.schema()
+    assert Map.has_key?(versions, "tree.enabled")
+    assert Map.has_key?(versions, "tree.navigated")
   end
 
   test "parent-linked messages form branches and the active model surface follows the position" do
-    projection = Projection.new(header(), tree: true)
+    projection = branching_projection()
 
     projection =
       projection
@@ -99,7 +103,7 @@ defmodule Tackle.Session.TreeProjectionTest do
   end
 
   test "a branch append extends the archive and rebuilds model context from its parent" do
-    projection = Projection.new(header(), tree: true)
+    projection = branching_projection()
 
     projection =
       projection
@@ -119,7 +123,7 @@ defmodule Tackle.Session.TreeProjectionTest do
   end
 
   test "an unknown parent is rejected rather than repaired" do
-    projection = Projection.new(header(), tree: true)
+    projection = branching_projection()
 
     assert_raise ProjectionError, fn ->
       Projection.apply_commit(
@@ -156,7 +160,7 @@ defmodule Tackle.Session.TreeProjectionTest do
   end
 
   test "a compaction attaches to the active branch only" do
-    projection = Projection.new(header(), tree: true)
+    projection = branching_projection()
 
     projection =
       projection

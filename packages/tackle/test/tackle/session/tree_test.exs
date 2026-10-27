@@ -199,7 +199,7 @@ defmodule Tackle.Session.TreeTest do
   test "navigation cannot bypass unresolved recovery", ctx do
     session_id = ID.generate()
     {:ok, journal} = Journal.start_link(session_id: session_id, home: ctx.home)
-    {:ok, _turn_id} = Journal.begin_turn(journal, :run, "interrupted")
+    {:ok, _turn_id} = Journal.begin_turn(journal, :run, "interrupted", ID.generate())
     :ok = GenServer.stop(journal)
 
     scope = start_durable_scope(home: ctx.home, session: [session_id: session_id])

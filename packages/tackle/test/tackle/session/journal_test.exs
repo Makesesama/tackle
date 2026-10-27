@@ -41,21 +41,14 @@ defmodule Tackle.Session.JournalTest do
       assert projection.last_seq == 0
       assert projection.messages == []
 
-      assert {:ok, status} = Journal.status(journal)
-      assert status.last_seq == 0
-      assert status.materialized? == false
-
       {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
       refute File.exists?(path)
       refute File.dir?(Path.dirname(path))
 
-      assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
 
       assert {:ok, projection} = Journal.projection(journal)
       assert projection.last_seq == 2
-
-      assert {:ok, status} = Journal.status(journal)
-      assert status.last_seq == 2
       assert File.exists?(path)
     end
 
@@ -85,8 +78,7 @@ defmodule Tackle.Session.JournalTest do
       assert :ok = Journal.append_message(journal, Message.tool_result("call-1", "read", "out"))
       assert :ok = Journal.settle_turn(journal, "turn.completed", %{})
 
-      assert {:ok, status} = Journal.status(journal)
-      assert status.last_seq == 6
+      assert {:ok, %{last_seq: 6}} = Journal.projection(journal)
 
       # turn.started and the terminal event are write-behind.
       assert :ok = Journal.flush(journal)
@@ -108,7 +100,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "a journal without branching keeps its format and refuses a branch", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       user = Message.user("hello")
       answer = Message.assistant(content: "world")
 
@@ -120,7 +112,7 @@ defmodule Tackle.Session.JournalTest do
       assert {:error, :tree_disabled} =
                Journal.append_message(journal, Message.user("branch"), {:tree, user.id})
 
-      assert {:ok, %{last_seq: 4}} = Journal.status(journal)
+      assert {:ok, %{last_seq: 4}} = Journal.projection(journal)
       assert :ok = Journal.flush(journal)
       {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
 
@@ -136,7 +128,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "a branching journal records every parent", ctx do
       {:ok, journal} = start_journal(ctx, tree: true)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       user = Message.user("hello")
       assert :ok = Journal.append_message(journal, user, {:tree, nil})
       assert :ok = Journal.append_message(journal, Message.user("sibling"), {:tree, nil})
@@ -156,15 +148,15 @@ defmodule Tackle.Session.JournalTest do
 
     test "rejects a second concurrent turn", ctx do
       {:ok, journal} = start_journal(ctx)
-      assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "one")
-      assert {:error, :turn_in_progress} = Journal.begin_turn(journal, :run, "two")
+      assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "one", ID.generate())
+      assert {:error, :turn_in_progress} = Journal.begin_turn(journal, :run, "two", ID.generate())
     end
   end
 
   describe "status classification" do
     test "a stopped owner leaves the status replay reports in the catalog and sidecar", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       assert eventually(fn -> catalog_status(ctx) == :active end) == :ok
 
       stop_journal(journal)
@@ -176,7 +168,7 @@ defmodule Tackle.Session.JournalTest do
       assert {:ok, %{status: :interrupted}} = Journal.projection(journal)
       :ok = Journal.settle_turn(journal, "turn.abandoned", %{"turn_id" => turn_id})
       assert {:ok, %{status: :clean}} = Journal.projection(journal)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "again")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "again", ID.generate())
       :ok = Journal.settle_turn(journal, "turn.completed", %{})
 
       stop_journal(journal)
@@ -189,7 +181,7 @@ defmodule Tackle.Session.JournalTest do
   describe "replay after reopen" do
     test "replay derives the same message surfaces as live commits", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       :ok = Journal.append_message(journal, Message.user("hello"))
       :ok = Journal.append_message(journal, Message.assistant(content: "world"))
       :ok = Journal.settle_turn(journal, "turn.completed", %{})
@@ -218,16 +210,15 @@ defmodule Tackle.Session.JournalTest do
       assert projection.last_seq == 4
       assert [%Message{role: :user, content: "hello"}] = Tree.transcript(projection.tree)
 
-      assert {:ok, _turn_id} = Journal.begin_turn(journal, :continue, nil)
-      assert {:ok, status} = Journal.status(journal)
-      assert status.last_seq == 5
+      assert {:ok, _turn_id} = Journal.begin_turn(journal, :continue, nil, ID.generate())
+      assert {:ok, %{last_seq: 5}} = Journal.projection(journal)
     end
   end
 
   describe "write-behind appends" do
     test "are appended in order and become durable at the next await_durable", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       assert :ok = Journal.append_message(journal, Message.user("hello"), :none, sync: false)
 
       assert :ok =
@@ -235,7 +226,7 @@ defmodule Tackle.Session.JournalTest do
                  sync: false
                )
 
-      assert {:ok, %{last_seq: 4}} = Journal.status(journal)
+      assert {:ok, %{last_seq: 4}} = Journal.projection(journal)
       log = {:tackle_session, ctx.session_id}
       :ok = :disk_log.block(log, true)
 
@@ -257,7 +248,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "one sync covers every commit appended before it", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       :ok = trace_syncs(journal)
 
       for n <- 1..5 do
@@ -273,7 +264,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "await_durable does not touch the disk when nothing is unsynced", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       # turn.started is write-behind; make it durable first.
       assert :ok = Journal.await_durable(journal)
       log = {:tackle_session, ctx.session_id}
@@ -291,7 +282,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "await_idle never syncs but waits behind a stalled sync", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       :ok = trace_syncs(journal)
       assert :ok = Journal.append_message(journal, Message.user("hello"), :none, sync: false)
       assert :ok = Journal.await_idle(journal)
@@ -320,7 +311,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "flush still syncs when nothing is unsynced", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       assert :ok = Journal.await_durable(journal)
       :ok = trace_syncs(journal)
       assert :ok = Journal.flush(journal)
@@ -332,12 +323,12 @@ defmodule Tackle.Session.JournalTest do
   describe "durability acknowledgement" do
     test "a delayed append within the deadline commits once", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 1_000)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       message = Message.assistant(content: "answer")
       :ok = :sys.suspend(journal)
 
       try do
-        task = Task.async(fn -> Journal.persist_message(ctx.session_id, message) end)
+        task = Task.async(fn -> Journal.append_message(journal, message) end)
         await_queued_append(journal, message.id)
 
         assert Task.yield(task, 20) == nil
@@ -356,7 +347,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "a stalled append kills the owner, releases callers and saves diagnostics", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 250)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       :ok = :sys.suspend(journal)
       message = Message.assistant(content: "PRIVATE PAYLOAD")
       ref = Process.monitor(journal)
@@ -382,7 +373,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "stalled disk sync pauses the owner and resumes without replay or retry", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 100)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       assert :ok = Journal.append_message(journal, Message.user("hello"))
       assert :ready = Watchdog.subscribe(journal, self())
       log = {:tackle_session, ctx.session_id}
@@ -420,7 +411,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "paused admission is bounded and queued commits stay behind sync", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 100)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       assert :ready = Watchdog.subscribe(journal, self())
       log = {:tackle_session, ctx.session_id}
       :ok = :disk_log.block(log, true)
@@ -458,7 +449,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "paused admission also bounds retained payload bytes", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 100)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       assert :ready = Watchdog.subscribe(journal, self())
       log = {:tackle_session, ctx.session_id}
       :ok = :disk_log.block(log, true)
@@ -481,7 +472,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "writer-lock loss remains fatal during a recoverable sync pause", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 100)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
 
       [{watchdog, _}] =
         Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
@@ -509,7 +500,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "failure cleanup is bounded even when disk sync is blocked", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 250)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       log = {:tackle_session, ctx.session_id}
       assert :ok = :disk_log.block(log, true)
       ref = Process.monitor(journal)
@@ -531,7 +522,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "termination cleanup is guarded even without a pending durable request", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 250)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       log = {:tackle_session, ctx.session_id}
       assert :ok = :disk_log.block(log, true)
       ref = Process.monitor(journal)
@@ -573,16 +564,16 @@ defmodule Tackle.Session.JournalTest do
 
     test "completed requests do not leave armed deadline timers", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 100)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       assert :ok = Journal.append_message(journal, Message.user("hello"))
       Process.sleep(150)
-      assert {:ok, _status} = Journal.status(journal)
+      assert {:ok, _projection} = Journal.projection(journal)
       stop_journal(journal)
     end
 
     test "a failed diagnostic write does not keep the watchdog alive", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 250)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
 
       [{watchdog, _}] =
         Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
@@ -603,7 +594,7 @@ defmodule Tackle.Session.JournalTest do
 
       try do
         {:ok, journal} = start_journal(ctx, journal_timeout: 250)
-        {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+        {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
         assert :ok = Journal.append_message(journal, Message.user("hello"))
         {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
         lock_path = Path.join(Path.dirname(path), "writer.lock")
@@ -651,7 +642,7 @@ defmodule Tackle.Session.JournalTest do
     test "healthy disk log notifications do not stop the owner", ctx do
       {:ok, journal} = start_journal(ctx)
       send(journal, {:disk_log, node(), :log, {:error_status, :ok}})
-      assert {:ok, _status} = Journal.status(journal)
+      assert {:ok, _projection} = Journal.projection(journal)
       stop_journal(journal)
     end
 
@@ -675,12 +666,12 @@ defmodule Tackle.Session.JournalTest do
 
     test "journal death releases a waiting persistence hook with an error", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       message = Message.assistant(content: "answer")
       :ok = :sys.suspend(journal)
 
       try do
-        task = Task.async(fn -> Journal.persist_message(ctx.session_id, message) end)
+        task = Task.async(fn -> Journal.append_message(journal, message) end)
         await_queued_append(journal, message.id)
         Process.exit(journal, :kill)
 
@@ -701,7 +692,7 @@ defmodule Tackle.Session.JournalTest do
 
       try do
         {:ok, journal} = start_journal(ctx)
-        {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+        {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
 
         [{watchdog, _}] =
           Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
@@ -742,7 +733,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "records disk failure even when no durable request is waiting", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       ref = Process.monitor(journal)
       send(journal, {:disk_log, node(), :log, :full})
       assert_receive {:DOWN, ^ref, :process, ^journal, {:journal_failure, :disk_full}}, 1_000
@@ -755,7 +746,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "does not serialize arbitrary exit payloads", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       ref = Process.monitor(journal)
       send(journal, {:EXIT, self(), {:unexpected, "PRIVATE PAYLOAD"}})
       assert_receive {:DOWN, ^ref, :process, ^journal, {:unexpected, _}}, 1_000
@@ -767,7 +758,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "normal teardown does not create a failure report", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
 
       [{watchdog, _}] =
         Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
@@ -792,9 +783,9 @@ defmodule Tackle.Session.JournalTest do
   describe "rejected writes" do
     test "a message that cannot be persisted is refused without stopping the owner", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       :ok = Journal.append_message(journal, Message.user("hello"))
-      {:ok, before} = Journal.status(journal)
+      {:ok, before} = Journal.projection(journal)
 
       bad_message = Message.assistant(content: "hi", provider_state: %{"pid" => self()})
 
@@ -812,16 +803,16 @@ defmodule Tackle.Session.JournalTest do
                Journal.settle_turn(journal, "turn.completed", %{"reason" => self()})
 
       assert Process.alive?(journal)
-      assert {:ok, ^before} = Journal.status(journal)
+      assert {:ok, ^before} = Journal.projection(journal)
       assert_journal_usable(ctx, journal, ["hello", "after"])
     end
 
     test "a commit that would not fold is refused before it is written", ctx do
       {:ok, journal} = start_journal(ctx, tree: true)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       user = Message.user("hello")
       :ok = Journal.append_message(journal, user, {:tree, nil})
-      {:ok, before} = Journal.status(journal)
+      {:ok, before} = Journal.projection(journal)
 
       assert {:error, {:invalid_commit, {:duplicate_entry, _id}}} =
                Journal.append_message(journal, user, {:tree, user.id})
@@ -840,7 +831,7 @@ defmodule Tackle.Session.JournalTest do
       assert {:error, {:invalid_commit, _reason}} = Journal.tree_navigated(journal, navigation)
 
       assert Process.alive?(journal)
-      assert {:ok, ^before} = Journal.status(journal)
+      assert {:ok, ^before} = Journal.projection(journal)
       assert_journal_usable(ctx, journal, ["hello", "after"])
     end
   end
@@ -915,7 +906,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "records session.recovered after a repaired open", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       :ok = Journal.append_message(journal, Message.user("hello"))
       :ok = Journal.settle_turn(journal, "turn.completed", %{})
       stop_journal(journal)
@@ -1036,7 +1027,7 @@ defmodule Tackle.Session.JournalTest do
   describe "configuration changes" do
     test "record the normalized thinking level, never a raw adapter option", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       base = config()
 
       # A provider-specific value a host set directly is not a level, and a
@@ -1065,7 +1056,7 @@ defmodule Tackle.Session.JournalTest do
   describe "status" do
     test "redacts the transcript and creation options", ctx do
       {:ok, journal} = start_journal(ctx, title: "secret title", tags: ["secret-tag"])
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "secret input")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "secret input", ID.generate())
       :ok = Journal.append_message(journal, Message.user("secret prompt"))
 
       status = inspect(:sys.get_status(journal), limit: :infinity, printable_limit: :infinity)
@@ -1076,7 +1067,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "the watchdog redacts queued request payloads", ctx do
       {:ok, journal} = start_journal(ctx, env: %{"TACKLE_SECRET" => "secret env"})
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
 
       [{watchdog, _}] =
         Registry.lookup(Tackle.Session.JournalRegistry, {:journal_watchdog, journal})
@@ -1115,7 +1106,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "after losing the writer lock the owner writes nothing more into the directory", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       {:ok, summary} = Storage.summary_path(ctx.session_id, home: ctx.home)
       %{lock: %{port: port}} = :sys.get_state(journal)
       ref = Process.monitor(journal)
@@ -1131,7 +1122,7 @@ defmodule Tackle.Session.JournalTest do
 
     test "a normal stop writes the summary sidecar", ctx do
       {:ok, journal} = start_journal(ctx)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       {:ok, summary} = Storage.summary_path(ctx.session_id, home: ctx.home)
       stop_journal(journal)
 
@@ -1150,8 +1141,8 @@ defmodule Tackle.Session.JournalTest do
       ref = Process.monitor(journal)
 
       refute_receive {:DOWN, ^ref, :process, ^journal, _reason}, 200
-      assert {:ok, %{materialized?: true}} = Journal.status(journal)
-      assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "again")
+      assert {:ok, %{last_seq: 3}} = Journal.projection(journal)
+      assert {:ok, _turn_id} = Journal.begin_turn(journal, :run, "again", ID.generate())
       stop_journal(journal)
     end
 
@@ -1185,7 +1176,7 @@ defmodule Tackle.Session.JournalTest do
     test "the journal file is private, also one an earlier version left readable", ctx do
       opts = [cwd: "/tmp/private-project"]
       {:ok, journal} = start_journal(ctx, opts)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       {:ok, path} = Storage.journal_path(ctx.session_id, [home: ctx.home] ++ opts)
       {:ok, root} = Storage.sessions_root(home: ctx.home)
 
@@ -1248,7 +1239,7 @@ defmodule Tackle.Session.JournalTest do
 
   defp create_session!(ctx) do
     {:ok, journal} = start_journal(ctx)
-    {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+    {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
     :ok = Journal.settle_turn(journal, "turn.completed", %{})
     stop_journal(journal)
   end

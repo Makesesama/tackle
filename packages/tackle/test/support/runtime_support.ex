@@ -387,11 +387,11 @@ defmodule Tackle.Test.Runtime do
   @doc """
   Returns the number of traced journal syncs received so far.
 
-  A status call to the journal is a round trip, so every sync the owner made
-  before it has already been traced.
+  A projection call to the journal is a round trip, so every sync the owner
+  made before it has already been traced.
   """
   def collect_syncs(journal) do
-    {:ok, _status} = Journal.status(journal)
+    {:ok, _projection} = Journal.projection(journal)
     count_syncs(journal, 0)
   end
 

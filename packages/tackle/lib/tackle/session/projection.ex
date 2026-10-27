@@ -50,6 +50,7 @@ defmodule Tackle.Session.Projection do
   alias Tackle.Session.ProjectionError
 
   @terminal_events ~w(turn.completed turn.errored turn.cancelled turn.crashed turn.abandoned)
+  @preview_length 200
 
   @enforce_keys [:session_id]
   defstruct session_id: nil,
@@ -126,20 +127,21 @@ defmodule Tackle.Session.Projection do
           closed_at: String.t() | nil
         }
 
-  @doc "Builds an empty projection from a validated header."
-  @spec new(map(), keyword()) :: t()
-  def new(header, opts \\ []) do
+  @doc """
+  Builds an empty projection from a validated header.
+
+  Everything else, such as the title, the model, and whether the session may
+  branch, comes from the events folded into it, starting with
+  `session.created`.
+  """
+  @spec new(map()) :: t()
+  def new(header) do
     %__MODULE__{
       session_id: header["session_id"],
       created_at: header["created_at"],
       updated_at: header["created_at"],
       cwd: header["cwd"],
-      parent: header["parent"],
-      model_ref: Keyword.get(opts, :model_ref),
-      thinking: Keyword.get(opts, :thinking),
-      title: Keyword.get(opts, :title),
-      tags: Keyword.get(opts, :tags, []),
-      tree_enabled?: Keyword.get(opts, :tree, false) or header["tree"] == true
+      parent: header["parent"]
     }
   end
 
@@ -305,13 +307,12 @@ defmodule Tackle.Session.Projection do
     }
   end
 
-  @doc "Returns the first part of the first user message as a preview."
-  @spec preview(t(), non_neg_integer()) :: String.t() | nil
-  def preview(%__MODULE__{} = projection, limit \\ 200) do
+  # The first part of the first user message, or the title without one.
+  defp preview(%__MODULE__{} = projection) do
     projection.messages
     |> Enum.find_value(fn
       %{"role" => "user", "content" => content} when is_binary(content) and content != "" ->
-        String.slice(content, 0, limit)
+        String.slice(content, 0, @preview_length)
 
       _message ->
         nil

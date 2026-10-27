@@ -9,7 +9,7 @@ defmodule Tackle.Session.LogTest do
   # message under "msg", version 2 under "message" without a "parent_id".
   defp evolved_schema do
     %{
-      versions: Map.put(Log.event_versions(), "message.appended", 3),
+      versions: Map.put(Log.schema().versions, "message.appended", 3),
       upcasters: %{
         {"message.appended", 1} => fn data ->
           data |> Map.delete("msg") |> Map.put("message", data["msg"])

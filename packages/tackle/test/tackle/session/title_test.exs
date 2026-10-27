@@ -383,7 +383,7 @@ defmodule Tackle.Session.TitleTest do
   defp untitled_session(ctx) do
     session_id = ID.generate()
     {:ok, journal} = Journal.start_link(session_id: session_id, home: ctx.home)
-    {:ok, _} = Journal.begin_turn(journal, :continue, nil)
+    {:ok, _} = Journal.begin_turn(journal, :continue, nil, ID.generate())
     :ok = Journal.settle_turn(journal, "turn.completed", %{})
     GenServer.stop(journal)
     session_id

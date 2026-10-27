@@ -72,30 +72,9 @@ defmodule Tackle.Session.Log do
           upcasters: %{optional({String.t(), pos_integer()}) => (map() -> map())}
         }
 
-  @doc "Returns the supported journal container format version."
-  @spec format_version() :: pos_integer()
-  def format_version, do: @format_version
-
-  @doc "Returns the supported commit-envelope schema version."
-  @spec schema_version() :: pos_integer()
-  def schema_version, do: @schema_version
-
-  @doc "Returns every core event type with its current version."
-  @spec event_versions() :: %{optional(String.t()) => pos_integer()}
-  def event_versions, do: @event_versions
-
   @doc "Returns the event schema of this build: current versions and upcasters."
   @spec schema() :: schema()
   def schema, do: %{versions: @event_versions, upcasters: @upcasters}
-
-  @doc "Returns the event types that settle a turn."
-  @spec terminal_events() :: [String.t()]
-  def terminal_events, do: @terminal_events
-
-  @doc "Returns true when `type` is a core event type this build understands."
-  @spec known_event?(term()) :: boolean()
-  def known_event?(type) when is_binary(type), do: Map.has_key?(@event_versions, type)
-  def known_event?(_type), do: false
 
   @doc "Builds the immutable session header."
   @spec header(keyword()) :: map()
@@ -207,17 +186,13 @@ defmodule Tackle.Session.Log do
     end
   end
 
-  @doc """
-  Upcasts one event to the current version `schema` gives its type.
-
-  Each step applies the upcaster registered for `{type, version}` to the
-  event's data. An event of an unknown type, of the current or a newer
-  version, or without an upcaster for its next step is returned unchanged, so
-  validation reports it.
-  """
-  @spec upcast_event(term(), schema()) :: term()
-  def upcast_event(%{"type" => type, "version" => version} = event, schema)
-      when is_binary(type) and is_integer(version) and version >= 1 do
+  # Upcasts one event to the current version `schema` gives its type. Each
+  # step applies the upcaster registered for `{type, version}` to the event's
+  # data. An event of an unknown type, of the current or a newer version, or
+  # without an upcaster for its next step is returned unchanged, so validation
+  # reports it.
+  defp upcast_event(%{"type" => type, "version" => version} = event, schema)
+       when is_binary(type) and is_integer(version) and version >= 1 do
     with {:ok, current} when version < current <- Map.fetch(schema.versions, type),
          {:ok, upcaster} <- Map.fetch(schema.upcasters, {type, version}) do
       event
@@ -228,7 +203,7 @@ defmodule Tackle.Session.Log do
     end
   end
 
-  def upcast_event(event, _schema), do: event
+  defp upcast_event(event, _schema), do: event
 
   @doc "Returns true when `event_type` settles a turn."
   @spec terminal_event?(term()) :: boolean()

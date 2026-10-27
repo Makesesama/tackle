@@ -43,15 +43,6 @@ defmodule Tackle.Session.Codec do
     end
   end
 
-  @doc "Returns `value` or raises when it is not durable plain data."
-  @spec validate!(term()) :: term()
-  def validate!(value) do
-    case validate(value) do
-      :ok -> value
-      {:error, reason} -> raise ArgumentError, "invalid durable value: #{inspect(reason)}"
-    end
-  end
-
   @doc """
   Recursively normalizes host values into durable plain data.
 
@@ -140,27 +131,19 @@ defmodule Tackle.Session.Codec do
 
   def decode_message(other), do: {:error, {:invalid_durable_message, other}}
 
-  @doc "Returns true when `role` is a durable message role."
-  @spec valid_role?(term()) :: boolean()
-  def valid_role?(role), do: match?({:ok, _}, decode_role(role))
+  defp encode_datetime(nil), do: nil
+  defp encode_datetime(%DateTime{} = value), do: DateTime.to_iso8601(value)
 
-  @doc false
-  @spec encode_datetime(DateTime.t() | nil) :: String.t() | nil
-  def encode_datetime(nil), do: nil
-  def encode_datetime(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp decode_datetime(nil), do: {:ok, nil}
 
-  @doc false
-  @spec decode_datetime(term()) :: {:ok, DateTime.t() | nil} | {:error, term()}
-  def decode_datetime(nil), do: {:ok, nil}
-
-  def decode_datetime(value) when is_binary(value) do
+  defp decode_datetime(value) when is_binary(value) do
     case DateTime.from_iso8601(value) do
       {:ok, datetime, _offset} -> {:ok, datetime}
       {:error, reason} -> {:error, {:invalid_timestamp, value, reason}}
     end
   end
 
-  def decode_datetime(other), do: {:error, {:invalid_timestamp, other}}
+  defp decode_datetime(other), do: {:error, {:invalid_timestamp, other}}
 
   # Content parts are opaque, durable plain data. Malformed values decode to
   # `nil` so a hand-edited session degrades to text-only instead of failing to
@@ -168,11 +151,9 @@ defmodule Tackle.Session.Codec do
   defp decode_parts(parts) when is_list(parts) and parts != [], do: parts
   defp decode_parts(_parts), do: nil
 
-  @doc false
-  @spec encode_usage(Usage.t() | nil) :: map() | nil
-  def encode_usage(nil), do: nil
+  defp encode_usage(nil), do: nil
 
-  def encode_usage(%Usage{} = usage) do
+  defp encode_usage(%Usage{} = usage) do
     usage
     |> Map.from_struct()
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
@@ -189,16 +170,14 @@ defmodule Tackle.Session.Codec do
   # Journals have always stored usage with the struct's field names as keys
   # (`encode_usage/1`), so `Usage.normalize/1`, which reads only those, decodes
   # every journal; the provider's own report stays opaque under "raw".
-  @doc false
-  @spec decode_usage(term()) :: {:ok, Usage.t() | nil} | {:error, term()}
-  def decode_usage(nil), do: {:ok, nil}
+  defp decode_usage(nil), do: {:ok, nil}
 
-  def decode_usage(%{} = data) do
+  defp decode_usage(%{} = data) do
     %Usage{} = usage = Usage.normalize(data)
     {:ok, usage}
   end
 
-  def decode_usage(other), do: {:error, {:invalid_usage, other}}
+  defp decode_usage(other), do: {:error, {:invalid_usage, other}}
 
   @doc """
   Encodes one committed compaction record into its durable map

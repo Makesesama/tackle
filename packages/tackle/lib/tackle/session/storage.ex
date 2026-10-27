@@ -14,12 +14,10 @@ defmodule Tackle.Session.Storage do
               └── <session-id>/
                   ├── session.dlog       or session.dlog.zst once idle
                   ├── summary.etf
-                  ├── checkpoint.etf
                   └── recovery/
 
-  The journal is the only required durable file. Summaries, checkpoints, and
-  catalog data are disposable projections that can always be removed and
-  rebuilt.
+  The journal is the only required durable file. Summaries and catalog data
+  are disposable projections that can always be removed and rebuilt.
 
   A journal idle for a while is stored compressed as `session.dlog.zst` (see
   `Tackle.Session.Compression`). When both forms exist, the plain journal is
@@ -43,7 +41,6 @@ defmodule Tackle.Session.Storage do
   @journal_file "session.dlog"
   @compressed_suffix ".zst"
   @summary_file "summary.etf"
-  @checkpoint_file "checkpoint.etf"
   @recovery_dir "recovery"
   @sessions_dir "sessions"
   @trash_dir "trash"
@@ -124,13 +121,6 @@ defmodule Tackle.Session.Storage do
   @spec summary_path(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def summary_path(session_id, opts \\ []) do
     with {:ok, dir} <- session_dir(session_id, opts), do: {:ok, Path.join(dir, @summary_file)}
-  end
-
-  @doc "Returns the optional replay checkpoint path for one session."
-  @spec checkpoint_path(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
-  def checkpoint_path(session_id, opts \\ []) do
-    with {:ok, dir} <- session_dir(session_id, opts),
-         do: {:ok, Path.join(dir, @checkpoint_file)}
   end
 
   @doc "Returns the recovery-artifact directory for one session."
@@ -230,7 +220,7 @@ defmodule Tackle.Session.Storage do
   @spec acquire_lock(String.t(), keyword()) :: {:ok, Lock.t()} | {:error, term()}
   def acquire_lock(session_id, opts \\ []) do
     with {:ok, dir} <- ensure_session_dir(session_id, opts) do
-      acquire_waiting(dir, opts)
+      acquire_waiting(dir)
     end
   end
 
@@ -240,12 +230,12 @@ defmodule Tackle.Session.Storage do
   @lock_wait_attempts 20
   @lock_wait_interval 100
 
-  defp acquire_waiting(dir, opts, attempt \\ 1) do
-    case Lock.acquire(dir, opts) do
+  defp acquire_waiting(dir, attempt \\ 1) do
+    case Lock.acquire(dir) do
       {:error, {:session_in_use, %{"pid" => pid}}} = busy ->
         if pid == System.pid() and attempt < @lock_wait_attempts do
           Process.sleep(@lock_wait_interval)
-          acquire_waiting(dir, opts, attempt + 1)
+          acquire_waiting(dir, attempt + 1)
         else
           busy
         end
@@ -269,7 +259,7 @@ defmodule Tackle.Session.Storage do
     with {:ok, dir} <- session_dir(session_id, opts),
          {:ok, root} <- sessions_root(opts),
          :ok <- ensure_journal(session_id, dir),
-         {:ok, lock} <- acquire_in_existing(session_id, dir, opts) do
+         {:ok, lock} <- acquire_in_existing(session_id, dir) do
       # Under the lock the directory can no longer move, so tightening it
       # cannot recreate it.
       with :ok <- ensure_journal(session_id, dir),
@@ -285,8 +275,8 @@ defmodule Tackle.Session.Storage do
 
   # The directory can vanish while the lock is awaited; the lock file then
   # cannot be opened.
-  defp acquire_in_existing(session_id, dir, opts) do
-    case acquire_waiting(dir, opts) do
+  defp acquire_in_existing(session_id, dir) do
+    case acquire_waiting(dir) do
       {:ok, lock} ->
         {:ok, lock}
 
@@ -389,7 +379,7 @@ defmodule Tackle.Session.Storage do
          :ok <- ensure_dir(session_id, dir),
          {:ok, trash} <- trash_root(opts),
          :ok <- ensure_private_dir(trash),
-         {:ok, lock} <- acquire_waiting(dir, []) do
+         {:ok, lock} <- acquire_waiting(dir) do
       destination = Path.join(trash, "#{session_id}-#{System.system_time(:millisecond)}")
 
       case File.rename(dir, destination) do
@@ -424,7 +414,7 @@ defmodule Tackle.Session.Storage do
          {:ok, destination} <- session_dir(session_id, to),
          :ok <- ensure_journal(session_id, source),
          :ok <- ensure_private_dir(Path.dirname(destination)),
-         {:ok, lock} <- acquire_waiting(source, []) do
+         {:ok, lock} <- acquire_waiting(source) do
       # Checked under the lock, so a concurrent move of this session cannot
       # pass the check before this one renames.
       with :ok <- ensure_absent(session_id, destination),

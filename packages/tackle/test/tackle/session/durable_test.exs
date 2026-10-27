@@ -67,7 +67,7 @@ defmodule Tackle.Session.DurableTest do
     test "open restores the recorded session and repairs unresolved tool calls", ctx do
       session_id = ID.generate()
       {:ok, journal} = Journal.start_link(session_id: session_id, home: ctx.home)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "run tools")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "run tools", ID.generate())
       :ok = Journal.append_message(journal, Message.user("run tools"))
       call = %{id: "call-1", name: "bash", arguments: %{}}
       :ok = Journal.append_message(journal, Message.assistant(content: nil, tool_calls: [call]))
@@ -124,7 +124,7 @@ defmodule Tackle.Session.DurableTest do
       session_id = ID.generate()
       {:ok, journal} = Journal.start_link(session_id: session_id, home: ctx.home)
       :ok = Journal.enable_tree(journal)
-      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello")
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
 
       first = Message.user("hello")
       second = Message.assistant(content: "answer")

@@ -132,15 +132,6 @@ defmodule Tackle.Session.Reader do
     end
   end
 
-  @doc "Returns the number of items currently stored in a live journal handle."
-  @spec item_count(tuple()) :: non_neg_integer()
-  def item_count(name) do
-    case :disk_log.info(name) do
-      info when is_list(info) -> Keyword.get(info, :items, 0)
-      _other -> 0
-    end
-  end
-
   defp repair_open(session_id, path, file, opts) do
     if Keyword.get(opts, :repair, false) do
       do_repair(session_id, path, file, opts)
