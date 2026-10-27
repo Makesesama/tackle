@@ -156,6 +156,25 @@ defmodule Tackle.Narrator do
     end
   end
 
+  # Tasks, digests of the runs' activity (tool arguments, assistant text),
+  # the model's selection with its provider settings, and the request options
+  # may carry secrets; crash reports and `:sys.get_status/1` show only run and
+  # call ids, timing, and option keys.
+  @impl true
+  def format_status(status), do: StatusRedaction.format_status(status, &redact_state/1)
+
+  defp redact_state(%{runs: runs, calls: calls, settings: %Settings{} = settings} = state) do
+    %{
+      state
+      | runs: Map.new(runs, fn {id, run} -> {id, Map.delete(run, :digest)} end),
+        calls: Map.new(calls, fn {id, call} -> {id, Map.delete(call, :prompt)} end),
+        settings: Map.take(settings, [:model_ref, :interval_seconds, :first_after_seconds]),
+        llm_opts: StatusRedaction.keys(state.llm_opts)
+    }
+  end
+
+  defp redact_state(state), do: state
+
   @impl true
   def handle_info(:subscribe, state) do
     case subscribe(state) do

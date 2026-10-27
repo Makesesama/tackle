@@ -6,6 +6,7 @@ defmodule Tackle.NarratorTest do
 
   alias Tackle.Config.Narration
   alias Tackle.Lib.Event
+  alias Tackle.Lib.LLM.Provider
   alias Tackle.Narrator
   alias Tackle.Runtime.Registry
 
@@ -376,6 +377,38 @@ defmodule Tackle.NarratorTest do
       assert log =~ "FunctionClauseError"
       refute log =~ "s3cr3t"
     end
+
+    test "its status shows neither tasks, activity, nor provider settings", ctx do
+      {:ok, provider} = Provider.new("narr", Writer, %{"base_url" => "https://s3cr3t.test"})
+
+      narrator =
+        start_narrator(ctx.scope, providers: [provider], llm_opts: [api_key: "s3cr3t-key"])
+
+      send_event(narrator, subagent_tool_start("call-1", "s3cr3t task"))
+      send_event(narrator, subagent_started("run-1", "call-1"))
+      send_event(narrator, subagent_progress("run-1", "call-1", read("r1", "s3cr3t.ex")))
+      assert_receive {:writer_called, writer, _opts}, 2_000
+      send(writer, {:writer_reply, answer("reading the s3cr3t file")})
+      assert_receive {:tackle_event, _sid, nil, %Event{type: :narration}}, 1_000
+      # A pending call keeps its task until its run opens.
+      send_event(narrator, subagent_tool_start("call-2", "another s3cr3t task"))
+
+      state = :sys.get_state(narrator)
+      assert state.calls["call-2"].prompt =~ "s3cr3t"
+      assert state.runs["run-1"].digest.previous =~ "s3cr3t"
+      assert state.settings.selection.provider_settings["base_url"] =~ "s3cr3t"
+
+      status =
+        narrator
+        |> :sys.get_status()
+        |> inspect(limit: :infinity, printable_limit: :infinity)
+
+      refute status =~ "s3cr3t"
+      assert status =~ "run-1"
+      assert status =~ "call-2"
+      assert status =~ "narr/fake"
+      assert status =~ ":api_key"
+    end
   end
 
   describe "started by the root backend" do
@@ -485,7 +518,7 @@ defmodule Tackle.NarratorTest do
           interval_seconds: Keyword.get(opts, :interval_seconds, 0.05),
           first_after_seconds: Keyword.get(opts, :first_after_seconds, 0.05)
         ],
-        [Writer]
+        Keyword.get(opts, :providers, [Writer])
       )
 
     task_supervisor = start_supervised!(Task.Supervisor)
