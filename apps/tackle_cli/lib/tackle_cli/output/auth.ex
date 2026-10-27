@@ -270,6 +270,12 @@ defmodule Tackle.CLI.Output.Auth do
       "#{inspect(provider)} in the \"providers\" object of config.json."
   end
 
+  def error_message({:default_provider_name, provider}) do
+    "#{inspect(provider)} is a built-in provider, so an account of that name would never " <>
+      "be used. Choose another name for `--as`, or log in to #{inspect(provider)} " <>
+      "without `--as`."
+  end
+
   def error_message({:invalid_account, provider}) do
     "The recorded account #{inspect(provider)} in auth.json is invalid."
   end

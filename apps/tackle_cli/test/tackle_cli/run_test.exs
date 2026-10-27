@@ -620,6 +620,20 @@ defmodule Tackle.CLI.RunTest do
     refute Map.has_key?(accounts, "Bad Name")
   end
 
+  test "auth login --as refuses the name of a built-in provider" do
+    Application.put_env(:tackle, :adapters, [AuthAdapter])
+
+    output =
+      capture_io(:stderr, fn ->
+        assert 1 == Run.auth_login(%{provider: "cli-auth", as: "cli-auth"})
+      end)
+
+    assert output =~ ~s("cli-auth" is a built-in provider)
+    refute_received {:auth_login, _opts}
+    assert {:ok, accounts} = Tackle.Auth.accounts()
+    refute Map.has_key?(accounts, "cli-auth")
+  end
+
   test "auth login --as refuses a name recorded for another adapter" do
     Application.put_env(:tackle, :adapters, [AuthAdapter])
     :ok = Tackle.Auth.put_account("cli-auth-taken", %{"adapter" => "not-installed"})

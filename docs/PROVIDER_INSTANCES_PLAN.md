@@ -10,10 +10,13 @@
 >   provider id.
 > - An account created from a provider id records it as its `"base"` and
 >   inherits that provider's merged settings, minus `"api_key_env"` (see §5).
-> - `auth.json` accounts whose adapter a host does not include, or whose id
->   names a default or `config.json` provider of another adapter, are skipped
->   instead of failing; so are `config.json` entries naming an adapter type
->   the host does not include. `login --as` refuses such names up front.
+> - `auth.json` accounts whose adapter a host does not include, whose id names
+>   a default provider of any adapter, or whose id names a `config.json`
+>   provider of another adapter are skipped instead of failing; so are
+>   `config.json` entries naming an adapter type the host does not include.
+>   `login --as` refuses such names up front: a default provider's id with
+>   `{:default_provider_name, NAME}`, the others with
+>   `{:provider_adapter_conflict, NAME}`.
 > - Selections carry `:provider_id`/`:provider_settings`
 >   (`Selection.provider/1` rebuilds the struct) instead of `:provider` plus a
 >   type-id `adapter_id`.

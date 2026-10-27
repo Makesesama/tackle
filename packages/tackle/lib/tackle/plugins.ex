@@ -37,8 +37,9 @@ defmodule Tackle.Plugins do
   from. A `config.json` entry for the account's own id merges over that, and
   may name the account's own `"api_key_env"`. Like
   `auth.json` itself, accounts are shared by every host, so an account is
-  skipped when this host lacks its adapter or when its id names a default or
-  `config.json` provider of another adapter.
+  skipped when this host lacks its adapter, when its id names a default
+  provider of any adapter, or when its id names a `config.json` provider of
+  another adapter.
 
   Providers keep their first position; new providers follow the defaults,
   accounts before configured providers, each group sorted by id.

@@ -906,8 +906,9 @@ naming a different adapter than a default provider of that id fails with
 `{:provider_adapter_conflict, id}`; an entry without an `adapter` or with an
 invalid id is also an error. `config.json` and `auth.json` are shared by every
 host on the machine, so an entry naming an adapter type the running host does
-not include is skipped, and so is an account whose adapter is missing or whose
-id names a default or `config.json` provider of another adapter. A model
+not include is skipped, and so is an account whose adapter is missing, whose
+id names a default provider of any adapter, or whose id names a `config.json`
+provider of another adapter. A model
 reference always names a provider, never an adapter type. The former
 `provider_options` field is removed; declare settings under `providers`
 instead.
@@ -920,12 +921,13 @@ account's settings are its base provider's merged settings (defaults plus
 `config.json`) without `"api_key_env"`, so a second account never silently
 uses the first one's environment key; an account created from an adapter type
 id, or whose base is gone, starts without settings. A `config.json` entry for
-the account's own id merges over that. `login --as` refuses a `NAME` already
-used by a provider or recorded account of another adapter, including an
-account for an adapter the running host lacks, with
-`{:provider_adapter_conflict, NAME}`, before the adapter's login runs; the
-account is recorded only after the login succeeded and its credentials were
-stored.
+the account's own id merges over that. `login --as` refuses, before the
+adapter's login runs, a `NAME` that is a default provider's id
+(`{:default_provider_name, NAME}`; log in to that provider without `--as`)
+and a `NAME` already used by a `config.json` provider or recorded account of
+another adapter, including an account for an adapter the running host lacks
+(`{:provider_adapter_conflict, NAME}`); the account is recorded only after the
+login succeeded and its credentials were stored.
 
 `Tackle.Config.load/1` reads both sources itself (pass `:accounts` to supply
 the accounts explicitly), and `Tackle.Config.new/1` takes `:providers`:

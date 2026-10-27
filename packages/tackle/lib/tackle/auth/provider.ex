@@ -83,10 +83,14 @@ defmodule Tackle.Auth.Provider do
   creates the account `name` on that adapter (or on the named provider's
   adapter, inheriting its settings), and its credentials are stored under
   `name`. The account is recorded only after the login succeeded and its
-  credentials were stored. `name` must be a valid provider id and must not
-  name a provider or a recorded account of another adapter (including an
-  account for an adapter this host lacks); otherwise the login fails with
-  `{:provider_adapter_conflict, name}` before the adapter is called.
+  credentials were stored. `name` must be a valid provider id
+  (`{:invalid_provider_id, name}`), must not be the id of a default provider
+  of any adapter (`{:default_provider_name, name}`; `Tackle.Plugins` never uses
+  such an account, so log in to that provider without `as:`), and must not name
+  a `config.json` provider or a recorded account of another adapter, including
+  an account for an adapter this host lacks
+  (`{:provider_adapter_conflict, name}`). Each is checked before the adapter
+  is called.
   """
   @spec login(String.t(), keyword()) :: :ok | {:error, term()}
   def login(provider_id, opts \\ []) when is_list(opts) do
@@ -164,6 +168,7 @@ defmodule Tackle.Auth.Provider do
     with :ok <- validate_name(name),
          {:ok, accounts} <- current_accounts(opts),
          {:ok, entries} <- Plugins.provider_entries(plugin_opts(opts)),
+         :ok <- check_default(entries, name),
          {:ok, adapter, base} <- login_source(id, entries, accounts),
          {:ok, adapter_id} <- Provider.adapter_id(adapter),
          :ok <- check_recorded(accounts, name, adapter_id),
@@ -227,6 +232,14 @@ defmodule Tackle.Auth.Provider do
     end
   end
 
+  # The merge skips an account named like a default provider of any adapter,
+  # so such an account would never be used.
+  defp check_default(entries, name) do
+    if Enum.any?(entries, &(&1.source == :default and &1.provider.id == name)),
+      do: {:error, {:default_provider_name, name}},
+      else: :ok
+  end
+
   # Recorded accounts are checked directly: the merge skips accounts whose
   # adapter this host lacks, and those must not be overwritten either.
   defp check_recorded(accounts, name, adapter_id) do
@@ -240,8 +253,8 @@ defmodule Tackle.Auth.Provider do
   defp account(adapter_id, nil), do: %{"adapter" => adapter_id}
   defp account(adapter_id, base), do: %{"adapter" => adapter_id, "base" => base}
 
-  # The merge skips an account whose id names a provider of another adapter,
-  # so the name then resolves to that provider.
+  # The merge skips an account whose id names a `config.json` provider of
+  # another adapter, so the name then resolves to that provider.
   defp find_account(name, adapter, providers) do
     case find_provider(name, providers) do
       {:ok, %Provider{adapter: ^adapter} = provider} -> {:ok, provider}

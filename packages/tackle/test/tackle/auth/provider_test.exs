@@ -290,11 +290,7 @@ defmodule Tackle.Auth.ProviderTest do
     assert "multi-cloud" in supported
     assert "multi" in supported
 
-    # "full" already names a provider of another adapter.
-    assert {:error, {:provider_adapter_conflict, "full"}} =
-             Provider.login("multi", Keyword.put(opts, :as, "full"))
-
-    # So does a config.json provider.
+    # A config.json provider of another adapter owns its name.
     assert {:error, {:provider_adapter_conflict, "local"}} =
              Provider.login(
                "multi",
@@ -313,6 +309,27 @@ defmodule Tackle.Auth.ProviderTest do
     refute Map.has_key?(accounts(), "full")
     refute Map.has_key?(accounts(), "local")
     assert :error = Auth.fetch("work")
+  end
+
+  # The merge skips an account named like a default provider, of its own
+  # adapter or another, so such an account would be recorded but never used.
+  test "login as refuses the id of any default provider" do
+    opts = [adapters: [FullAdapter, MultiAdapter], config_providers: %{}]
+
+    for {id, name} <- [
+          {"multi", "multi-local"},
+          {"multi-cloud", "multi-local"},
+          {"multi", "full"}
+        ] do
+      assert {:error, {:default_provider_name, ^name}} =
+               Provider.login(id, Keyword.put(opts, :as, name))
+    end
+
+    refute_received {:login, _opts}
+    refute Map.has_key?(accounts(), "multi-local")
+    refute Map.has_key?(accounts(), "full")
+    assert :error = Auth.fetch("multi-local")
+    assert :error = Auth.fetch("full")
   end
 
   test "login as never replaces an account of another adapter" do

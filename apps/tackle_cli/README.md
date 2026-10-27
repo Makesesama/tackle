@@ -116,8 +116,9 @@ tackle auth logout codex-personal
 under `NAME`. The account is recorded in `$TACKLE_HOME/auth.json` only after
 the login succeeded, next to its credentials, so it exists only while it is
 logged in: `auth logout NAME` deletes both. Names use lowercase letters,
-digits, and hyphens, and must not already belong to a provider or account of
-another adapter. `--as` takes no settings, and an account whose adapter this
+digits, and hyphens, must not be a built-in provider's id (log in to that
+provider without `--as`), and must not already belong to a provider or account
+of another adapter. `--as` takes no settings, and an account whose adapter this
 binary does not include is skipped.
 
 When `PROVIDER` is a provider id, the account inherits that provider's
@@ -171,8 +172,8 @@ replaces the previous one: the `ollama` entry above keeps `gemma4:12b` and
 `tev1:4b`, which the CLI otherwise offers on that provider. Redeclaring a
 built-in provider id with a different adapter is a configuration error, while
 an entry naming an adapter this binary does not include is skipped (the file
-may be shared with other Tackle hosts). An account named like a built-in or
-configured provider of another adapter is skipped as well. `ollama-team` stores its key with
+may be shared with other Tackle hosts). An account named like any built-in
+provider, or like a configured provider of another adapter, is skipped as well. `ollama-team` stores its key with
 `tackle auth login ollama-team` or reads it from `TEAM_OLLAMA_API_KEY`.
 
 `tackle auth status` lists every provider with its source (`built-in`,

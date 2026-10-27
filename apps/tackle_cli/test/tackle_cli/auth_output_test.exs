@@ -177,6 +177,8 @@ defmodule Tackle.CLI.Output.AuthTest do
       {{:duplicate_provider_id, "ollama"}, ~s(Provider "ollama" is declared more than once.)},
       {{:provider_adapter_conflict, "work"},
        ~s(The name "work" already belongs to a provider or account of another adapter.)},
+      {{:default_provider_name, "ollama"},
+       ~s("ollama" is a built-in provider, so an account of that name would never be used.)},
       {{:invalid_account, "work"}, ~s(The recorded account "work" in auth.json is invalid.)},
       {{:duplicate_adapter_type, "ollama"}, ~s(share the adapter type "ollama")},
       {{:invalid_config_provider, "/home/config.json", "work"},
