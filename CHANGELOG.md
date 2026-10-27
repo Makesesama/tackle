@@ -180,6 +180,7 @@ The agent library (`packages/tackle_lib`) was reworked for a smaller, stricter c
 #### Credentials and accounts (`packages/tackle`)
 
 - `Tackle.Auth.Store` names its temporary file `.auth.json.tmp-<OS pid>-<random>` with 12 bytes from `:crypto.strong_rand_bytes/1` and retries a name that exists, at most three times. The name came from a counter that restarts with every VM, so two VMs could pick the same name and a temporary file left by a killed VM made later saves fail with `{:auth_temporary_file_failed, path, :eexist}`. The harness application now lists `:crypto`.
+- `Tackle.Auth.Store` implements `format_status/1` like the session processes: crash reports and `:sys.get_status/1` show the namespaces of the stored credentials but not the credentials, and the last message only as its operation. They showed every stored token.
 - `Tackle.Auth.Store` reports an unsupported `auth.json` version with the file's version, `{:unsupported_auth_version, path, file_version}`; it reported the supported version instead.
 
 #### Other changes

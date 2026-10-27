@@ -264,6 +264,27 @@ defmodule Tackle.Auth.StoreTest do
     refute File.exists?(path)
   end
 
+  test "status and crash reports show no credentials", %{path: path} do
+    store = start_store(path)
+    secret = "do-not-log-#{System.unique_integer([:positive])}"
+    assert :ok = Store.put(store, "openai-codex", %{"access_token" => secret})
+
+    status = :sys.get_status(store)
+    refute inspect(status, limit: :infinity, printable_limit: :infinity) =~ secret
+
+    crash = %{
+      state: :sys.get_state(store),
+      message: {:"$gen_call", {self(), make_ref()}, {:put, "other", %{"token" => secret}}},
+      reason: :boom,
+      log: [{:in, {:"$gen_call", {self(), make_ref()}, {:put, "x", %{"token" => secret}}}}]
+    }
+
+    redacted = Store.format_status(crash)
+    refute inspect(redacted, limit: :infinity, printable_limit: :infinity) =~ secret
+    assert redacted.state.providers == %{"openai-codex" => :redacted}
+    assert {:"$gen_call", _from, :put} = redacted.message
+  end
+
   test "rejects an auth file symlink", %{home: home, path: path} do
     File.mkdir_p!(home)
     target = Path.join(home, "target.json")

@@ -28,6 +28,7 @@ defmodule Tackle.Auth.Store do
   @behaviour Tackle.Lib.CredentialStore
 
   alias Tackle.Lib.LLM.Provider
+  alias Tackle.StatusRedaction
 
   @version 2
   @readable_versions [1, 2]
@@ -156,6 +157,20 @@ defmodule Tackle.Auth.Store do
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
+
+  # Crash reports and `:sys.get_status/1` show the state and the last message.
+  # Neither may carry credentials: the stored credentials are reduced to their
+  # namespaces and the message to its operation. Accounts hold no secrets.
+  @impl true
+  def format_status(status), do: StatusRedaction.format_status(status, &redact_state/1)
+
+  defp redact_state(%{providers: providers} = state) when is_map(providers),
+    do: %{
+      state
+      | providers: Map.new(providers, fn {namespace, _credentials} -> {namespace, :redacted} end)
+    }
+
+  defp redact_state(state), do: state
 
   defp delete_namespace(namespace, state) do
     if Map.has_key?(state.providers, namespace) do
