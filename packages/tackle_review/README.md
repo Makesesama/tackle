@@ -24,7 +24,9 @@ passes in:
   `Tackle.Review.Tools.ReportFindings` and `ReportVerdict`;
 - **rules** - `Tackle.Review.Rules.load/2` merges the built-in rules with
   rule files the host read; `Rules.read_tree/3` reads a repository's rules
-  at a commit, for example a pull request's base;
+  at a commit, for example a pull request's base. A host reading rule files
+  itself should refuse files larger than `Rules.max_file_bytes/1` unread;
+  `load/2` would reject their bodies anyway;
 - **settings** - `Tackle.Review.Settings`, with `from_json/1` for the
   `review` object of `config.json`;
 - **known findings** - fingerprints of findings not to report again.

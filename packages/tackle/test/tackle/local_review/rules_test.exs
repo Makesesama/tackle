@@ -246,6 +246,19 @@ defmodule Tackle.LocalReview.RulesTest do
       assert RuleDiscovery.discover(opts).rules == []
     end
 
+    test "refuses oversized files without reading them whole", %{opts: opts, project: project} do
+      put(project, "big.md", rule("big", body: :binary.copy("x", 600_000)))
+      put(project, "ok.md", rule("ok"))
+      opts = Keyword.merge(opts, max_rule_bytes: 100, executor: FakeJail.new(opts[:cwd], self()))
+
+      assert %{rules: [%Rule{id: "ok"}], warnings: [warning]} = RuleDiscovery.discover(opts)
+      assert warning.path == Path.join(project, "big.md")
+      assert warning.message == "file is larger than 1124 bytes"
+      path = warning.path
+      assert_received {:fake_jail_read, ^path, 0, 1_125}
+      refute_received {:fake_jail_read, ^path, _offset, _length}
+    end
+
     test "rejects invalid size options", %{opts: opts} do
       assert_raise ArgumentError, ~r/:max_rule_bytes must be a positive integer/, fn ->
         RuleDiscovery.discover(Keyword.put(opts, :max_rule_bytes, 0))

@@ -298,7 +298,9 @@ review the current Git change with `Tackle.Review` and get back a compact list
 of findings to fix; a host grants it like `run_workflow` (the CLI grants it to
 the root agent). It runs the review through `Tackle.LocalReview`, which adds
 the session's review settings, the user's and project's rules
-(`Tackle.LocalReview.Rules`), and the history. Reviews are recorded by
+(`Tackle.LocalReview.Rules`, which refuses rule files larger than
+`Tackle.Review.Rules.max_file_bytes/1` without reading them), and the history.
+Reviews are recorded by
 `Tackle.LocalReview.History` in
 `$TACKLE_HOME/review/<project-key>/` (`runs.jsonl`, `findings.jsonl`, private
 to the current user), where the project key is the Git repository root encoded

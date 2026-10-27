@@ -13,7 +13,9 @@ defmodule Tackle.LocalReview.Rules do
        itself is never a project directory.
 
   Non-Markdown files and subdirectories are ignored. Files in the workspace
-  are read through the session executor (see `Tackle.ProjectFiles`).
+  are read through the session executor (see `Tackle.ProjectFiles`). A file
+  larger than `Tackle.Review.Rules.max_file_bytes/1` is a warning and is not
+  read, so a workspace full of large files costs the host little memory.
   """
 
   alias Tackle.{Executor, Paths, ProjectFiles}
@@ -53,6 +55,7 @@ defmodule Tackle.LocalReview.Rules do
     env = Keyword.get_lazy(opts, :env, &System.get_env/0)
     files = ProjectFiles.new(executor: Keyword.get(opts, :executor), env: env)
     cwd = opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> Path.expand()
+    max_bytes = opts |> Keyword.take([:max_rule_bytes]) |> Rules.max_file_bytes()
 
     {builtin, sources} =
       case Keyword.fetch(opts, :builtin_dir) do
@@ -65,7 +68,7 @@ defmodule Tackle.LocalReview.Rules do
         # A replacement built-in directory is a host directory, not workspace files.
         {:ok, dir} ->
           host_files = ProjectFiles.new(executor: Executor.local())
-          {false, [{:builtin, read_directory(host_files, Path.expand(dir), true)}]}
+          {false, [{:builtin, read_directory(host_files, Path.expand(dir), true, max_bytes)}]}
       end
 
     tackle_home =
@@ -77,7 +80,7 @@ defmodule Tackle.LocalReview.Rules do
     discovered =
       files
       |> ProjectFiles.tackle_dirs(cwd, tackle_home, @rules_dir)
-      |> Enum.map(fn {source, dir} -> {source, read_directory(files, dir, false)} end)
+      |> Enum.map(fn {source, dir} -> {source, read_directory(files, dir, false, max_bytes)} end)
 
     Rules.load(
       sources ++ discovered,
@@ -85,14 +88,14 @@ defmodule Tackle.LocalReview.Rules do
     )
   end
 
-  defp read_directory(files, dir, required?) do
+  defp read_directory(files, dir, required?, max_bytes) do
     case ProjectFiles.list(files, dir) do
       {:ok, entries} ->
         entries
         |> Enum.filter(&String.ends_with?(&1, ".md"))
         |> Enum.map(&Path.join(dir, &1))
         |> Enum.filter(&ProjectFiles.regular?(files, &1))
-        |> Enum.map(&{&1, read(files, &1)})
+        |> Enum.map(&{&1, read(files, &1, max_bytes)})
 
       {:error, :enoent} when not required? ->
         []
@@ -102,10 +105,13 @@ defmodule Tackle.LocalReview.Rules do
     end
   end
 
-  defp read(files, path) do
-    case ProjectFiles.read(files, path) do
+  defp read(files, path, max_bytes) do
+    case ProjectFiles.read(files, path, max_bytes: max_bytes) do
       {:ok, contents} ->
         if String.valid?(contents), do: {:ok, contents}, else: {:error, "file is not valid UTF-8"}
+
+      {:error, :too_large} ->
+        {:error, "file is larger than #{max_bytes} bytes"}
 
       {:error, reason} ->
         {:error, "could not be read (#{Executor.format_reason(reason)})"}

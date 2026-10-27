@@ -169,7 +169,8 @@ defmodule Tackle.Executor do
   Reads a whole file in chunks.
 
   With `max_bytes`, a file that turns out larger returns `{:error, :too_large}`
-  instead of being read further.
+  instead of being read further; no read asks for more than one byte past
+  `max_bytes`.
   """
   @spec read_file(t(), Path.t(), pos_integer() | :infinity) ::
           {:ok, binary()} | {:error, reason()}
@@ -177,7 +178,7 @@ defmodule Tackle.Executor do
     do: read_file(executor, path, max_bytes, 0, [])
 
   defp read_file(executor, path, max_bytes, offset, chunks) do
-    case read(executor, path, offset, @read_file_chunk) do
+    case read(executor, path, offset, read_length(max_bytes, offset)) do
       {:ok, %{data: data}} when max_bytes != :infinity and offset + byte_size(data) > max_bytes ->
         {:error, :too_large}
 
@@ -194,6 +195,10 @@ defmodule Tackle.Executor do
         {:error, reason}
     end
   end
+
+  # One byte past `max_bytes` tells a file at the limit from a larger one.
+  defp read_length(:infinity, _offset), do: @read_file_chunk
+  defp read_length(max_bytes, offset), do: min(@read_file_chunk, max_bytes - offset + 1)
 
   @doc "Formats an error reason for a model-facing message."
   @spec format_reason(reason()) :: String.t()

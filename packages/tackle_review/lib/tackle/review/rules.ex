@@ -228,30 +228,37 @@ defmodule Tackle.Review.Rules do
   end
 
   @doc """
+  Returns the size of the largest rule file worth reading: `:max_rule_bytes`
+  (default 4,096) plus 1,024 bytes for the front matter and the closing
+  fence. A host reading rule files should refuse larger ones unread, as
+  `read_tree/3` does, rather than read them whole for `load/2` to reject.
+  """
+  @spec max_file_bytes(max_rule_bytes: pos_integer()) :: pos_integer()
+  def max_file_bytes(opts \\ []) when is_list(opts),
+    do: positive_option(opts, :max_rule_bytes, @default_max_rule_bytes) + 1_024
+
+  @doc """
   Reads a project's rule files (`project_dir/0`) as they are at the
   revision `rev` of the repository at `root`, for `load/2` as the
   `:project` source. Reads the object database, not the working tree, so
   a pull request can be reviewed against the rules of its base.
 
-  A file larger than `:max_rule_bytes` (default 4,096) is not read and is a
-  warning. Returns `{:error, reason}` (`t:GixEx.error/0`) when the
+  A file larger than `max_file_bytes/1` is not read and is a warning. Returns `{:error, reason}` (`t:GixEx.error/0`) when the
   repository cannot be opened or `rev` cannot be resolved.
   """
   @spec read_tree(Path.t(), String.t(), max_rule_bytes: pos_integer()) ::
           {:ok, source_files()} | {:error, GixEx.error()}
   def read_tree(root, rev, opts \\ []) when is_binary(root) and is_binary(rev) do
-    max_bytes = positive_option(opts, :max_rule_bytes, @default_max_rule_bytes)
+    max_bytes = max_file_bytes(opts)
 
-    # The front matter and the closing fence fit in another few bytes.
     with {:ok, repo} <- GixEx.open(root),
-         {:ok, entries} <-
-           GixEx.read_dir(repo, rev, @project_dir, max_file_bytes: max_bytes + 1_024) do
+         {:ok, entries} <- GixEx.read_dir(repo, rev, @project_dir, max_file_bytes: max_bytes) do
       {:ok,
        for {name, contents} <- Enum.sort(entries), String.ends_with?(name, ".md") do
          path = Path.join(@project_dir, name)
 
          cond do
-           is_nil(contents) -> {path, {:error, "file is larger than #{max_bytes + 1_024} bytes"}}
+           is_nil(contents) -> {path, {:error, "file is larger than #{max_bytes} bytes"}}
            String.valid?(contents) -> {path, {:ok, contents}}
            true -> {path, {:error, "file is not valid UTF-8"}}
          end

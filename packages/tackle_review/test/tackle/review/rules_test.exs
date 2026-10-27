@@ -131,7 +131,9 @@ defmodule Tackle.Review.RulesTest do
       assert {:ok, [{_path, {:error, message}}]} =
                Rules.read_tree(dir, "HEAD", max_rule_bytes: 100)
 
-      assert message =~ "larger than"
+      assert message == "file is larger than #{Rules.max_file_bytes(max_rule_bytes: 100)} bytes"
+      assert Rules.max_file_bytes(max_rule_bytes: 100) == 1_124
+      assert Rules.max_file_bytes() == 5_120
 
       # A revision without rule files has none.
       GitRepo.write(dir, %{"lib/a.ex" => ""})

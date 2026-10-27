@@ -2,7 +2,8 @@ defmodule Tackle.Test.FakeJail do
   @moduledoc false
   # A local executor that behaves like a jail whose only mount is the workspace:
   # any path that resolves (following symlinks) outside it does not exist.
-  # Calls are reported to `config.observer` so tests can see what was routed.
+  # Calls are reported to `config.observer` so tests can see what was routed,
+  # and reads also as `{:fake_jail_read, path, offset, length}`.
 
   @behaviour Tackle.Executor
 
@@ -23,8 +24,10 @@ defmodule Tackle.Test.FakeJail do
   def workspace(config), do: config.workspace
 
   @impl true
-  def read(config, path, offset, length),
-    do: guarded(config, :read, path, fn -> Local.read(nil, path, offset, length) end)
+  def read(config, path, offset, length) do
+    if config.observer, do: send(config.observer, {:fake_jail_read, path, offset, length})
+    guarded(config, :read, path, fn -> Local.read(nil, path, offset, length) end)
+  end
 
   @impl true
   def write(config, path, data, opts),

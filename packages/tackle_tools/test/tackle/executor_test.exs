@@ -1,3 +1,16 @@
+defmodule Tackle.ExecutorTest.RecordingReads do
+  @moduledoc false
+  # Reports the offset and length of every read to a test process. Defined
+  # before the tests, which may start running while this file loads.
+
+  alias Tackle.Executor
+
+  def read({executor, observer}, path, offset, length) do
+    send(observer, {:read, offset, length})
+    Executor.read(executor, path, offset, length)
+  end
+end
+
 defmodule Tackle.ExecutorTest do
   alias Tackle.Tools.Test.Executors
 
@@ -6,6 +19,7 @@ defmodule Tackle.ExecutorTest do
   import Executors, only: [start_executor: 1]
 
   alias Tackle.Executor
+  alias Tackle.ExecutorTest.RecordingReads
   alias Tackle.Lib.Cancellation
   alias Tackle.Tools.{Bash, Edit, Write}
 
@@ -93,6 +107,21 @@ defmodule Tackle.ExecutorTest do
     assert {:ok, ""} = Executor.read_file(executor, path)
     assert {:error, :enoent} = Executor.read_file(executor, Path.join(dir, "missing"))
     assert {:error, :eisdir} = Executor.read_file(executor, dir)
+  end
+
+  test "read_file with a limit reads at most one byte past it", %{executor: executor, dir: dir} do
+    path = Path.join(dir, "limited")
+    File.write!(path, String.duplicate("x", 100))
+    assert {:ok, data} = Executor.read_file(executor, path, 100)
+    assert byte_size(data) == 100
+    assert {:error, :too_large} = Executor.read_file(executor, path, 99)
+
+    # A large file is refused after one small read, not read a chunk at a time.
+    File.write!(path, :binary.copy("x", 3_000_000))
+    recording = {RecordingReads, {executor, self()}}
+    assert {:error, :too_large} = Executor.read_file(recording, path, 1_000)
+    assert_received {:read, 0, 1_001}
+    refute_received {:read, _offset, _length}
   end
 
   test "edit handles files larger than one read chunk", %{executor: executor, dir: dir} do

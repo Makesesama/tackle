@@ -168,6 +168,17 @@ defmodule Tackle.ProjectFilesTest do
       assert byte_size(data) == 1_024 * 1_024
       File.write!(path, :binary.copy("x", 1_024 * 1_024 + 1))
       assert {:error, :too_large} = ProjectFiles.read(ProjectFiles.new(), path)
+
+      # A caller can lower the limit, but not raise it.
+      assert {:error, :too_large} = ProjectFiles.read(ProjectFiles.new(), path, max_bytes: 10)
+      big = [max_bytes: 2 * 1_024 * 1_024]
+      assert {:error, :too_large} = ProjectFiles.read(ProjectFiles.new(), path, big)
+      File.write!(path, "0123456789")
+      assert {:ok, "0123456789"} = ProjectFiles.read(ProjectFiles.new(), path, max_bytes: 10)
+
+      assert_raise ArgumentError, ~r/:max_bytes must be a positive integer/, fn ->
+        ProjectFiles.read(ProjectFiles.new(), path, max_bytes: 0)
+      end
     end
 
     @tag :capture_log

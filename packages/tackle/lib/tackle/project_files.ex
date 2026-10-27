@@ -75,11 +75,29 @@ defmodule Tackle.ProjectFiles do
     }
   end
 
-  @doc "Reads a whole file of at most 1 MiB; larger files return `{:error, :too_large}`."
-  @spec read(t(), Path.t()) :: {:ok, binary()} | {:error, Executor.reason()}
-  def read(files, path) do
+  @doc """
+  Reads a whole file of at most 1 MiB; larger files return `{:error, :too_large}`
+  without being read further.
+
+  Options:
+
+    * `:max_bytes` - a lower limit than 1 MiB, for callers that reject larger
+      files anyway.
+  """
+  @spec read(t(), Path.t(), max_bytes: pos_integer()) ::
+          {:ok, binary()} | {:error, Executor.reason()}
+  def read(files, path, opts \\ []) do
+    max_bytes =
+      case Keyword.get(opts, :max_bytes, @max_file_bytes) do
+        max when is_integer(max) and max > 0 ->
+          min(max, @max_file_bytes)
+
+        other ->
+          raise ArgumentError, ":max_bytes must be a positive integer, got: #{inspect(other)}"
+      end
+
     with {:ok, executor, path} <- route(files, path),
-         do: Executor.read_file(executor, path, @max_file_bytes)
+         do: Executor.read_file(executor, path, max_bytes)
   end
 
   @doc """
