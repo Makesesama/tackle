@@ -398,7 +398,10 @@ refresh. The flow prints the browser URL but does not open the browser itself.
 Authenticated HTTP servers use the stored OAuth bearer token when establishing
 an Anubis connection. The CLI refreshes expiring tokens before connecting and
 updates the active HTTP transport with renewed tokens during long-running
-sessions. Anubis debug logging is disabled by the CLI because it prints bearer
+sessions. A refresh holds `Tackle.Auth.with_lock/2` on the server's
+`mcp:<name>` namespace, shared by every process using `auth.json`, and reads
+the credentials again under it, so when another CLI or `tackle sdk` refreshed
+them first, it uses theirs instead of spending the refresh token again. Anubis debug logging is disabled by the CLI because it prints bearer
 headers. While the TUI runs, its OTP console Logger handler is temporarily
 filtered so unrelated Logger events cannot paint over the screen; the filter
 is removed on exit. Direct writes to stdout/stderr from third-party code are

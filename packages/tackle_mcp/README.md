@@ -177,6 +177,7 @@ OAuth credentials are supplied as bearer headers by the CLI. Anubis 2.0's
 307 redirect handler currently raises on redirects instead of following them;
 configure the final MCP endpoint URL directly. Transport headers are static
 by default; the CLI updates the live Anubis HTTP transport on refresh. Other
-hosts must manage token rotation themselves. Anubis debug logs include bearer
+hosts must manage token rotation themselves, including a lock so that only one
+process spends a rotating refresh token (the CLI holds `Tackle.Auth.with_lock/2`). Anubis debug logs include bearer
 headers, so the CLI disables those logs. Loopback callback security/lifecycle
 and secure persistence are the frontend's responsibility.

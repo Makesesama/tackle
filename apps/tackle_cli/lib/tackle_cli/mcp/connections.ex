@@ -303,12 +303,33 @@ defmodule Tackle.CLI.MCP.Connections do
 
   defp access_token(_), do: {:error, :mcp_auth_required}
 
-  defp fresh_credentials(name, %{"expires_at" => expires} = credentials)
-       when is_integer(expires) do
-    if expires <= System.system_time(:second) + @refresh_skew do
+  defp fresh_credentials(name, credentials) do
+    if refresh_due?(credentials),
+      do: refresh_locked(name, credentials["resource"]),
+      else: {:ok, credentials}
+  end
+
+  # An authorization server may rotate refresh tokens, so a token spent by one
+  # process is invalid for the others. The namespace lock is shared by every
+  # process using auth.json (other CLIs, `tackle sdk`): under it the
+  # credentials are fetched again, and refreshed only if no other process
+  # refreshed them while this one waited.
+  defp refresh_locked(name, resource) do
+    namespace = Tackle.CLI.MCP.namespace(name)
+
+    Tackle.Auth.with_lock(namespace, fn ->
+      with {:ok, current} <- Tackle.Auth.fetch(namespace),
+           :ok <- check_resource(current, resource) do
+        refresh_if_due(namespace, current)
+      end
+    end)
+  end
+
+  defp refresh_if_due(namespace, credentials) do
+    if refresh_due?(credentials) do
       with {:ok, fresh} <-
              OAuth.refresh_stored(credentials, finch_name: Tackle.CLI.MCP.Finch),
-           :ok <- Tackle.Auth.put(Tackle.CLI.MCP.namespace(name), fresh) do
+           :ok <- Tackle.Auth.put(namespace, fresh) do
         {:ok, fresh}
       end
     else
@@ -316,5 +337,8 @@ defmodule Tackle.CLI.MCP.Connections do
     end
   end
 
-  defp fresh_credentials(_name, credentials), do: {:ok, credentials}
+  defp refresh_due?(%{"expires_at" => expires}) when is_integer(expires),
+    do: expires <= System.system_time(:second) + @refresh_skew
+
+  defp refresh_due?(_credentials), do: false
 end

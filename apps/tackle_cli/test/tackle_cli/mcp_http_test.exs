@@ -3,6 +3,7 @@ defmodule Tackle.CLI.MCPHTTPTest do
 
   alias Tackle.CLI.MCP.Config
   alias Tackle.CLI.MCP.Connections
+  alias Tackle.FileLock
 
   setup do
     home = Path.join(System.tmp_dir!(), "tackle-mcp-http-#{System.unique_integer([:positive])}")
@@ -137,17 +138,62 @@ defmodule Tackle.CLI.MCPHTTPTest do
       update_in(state, [:servers, name, :expires_at], fn _ -> System.system_time(:second) + 1 end)
     end)
 
+    # The refresh has finished, transport included, once the server answers.
     send(Connections, :refresh)
-
-    assert_eventually(fn ->
-      case Tackle.Auth.fetch("mcp:#{name}") do
-        {:ok, %{"access_token" => "renewed"}} -> true
-        _ -> false
-      end
-    end)
+    _state = :sys.get_state(Connections)
+    assert {:ok, %{"access_token" => "renewed"}} = Tackle.Auth.fetch("mcp:#{name}")
 
     assert {:ok, "updated"} = tool.execute(%{"value" => "updated"}, %{})
     assert_receive {:mcp_request, "renewed", "tools/call"}
+  end
+
+  test "uses the credentials another process refreshed while it waited for the lock", %{
+    name: name,
+    url: url
+  } do
+    assert {:ok, tools} = Connections.tools()
+    [tool] = Enum.filter(tools, &(&1.name() == "mcp__#{name}__echo"))
+    namespace = "mcp:#{name}"
+
+    stored = %{
+      "resource" => url,
+      "access_token" => "initial",
+      "refresh_token" => "refresh",
+      "token_endpoint" => String.replace(url, "/mcp", "/token"),
+      "client_id" => "client",
+      "expires_at" => System.system_time(:second) + 1
+    }
+
+    :ok = Tackle.Auth.put(namespace, stored)
+
+    :sys.replace_state(Connections, fn state ->
+      update_in(state, [:servers, name, :expires_at], fn _ -> System.system_time(:second) + 1 end)
+    end)
+
+    # This test stands for another process (another CLI, or `tackle sdk`)
+    # that holds the lock while it refreshes and stores rotated credentials.
+    waited =
+      Tackle.Auth.with_lock(namespace, fn ->
+        send(Connections, :refresh)
+        waited = await_lock_or_refresh()
+
+        :ok =
+          Tackle.Auth.put(namespace, %{
+            stored
+            | "access_token" => "elsewhere",
+              "refresh_token" => "rotated-elsewhere",
+              "expires_at" => System.system_time(:second) + 3_600
+          })
+
+        waited
+      end)
+
+    assert waited == :waiting_for_lock
+    _state = :sys.get_state(Connections)
+    refute_received {:refresh_request, _body}
+    assert {:ok, %{"refresh_token" => "rotated-elsewhere"}} = Tackle.Auth.fetch(namespace)
+    assert {:ok, "updated"} = tool.execute(%{"value" => "updated"}, %{})
+    assert_receive {:mcp_request, "elsewhere", "tools/call"}
   end
 
   test "connects project servers only after their exact definition is approved", %{url: url} do
@@ -214,17 +260,27 @@ defmodule Tackle.CLI.MCPHTTPTest do
     assert log =~ "Ignoring project MCP servers"
   end
 
-  defp assert_eventually(fun, retries \\ 100)
-  defp assert_eventually(fun, 0), do: assert(fun.())
+  # Waits until the connection refresh either waits for the namespace lock or
+  # spends the refresh token.
+  defp await_lock_or_refresh(retries \\ 200) do
+    receive do
+      {:refresh_request, _body} -> :refreshed
+    after
+      0 -> await_lock_or_refresh(retries, waiting_for_lock?(Connections))
+    end
+  end
 
-  defp assert_eventually(fun, retries) do
-    if fun.(),
-      do: :ok,
-      else:
-        (
-          Process.sleep(10)
-          assert_eventually(fun, retries - 1)
-        )
+  defp await_lock_or_refresh(_retries, true), do: :waiting_for_lock
+  defp await_lock_or_refresh(0, false), do: :neither
+
+  defp await_lock_or_refresh(retries, false) do
+    Process.sleep(10)
+    await_lock_or_refresh(retries - 1)
+  end
+
+  defp waiting_for_lock?(server) do
+    {:current_stacktrace, frames} = Process.info(Process.whereis(server), :current_stacktrace)
+    Enum.any?(frames, &match?({FileLock, _function, _arity, _location}, &1))
   end
 
   defp accept(listener, parent) do
