@@ -30,6 +30,7 @@ defmodule Tackle.Config do
   alias Tackle.Executor
   alias Tackle.Lib.Compaction.Config, as: CompactionConfig
   alias Tackle.Lib.Decision
+  alias Tackle.Lib.Hook
   alias Tackle.Lib.ID
   alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Provider
@@ -38,7 +39,7 @@ defmodule Tackle.Config do
   alias Tackle.Lib.Thinking
   alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.Policy
-  alias Tackle.Lib.Tool.Registry, as: ToolRegistry
+  alias Tackle.Lib.Tool.Schema
   alias Tackle.Plugins.Catalog
   alias Tackle.ProjectFiles
   alias Tackle.Review.Settings, as: ReviewSettings
@@ -283,19 +284,35 @@ defmodule Tackle.Config do
   Model references are resolved eagerly, so unavailable models are errors even
   for profile names that no discovered profile uses.
 
+  `:tools` (default `Tackle.Tools.default/0`) are checked as
+  `Tackle.Lib.Tool.Registry.new/1` would check them when the session starts:
+  `{:error, {:invalid_tool, tool, reason}}` for a value that is not a tool
+  module, missing callbacks, or an invalid schema, and
+  `{:invalid_tool_name, name}` or `{:duplicate_tool_name, name}`. `:hooks`
+  must implement a hook callback (`Tackle.Lib.Hook.hook?/1`), or
+  `{:error, {:invalid_hook, hook, :no_hook_callbacks}}`. Without a
+  `:system_prompt`, the configuration gets `Tackle.SystemPrompt.default/1`.
+
   A malformed option list is `{:error, {:invalid_options, opts}}`,
   `{:error, {:duplicate_option, key}}`, or `{:error, {:unknown_options, keys}}`.
   """
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
   def new(opts) do
     case build(opts) do
-      {:error, _option, reason} -> {:error, reason}
-      result -> result
+      {:ok, %__MODULE__{system_prompt: nil} = config} ->
+        {:ok, %{config | system_prompt: SystemPrompt.default(config.tools)}}
+
+      {:error, _option, reason} ->
+        {:error, reason}
+
+      result ->
+        result
     end
   end
 
-  # `new/1`, except that an error of an option a configuration file can set is
-  # `{:error, option, reason}`, so `load/1` can name the file.
+  # `new/1`, except that the system prompt stays `nil` unless given, since
+  # `load/1` builds its own, and that an error of an option a configuration
+  # file can set is `{:error, option, reason}`, so `load/1` can name the file.
   defp build(opts) do
     with :ok <- validate_option_list(opts, @option_keys, :new),
          {:ok, opts} <- normalize_thinking_option(opts),
@@ -317,7 +334,7 @@ defmodule Tackle.Config do
            tag(resolve_compile_gate(Keyword.get(opts, :compile_gate)), :compile_gate),
          :ok <- tag(validate_agents(Keyword.get(opts, :agents, %{}), providers), :agents),
          {:ok, tools} <- validate_tools(Keyword.get(opts, :tools, Tackle.Tools.default())),
-         {:ok, hooks} <- validate_modules(:hooks, Keyword.get(opts, :hooks, [])),
+         {:ok, hooks} <- validate_hooks(Keyword.get(opts, :hooks, [])),
          :ok <- validate_optional_string(:system_prompt, Keyword.get(opts, :system_prompt)),
          :ok <- validate_map(:context, Keyword.get(opts, :context, %{})),
          :ok <- validate_executor(Keyword.get(opts, :context, %{})),
@@ -335,8 +352,7 @@ defmodule Tackle.Config do
          llm: llm,
          tools: tools,
          hooks: hooks,
-         system_prompt:
-           Keyword.get_lazy(opts, :system_prompt, fn -> SystemPrompt.default(tools) end),
+         system_prompt: Keyword.get(opts, :system_prompt),
          context:
            opts
            |> Keyword.get(:context, %{})
@@ -908,58 +924,66 @@ defmodule Tackle.Config do
     end
   end
 
+  # The checks `Tackle.Lib.Tool.Registry.new/1` makes when the session starts,
+  # as result tuples.
   defp validate_tools(tools) when is_list(tools) do
-    validated = validate_tool_modules(tools)
-    names = Enum.map(validated, & &1.name())
-
-    cond do
-      invalid_name = Enum.find(names, &(not is_binary(&1) or &1 == "")) ->
-        {:error, {:invalid_tool_name, invalid_name}}
-
-      duplicate_name = duplicate(names) ->
-        {:error, {:duplicate_tool_name, duplicate_name}}
-
-      true ->
-        _registry = ToolRegistry.new(validated)
-        {:ok, validated}
+    Enum.reduce_while(tools, {:ok, MapSet.new()}, fn tool, {:ok, names} ->
+      case validate_tool(tool, names) do
+        {:ok, name} -> {:cont, {:ok, MapSet.put(names, name)}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, _names} -> {:ok, tools}
+      {:error, reason} -> {:error, reason}
     end
-  rescue
-    exception -> {:error, {:invalid_tools, Exception.message(exception)}}
-  catch
-    kind, reason -> {:error, {:invalid_tools, {kind, reason}}}
   end
 
   defp validate_tools(tools), do: {:error, {:invalid_option, :tools, tools}}
 
-  defp validate_tool_modules(tools) do
-    Enum.map(tools, &validate_tool_module/1)
+  defp validate_tool(tool, names) do
+    with :ok <- validate_tool_callbacks(tool),
+         :ok <- validate_tool_schema(tool, :parameters, tool.parameters_schema()),
+         :ok <- validate_tool_schema(tool, :output, Tool.output_schema(tool)) do
+      validate_tool_name(tool.name(), names)
+    end
   end
 
-  defp validate_tool_module(tool) when is_atom(tool) do
+  defp validate_tool_name(name, _names) when not is_binary(name) or name == "",
+    do: {:error, {:invalid_tool_name, name}}
+
+  defp validate_tool_name(name, names) do
+    if name in names, do: {:error, {:duplicate_tool_name, name}}, else: {:ok, name}
+  end
+
+  defp validate_tool_callbacks(tool) when is_atom(tool) do
     case Tool.missing_callbacks(tool) do
-      [] -> tool
-      missing -> raise ArgumentError, missing_callbacks_message(tool, missing)
+      [] -> :ok
+      missing -> {:error, {:invalid_tool, tool, {:missing_callbacks, missing}}}
     end
   end
 
-  defp validate_tool_module(tool) do
-    raise ArgumentError, "Tackle.Config expects a list of tool modules, got: #{inspect(tool)}"
-  end
+  defp validate_tool_callbacks(tool), do: {:error, {:invalid_tool, tool, :not_a_module}}
 
-  defp missing_callbacks_message(tool, missing) do
-    callbacks = Enum.map_join(missing, ", ", fn {name, arity} -> "#{name}/#{arity}" end)
+  # Only keyword output schemas are Tackle.Lib's own; other output schemas
+  # belong to an external validator.
+  defp validate_tool_schema(_tool, :output, schema) when not is_list(schema), do: :ok
 
-    "#{inspect(tool)} is not a valid Tackle.Lib.Tool; missing callbacks: " <> callbacks
-  end
-
-  defp validate_modules(name, modules) when is_list(modules) do
-    case Enum.find(modules, &(not valid_module?(&1))) do
-      nil -> {:ok, modules}
-      module -> {:error, {:invalid_module, name, module}}
+  defp validate_tool_schema(tool, kind, schema) do
+    case Schema.validate_schema(schema) do
+      :ok -> :ok
+      {:error, message} -> {:error, {:invalid_tool, tool, {:invalid_schema, kind, message}}}
     end
   end
 
-  defp validate_modules(name, modules), do: {:error, {:invalid_option, name, modules}}
+  defp validate_hooks(hooks) when is_list(hooks) do
+    case Enum.reject(hooks, &Hook.hook?/1) do
+      [] -> {:ok, hooks}
+      [hook | _rest] -> {:error, {:invalid_hook, hook, :no_hook_callbacks}}
+    end
+  end
+
+  defp validate_hooks(hooks), do: {:error, {:invalid_option, :hooks, hooks}}
 
   # Compaction is enabled by default in the root harness; the trigger policy is
   # inert for models whose declared window cannot hold the reserves (see
@@ -1140,11 +1164,6 @@ defmodule Tackle.Config do
 
   defp validate_boolean(_name, value) when is_boolean(value), do: :ok
   defp validate_boolean(name, value), do: {:error, {:invalid_option, name, value}}
-
-  defp valid_module?(module) when is_atom(module) and not is_nil(module),
-    do: Code.ensure_loaded?(module)
-
-  defp valid_module?(_module), do: false
 
   defp duplicate(values) do
     Enum.reduce_while(values, MapSet.new(), fn value, seen ->

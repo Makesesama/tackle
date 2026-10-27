@@ -65,6 +65,22 @@ defmodule Tackle.ConfigTest do
     def name, do: "incomplete"
   end
 
+  defmodule BadSchemaTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "bad_schema"
+
+    @impl true
+    def description, do: "A tool with an invalid schema."
+
+    @impl true
+    def parameters_schema, do: [value: [type: :nonsense]]
+
+    @impl true
+    def execute(_input, _context), do: {:ok, nil}
+  end
+
   defmodule CatalogHook do
     @behaviour Tackle.Lib.Hook
 
@@ -503,27 +519,31 @@ defmodule Tackle.ConfigTest do
              )
   end
 
-  test "rejects tool modules that do not implement the Tackle.Lib.Tool callbacks" do
-    assert {:error, {:invalid_tools, message}} =
-             Config.new(
-               providers: [Adapter],
-               model: "test/small",
-               tools: [IncompleteTool]
-             )
+  test "rejects tools Tackle.Lib.Tool.Registry would refuse, with result tuples" do
+    new = &Config.new(providers: [Adapter], model: "test/small", tools: &1)
 
-    assert message =~ "IncompleteTool"
-    assert message =~ "missing callbacks: description/0"
+    assert {:error,
+            {:invalid_tool, IncompleteTool,
+             {:missing_callbacks, [description: 0, parameters_schema: 0, execute: 2]}}} =
+             new.([IncompleteTool])
+
+    assert {:error, {:invalid_tool, "not a module", :not_a_module}} = new.(["not a module"])
+
+    assert {:error, {:invalid_tool, BadSchemaTool, {:invalid_schema, :parameters, message}}} =
+             new.([BadSchemaTool])
+
+    assert message =~ "unknown type :nonsense"
+    assert {:error, {:invalid_option, :tools, :none}} = new.(:none)
   end
 
-  test "rejects non-module tool values" do
-    assert {:error, {:invalid_tools, message}} =
-             Config.new(
-               providers: [Adapter],
-               model: "test/small",
-               tools: ["not a module"]
-             )
+  test "accepts only hook modules as hooks" do
+    new = &Config.new(providers: [Adapter], model: "test/small", hooks: &1)
 
-    assert message =~ "expects a list of tool modules"
+    assert {:ok, %{hooks: [CatalogHook]}} = new.([CatalogHook])
+    assert {:error, {:invalid_hook, Tool, :no_hook_callbacks}} = new.([CatalogHook, Tool])
+    assert {:error, {:invalid_hook, NotLoaded, :no_hook_callbacks}} = new.([NotLoaded])
+    assert {:error, {:invalid_hook, nil, :no_hook_callbacks}} = new.([nil])
+    assert {:error, {:invalid_option, :hooks, :none}} = new.(:none)
   end
 
   defp builtin_skill!(name, opts \\ []) do
