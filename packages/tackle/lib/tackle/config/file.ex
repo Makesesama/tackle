@@ -44,17 +44,24 @@ defmodule Tackle.Config.File do
   project cannot turn on a compile gate the user did not turn on. In either
   file, `null` leaves a field or object member unset: a project's `null`
   removes the user's value.
+
+  Returns the merged options and each file's own options, user file first, so
+  that a caller can name the file that set an invalid value.
   """
-  @spec load(Path.t(), {Path.t(), binary()} | nil) :: {:ok, keyword()} | {:error, term()}
-  def load(user_path, nil), do: load(user_path)
+  @spec load(Path.t(), {Path.t(), binary()} | nil) ::
+          {:ok, keyword(), [{Path.t(), keyword()}]} | {:error, term()}
+  def load(user_path, nil) do
+    with {:ok, opts} <- load(user_path), do: {:ok, opts, [{user_path, opts}]}
+  end
 
   def load(user_path, {project_path, contents}) when is_binary(user_path) do
     with {:ok, user} <- read_user(user_path),
-         {:ok, _opts} <- to_options(user_path, user),
+         {:ok, user_opts} <- to_options(user_path, user),
          {:ok, project} <- decode(project_path, contents, @project_fields),
-         {:ok, _opts} <- to_options(project_path, drop_nulls(project)) do
-      merged = user |> deep_merge(project) |> drop_nulls() |> keep_compile_gate_opt_in(user)
-      to_options(project_path, merged)
+         {:ok, project_opts} <- to_options(project_path, drop_nulls(project)),
+         merged = user |> deep_merge(project) |> drop_nulls() |> keep_compile_gate_opt_in(user),
+         {:ok, opts} <- to_options(project_path, merged) do
+      {:ok, opts, [{user_path, user_opts}, {project_path, project_opts}]}
     end
   end
 
@@ -79,22 +86,22 @@ defmodule Tackle.Config.File do
         {:ok, %{}}
 
       {:error, reason} ->
-        {:error, {:config_file_unreadable, path, reason}}
+        {:error, {:config_file, path, {:unreadable, reason}}}
     end
   end
 
   defp decode(path, contents, known_fields) do
     case JSON.decode(contents) do
       {:ok, %{} = config} -> validate_fields(path, normalize_switches(config), known_fields)
-      {:ok, _other} -> {:error, {:invalid_config_file, path, :expected_object}}
-      {:error, _reason} -> {:error, {:malformed_config_file, path}}
+      {:ok, _other} -> {:error, {:config_file, path, :expected_object}}
+      {:error, _reason} -> {:error, {:config_file, path, :malformed}}
     end
   end
 
   defp validate_fields(path, config, known_fields) do
     case Map.keys(config) -- known_fields do
       [] -> {:ok, config}
-      fields -> {:error, {:unknown_config_fields, path, Enum.sort(fields)}}
+      fields -> {:error, {:config_file, path, {:unknown_fields, Enum.sort(fields)}}}
     end
   end
 
@@ -183,7 +190,7 @@ defmodule Tackle.Config.File do
       case object_options(Map.get(config, field), members) do
         {:ok, nil} -> {:cont, {:ok, acc}}
         {:ok, opts} -> {:cont, {:ok, [{option, opts} | acc]}}
-        :error -> {:halt, {:error, {:invalid_config_field, path, field}}}
+        :error -> {:halt, {:error, {:config_file, path, {:invalid_field, field}}}}
       end
     end)
   end
@@ -208,7 +215,7 @@ defmodule Tackle.Config.File do
   defp agents_options(path, config) do
     case Map.fetch(config, "agents") do
       {:ok, %{} = agents} -> agents_entries(path, agents)
-      {:ok, _other} -> {:error, {:invalid_config_field, path, "agents"}}
+      {:ok, _other} -> {:error, {:config_file, path, {:invalid_field, "agents"}}}
       :error -> {:ok, []}
     end
   end
@@ -217,7 +224,7 @@ defmodule Tackle.Config.File do
     Enum.reduce_while(agents, {:ok, %{}}, fn {name, entry}, {:ok, acc} ->
       case agent_settings(entry) do
         {:ok, settings} -> {:cont, {:ok, Map.put(acc, name, settings)}}
-        :error -> {:halt, {:error, {:invalid_config_agent, path, name}}}
+        :error -> {:halt, {:error, {:config_file, path, {:invalid_agent, name}}}}
       end
     end)
     |> case do
@@ -240,7 +247,7 @@ defmodule Tackle.Config.File do
       {:ok, review} ->
         case ReviewSettings.from_json(review) do
           {:ok, opts} -> {:ok, [review: opts]}
-          :error -> {:error, {:invalid_config_field, path, "review"}}
+          :error -> {:error, {:config_file, path, {:invalid_field, "review"}}}
         end
 
       :error ->
@@ -255,7 +262,7 @@ defmodule Tackle.Config.File do
   defp providers_options(path, config) do
     case Map.fetch(config, "providers") do
       {:ok, %{} = providers} -> validate_providers(path, providers)
-      {:ok, _other} -> {:error, {:invalid_config_field, path, "providers"}}
+      {:ok, _other} -> {:error, {:config_file, path, {:invalid_field, "providers"}}}
       :error -> {:ok, []}
     end
   end
@@ -263,7 +270,7 @@ defmodule Tackle.Config.File do
   defp validate_providers(path, providers) do
     case Enum.find(providers, &(not valid_provider_entry?(&1))) do
       nil -> {:ok, [providers: providers]}
-      {id, _entry} -> {:error, {:invalid_config_provider, path, id}}
+      {id, _entry} -> {:error, {:config_file, path, {:invalid_provider, id}}}
     end
   end
 
@@ -275,7 +282,7 @@ defmodule Tackle.Config.File do
   defp sidebar_option(path, config) do
     case Map.fetch(config, "show_subagent_sidebar") do
       {:ok, value} when is_boolean(value) -> :ok
-      {:ok, _value} -> {:error, {:invalid_config_field, path, "show_subagent_sidebar"}}
+      {:ok, _value} -> {:error, {:config_file, path, {:invalid_field, "show_subagent_sidebar"}}}
       :error -> :ok
     end
   end
@@ -302,7 +309,7 @@ defmodule Tackle.Config.File do
   defp jail_option(path, config) do
     case Map.fetch(config, "jail") do
       {:ok, %{} = jail} -> jail_fields(path, jail)
-      {:ok, _other} -> {:error, {:invalid_config_field, path, "jail"}}
+      {:ok, _other} -> {:error, {:config_file, path, {:invalid_field, "jail"}}}
       :error -> :ok
     end
   end
@@ -310,11 +317,11 @@ defmodule Tackle.Config.File do
   defp jail_fields(path, %{"env" => names} = jail) when map_size(jail) == 1 and is_list(names) do
     if Enum.all?(names, &env_name?/1),
       do: :ok,
-      else: {:error, {:invalid_config_field, path, "jail"}}
+      else: {:error, {:config_file, path, {:invalid_field, "jail"}}}
   end
 
   defp jail_fields(_path, jail) when map_size(jail) == 0, do: :ok
-  defp jail_fields(path, _jail), do: {:error, {:invalid_config_field, path, "jail"}}
+  defp jail_fields(path, _jail), do: {:error, {:config_file, path, {:invalid_field, "jail"}}}
 
   defp env_name?(name), do: is_binary(name) and Regex.match?(~r/\A[A-Za-z_][A-Za-z0-9_]*\z/, name)
 
@@ -323,7 +330,7 @@ defmodule Tackle.Config.File do
   defp decision_model_options(path, config) do
     case Map.fetch(config, "decision_model") do
       {:ok, model} when is_binary(model) and model != "" -> {:ok, [decision_model: model]}
-      {:ok, _model} -> {:error, {:invalid_config_field, path, "decision_model"}}
+      {:ok, _model} -> {:error, {:config_file, path, {:invalid_field, "decision_model"}}}
       :error -> {:ok, []}
     end
   end
@@ -331,7 +338,7 @@ defmodule Tackle.Config.File do
   defp model_options(path, config) do
     case Map.fetch(config, "model") do
       {:ok, model} when is_binary(model) and model != "" -> {:ok, [model: model]}
-      {:ok, _model} -> {:error, {:invalid_config_field, path, "model"}}
+      {:ok, _model} -> {:error, {:config_file, path, {:invalid_field, "model"}}}
       :error -> {:ok, []}
     end
   end
@@ -341,7 +348,7 @@ defmodule Tackle.Config.File do
       {:ok, level} ->
         case Thinking.validate(level) do
           :ok -> {:ok, [thinking: level]}
-          {:error, _reason} -> {:error, {:invalid_config_field, path, "thinking"}}
+          {:error, _reason} -> {:error, {:config_file, path, {:invalid_field, "thinking"}}}
         end
 
       :error ->

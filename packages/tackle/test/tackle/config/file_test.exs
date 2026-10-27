@@ -286,7 +286,7 @@ defmodule Tackle.Config.FileTest do
   test "invalid thinking configuration returns an explicit error", %{home: home, env: env} do
     path = write_config(home, ~s({"model":"test/file","thinking":"extreme"}))
 
-    assert {:error, {:invalid_config_field, ^path, "thinking"}} =
+    assert {:error, {:config_file, ^path, {:invalid_field, "thinking"}}} =
              Config.load(available_adapters: [Adapter], env: env)
 
     write_config(home, ~s({"model":"test/file"}))
@@ -305,7 +305,7 @@ defmodule Tackle.Config.FileTest do
 
     File.write!(path, ~s({"model":"test/file","show_subagent_sidebar":"false"}))
 
-    assert {:error, {:invalid_config_field, ^path, "show_subagent_sidebar"}} =
+    assert {:error, {:config_file, ^path, {:invalid_field, "show_subagent_sidebar"}}} =
              Config.load(available_adapters: [Adapter], env: env)
   end
 
@@ -327,10 +327,10 @@ defmodule Tackle.Config.FileTest do
         ] do
       File.write!(path, invalid)
 
-      assert {:error, {:invalid_config_field, ^path, "jail"}} =
+      assert {:error, {:config_file, ^path, {:invalid_field, "jail"}}} =
                Config.load(available_adapters: [Adapter], env: env)
 
-      assert {:error, {:invalid_config_field, ^path, "jail"}} = ConfigFile.jail_env(path)
+      assert {:error, {:config_file, ^path, {:invalid_field, "jail"}}} = ConfigFile.jail_env(path)
     end
   end
 
@@ -403,7 +403,7 @@ defmodule Tackle.Config.FileTest do
 
     for providers <- [[1], "inst", true] do
       path = write_config(home, JSON.encode!(%{"providers" => providers}))
-      assert {:error, {:invalid_config_field, ^path, "providers"}} = load.()
+      assert {:error, {:config_file, ^path, {:invalid_field, "providers"}}} = load.()
     end
 
     for {id, entry} <- [
@@ -413,7 +413,7 @@ defmodule Tackle.Config.FileTest do
           {"inst-x", "inst"}
         ] do
       path = write_config(home, JSON.encode!(%{"providers" => %{id => entry}}))
-      assert {:error, {:invalid_config_provider, ^path, ^id}} = load.()
+      assert {:error, {:config_file, ^path, {:invalid_provider, ^id}}} = load.()
     end
 
     # Providers of adapters this host lacks are skipped.
@@ -425,18 +425,18 @@ defmodule Tackle.Config.FileTest do
     assert {:error, {:provider_adapter_conflict, "test"}} = load.()
 
     path = write_config(home, JSON.encode!(%{"provider_options" => %{}}))
-    assert {:error, {:unknown_config_fields, ^path, ["provider_options"]}} = load.()
+    assert {:error, {:config_file, ^path, {:unknown_fields, ["provider_options"]}}} = load.()
   end
 
   test "unknown fields and malformed JSON return errors", %{home: home, env: env} do
     path = write_config(home, ~s({"model":"test/file","adapter":"Elixir.System"}))
 
-    assert {:error, {:unknown_config_fields, ^path, ["adapter"]}} =
+    assert {:error, {:config_file, ^path, {:unknown_fields, ["adapter"]}}} =
              Config.load(available_adapters: [Adapter], env: env)
 
     File.write!(path, ~s({"model":))
 
-    assert {:error, {:malformed_config_file, ^path}} =
+    assert {:error, {:config_file, ^path, :malformed}} =
              Config.load(available_adapters: [Adapter], env: env)
   end
 
@@ -495,22 +495,22 @@ defmodule Tackle.Config.FileTest do
   test "invalid session-titles configuration returns errors", %{home: home, env: env} do
     path = write_config(home, ~s({"session_titles": "yes"}))
 
-    assert {:error, {:invalid_config_field, ^path, "session_titles"}} =
+    assert {:error, {:config_file, ^path, {:invalid_field, "session_titles"}}} =
              Config.load(available_adapters: [Adapter], env: env)
 
     write_config(home, JSON.encode!(%{"session_titles" => %{"unknown" => true}}))
 
-    assert {:error, {:invalid_config_field, ^path, "session_titles"}} =
+    assert {:error, {:config_file, ^path, {:invalid_field, "session_titles"}}} =
              Config.load(available_adapters: [Adapter], env: env)
 
     write_config(home, JSON.encode!(%{"session_titles" => %{"enabled" => "yes"}}))
 
-    assert {:error, {:invalid_option, :session_titles, enabled: "yes"}} =
+    assert {:error, {:config_file, ^path, {:invalid_option, :session_titles, enabled: "yes"}}} =
              Config.load(available_adapters: [Adapter], env: env)
 
     write_config(home, JSON.encode!(%{"session_titles" => %{"model" => "test/missing"}}))
 
-    assert {:error, {:unknown_model, "test/missing"}} =
+    assert {:error, {:config_file, ^path, {:unknown_model, "test/missing"}}} =
              Config.load(available_adapters: [Adapter], env: env)
   end
 
@@ -596,17 +596,17 @@ defmodule Tackle.Config.FileTest do
   test "invalid compile gate configuration returns errors", %{home: home, env: env} do
     path = write_config(home, ~s({"compile_gate": "yes"}))
 
-    assert {:error, {:invalid_config_field, ^path, "compile_gate"}} =
+    assert {:error, {:config_file, ^path, {:invalid_field, "compile_gate"}}} =
              Config.load(available_adapters: [Adapter], env: env)
 
     write_config(home, JSON.encode!(%{"compile_gate" => %{"log_path" => "/tmp/x"}}))
 
-    assert {:error, {:invalid_config_field, ^path, "compile_gate"}} =
+    assert {:error, {:config_file, ^path, {:invalid_field, "compile_gate"}}} =
              Config.load(available_adapters: [Adapter], env: env)
 
     write_config(home, JSON.encode!(%{"compile_gate" => %{"max_rounds" => -1}}))
 
-    assert {:error, {:invalid_option, :compile_gate, {:max_rounds, -1}}} =
+    assert {:error, {:config_file, ^path, {:invalid_option, :compile_gate, {:max_rounds, -1}}}} =
              Config.load(
                available_adapters: [Adapter],
                env: env,
@@ -667,31 +667,32 @@ defmodule Tackle.Config.FileTest do
     end
 
     path = write_config(home, ~s({"watchdog": "on"}))
-    assert {:error, {:invalid_config_field, ^path, "watchdog"}} = load.()
+    assert {:error, {:config_file, ^path, {:invalid_field, "watchdog"}}} = load.()
 
     # `true` is `{"enabled": true}`, which needs a model.
     write_config(home, ~s({"watchdog": true}))
-    assert {:error, {:invalid_option, :watchdog, model: nil}} = load.()
+    assert {:error, {:config_file, ^path, {:invalid_option, :watchdog, model: nil}}} = load.()
 
     write_config(home, JSON.encode!(%{"watchdog" => %{"model" => "judge/small", "unknown" => 1}}))
-    assert {:error, {:invalid_config_field, ^path, "watchdog"}} = load.()
+    assert {:error, {:config_file, ^path, {:invalid_field, "watchdog"}}} = load.()
 
     write_config(home, JSON.encode!(%{"watchdog" => %{}}))
-    assert {:error, {:invalid_option, :watchdog, model: nil}} = load.()
+    assert {:error, {:config_file, ^path, {:invalid_option, :watchdog, model: nil}}} = load.()
 
     write_config(
       home,
       JSON.encode!(%{"watchdog" => %{"model" => "judge/small", "threshold" => 1.5}})
     )
 
-    assert {:error, {:invalid_option, :watchdog, threshold: 1.5}} = load.()
+    assert {:error, {:config_file, ^path, {:invalid_option, :watchdog, threshold: 1.5}}} = load.()
 
     write_config(
       home,
       JSON.encode!(%{"watchdog" => %{"model" => "judge/small", "after_seconds" => 0}})
     )
 
-    assert {:error, {:invalid_option, :watchdog, after_seconds: 0}} = load.()
+    assert {:error, {:config_file, ^path, {:invalid_option, :watchdog, after_seconds: 0}}} =
+             load.()
 
     # The first check must fit the longest Erlang timer, 2^32 - 1 milliseconds.
     for seconds <- [1.0e308, 4_294_968] do
@@ -700,7 +701,9 @@ defmodule Tackle.Config.FileTest do
         JSON.encode!(%{"watchdog" => %{"model" => "judge/small", "after_seconds" => seconds}})
       )
 
-      assert {:error, {:invalid_option, :watchdog, after_seconds: ^seconds}} = load.()
+      assert {:error,
+              {:config_file, ^path, {:invalid_option, :watchdog, after_seconds: ^seconds}}} =
+               load.()
     end
 
     write_config(
@@ -712,10 +715,10 @@ defmodule Tackle.Config.FileTest do
     assert Watchdog.after_ms(watchdog) == 4_294_967_295
 
     write_config(home, JSON.encode!(%{"watchdog" => %{"model" => "judge/missing"}}))
-    assert {:error, {:unknown_decision_model, "judge/missing"}} = load.()
+    assert {:error, {:config_file, ^path, {:unknown_decision_model, "judge/missing"}}} = load.()
 
     write_config(home, JSON.encode!(%{"watchdog" => %{"model" => "test/default"}}))
-    assert {:error, {:unsupported_decision_adapter, "test"}} = load.()
+    assert {:error, {:config_file, ^path, {:unsupported_decision_adapter, "test"}}} = load.()
   end
 
   test "decision adapters are granted to tools with the config.json default model", %{
@@ -808,13 +811,13 @@ defmodule Tackle.Config.FileTest do
     end
 
     path = write_config(home, ~s({"decision_model": 42}))
-    assert {:error, {:invalid_config_field, ^path, "decision_model"}} = load.()
+    assert {:error, {:config_file, ^path, {:invalid_field, "decision_model"}}} = load.()
 
     write_config(home, ~s({"decision_model": "judge/missing"}))
-    assert {:error, {:unknown_decision_model, "judge/missing"}} = load.()
+    assert {:error, {:config_file, ^path, {:unknown_decision_model, "judge/missing"}}} = load.()
 
     write_config(home, ~s({"decision_model": "test/default"}))
-    assert {:error, {:unsupported_decision_adapter, "test"}} = load.()
+    assert {:error, {:config_file, ^path, {:unsupported_decision_adapter, "test"}}} = load.()
   end
 
   test "review settings are configurable through config.json", %{home: home, env: env} do
@@ -884,18 +887,18 @@ defmodule Tackle.Config.FileTest do
           ~s({"default_rules": [1]})
         ] do
       path = write_config(home, ~s({"review": #{review}}))
-      assert {:error, {:invalid_config_field, ^path, "review"}} = load.(), review
+      assert {:error, {:config_file, ^path, {:invalid_field, "review"}}} = load.(), review
     end
 
     # Values the file format allows but the settings reject.
-    write_config(home, ~s({"review": {"max_steps": {"scorer": 3}}}))
-    assert {:error, {:invalid_option, :review, _}} = load.()
+    path = write_config(home, ~s({"review": {"max_steps": {"scorer": 3}}}))
+    assert {:error, {:config_file, ^path, {:invalid_option, :review, _}}} = load.()
 
     write_config(home, ~s({"review": {"default_rules": ["no-jason"]}}))
-    assert {:error, {:unknown_default_rules, ["no-jason"]}} = load.()
+    assert {:error, {:config_file, ^path, {:unknown_default_rules, ["no-jason"]}}} = load.()
 
     write_config(home, ~s({"review": {"models": {"verifier": "test/missing"}}}))
-    assert {:error, _unknown_model} = load.()
+    assert {:error, {:config_file, ^path, _unknown_model}} = load.()
   end
 
   test "narration is off by default and configurable through config.json", %{
@@ -968,48 +971,52 @@ defmodule Tackle.Config.FileTest do
     end
 
     path = write_config(home, ~s({"narration": 1}))
-    assert {:error, {:invalid_config_field, ^path, "narration"}} = load.()
+    assert {:error, {:config_file, ^path, {:invalid_field, "narration"}}} = load.()
 
     # `true` is `{"enabled": true}`, which needs a model.
     write_config(home, ~s({"narration": true}))
-    assert {:error, {:invalid_option, :narration, model: nil}} = load.()
+    assert {:error, {:config_file, ^path, {:invalid_option, :narration, model: nil}}} = load.()
 
     write_config(home, JSON.encode!(%{"narration" => %{"model" => "test/file", "unknown" => 1}}))
-    assert {:error, {:invalid_config_field, ^path, "narration"}} = load.()
+    assert {:error, {:config_file, ^path, {:invalid_field, "narration"}}} = load.()
 
     # The model is required: narration never falls back to the session model.
     write_config(home, JSON.encode!(%{"narration" => %{}}))
-    assert {:error, {:invalid_option, :narration, model: nil}} = load.()
+    assert {:error, {:config_file, ^path, {:invalid_option, :narration, model: nil}}} = load.()
 
     write_config(home, JSON.encode!(%{"narration" => %{"model" => ""}}))
-    assert {:error, {:invalid_option, :narration, model: ""}} = load.()
+    assert {:error, {:config_file, ^path, {:invalid_option, :narration, model: ""}}} = load.()
 
     write_config(
       home,
       JSON.encode!(%{"narration" => %{"model" => "test/file", "interval_seconds" => 0}})
     )
 
-    assert {:error, {:invalid_option, :narration, interval_seconds: 0}} = load.()
+    assert {:error, {:config_file, ^path, {:invalid_option, :narration, interval_seconds: 0}}} =
+             load.()
 
     write_config(
       home,
       JSON.encode!(%{"narration" => %{"model" => "test/file", "first_after_seconds" => "5"}})
     )
 
-    assert {:error, {:invalid_option, :narration, first_after_seconds: "5"}} = load.()
+    assert {:error,
+            {:config_file, ^path, {:invalid_option, :narration, first_after_seconds: "5"}}} =
+             load.()
 
     write_config(
       home,
       JSON.encode!(%{"narration" => %{"model" => "test/file", "enabled" => "yes"}})
     )
 
-    assert {:error, {:invalid_option, :narration, enabled: "yes"}} = load.()
+    assert {:error, {:config_file, ^path, {:invalid_option, :narration, enabled: "yes"}}} =
+             load.()
 
     write_config(home, JSON.encode!(%{"narration" => %{"model" => "test/missing"}}))
-    assert {:error, {:unknown_model, "test/missing"}} = load.()
+    assert {:error, {:config_file, ^path, {:unknown_model, "test/missing"}}} = load.()
 
     write_config(home, JSON.encode!(%{"narration" => %{"model" => "other/model"}}))
-    assert {:error, {:unknown_provider, "other"}} = load.()
+    assert {:error, {:config_file, ^path, {:unknown_provider, "other"}}} = load.()
   end
 
   test "module-looking strings are data and are never converted to atoms", %{home: home, env: env} do
@@ -1017,7 +1024,7 @@ defmodule Tackle.Config.FileTest do
     assert_raise ArgumentError, fn -> String.to_existing_atom(module_name) end
     path = write_config(home, JSON.encode!(%{"adapter" => module_name}))
 
-    assert {:error, {:unknown_config_fields, ^path, ["adapter"]}} =
+    assert {:error, {:config_file, ^path, {:unknown_fields, ["adapter"]}}} =
              Config.load(available_adapters: [Adapter], env: env)
 
     assert_raise ArgumentError, fn -> String.to_existing_atom(module_name) end

@@ -181,7 +181,7 @@ defmodule Tackle.CLI.Output.AuthTest do
        ~s("ollama" is a built-in provider, so an account of that name would never be used.)},
       {{:invalid_account, "work"}, ~s(The recorded account "work" in auth.json is invalid.)},
       {{:duplicate_adapter_type, "ollama"}, ~s(share the adapter type "ollama")},
-      {{:invalid_config_provider, "/home/config.json", "work"},
+      {{:config_file, "/home/config.json", {:invalid_provider, "work"}},
        ~s(Provider "work" in /home/config.json is invalid.)},
       {{:invalid_provider_setting, "work", "base_url", 42},
        ~s(Provider "work" has an invalid "base_url" setting.)},

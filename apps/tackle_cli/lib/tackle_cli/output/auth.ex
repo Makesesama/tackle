@@ -284,7 +284,7 @@ defmodule Tackle.CLI.Output.Auth do
     "Two installed adapters share the adapter type #{inspect(adapter)}."
   end
 
-  def error_message({:invalid_config_provider, path, provider}) do
+  def error_message({:config_file, path, {:invalid_provider, provider}}) do
     "Provider #{inspect(provider)} in #{path} is invalid. Each entry needs a valid id and " <>
       "an \"adapter\" naming an adapter type id."
   end

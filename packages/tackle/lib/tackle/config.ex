@@ -158,7 +158,8 @@ defmodule Tackle.Config do
   and only that value is checked, so an invalid `TACKLE_THINKING` is an error
   only when no override sets the thinking level. Overrides set it with
   `:thinking` or `llm_opts: [reasoning_effort: level]` (`:thinking` wins when
-  both are given). The files are validated as a whole.
+  both are given). The files are validated as a whole, and their errors,
+  including invalid values only they set, are `{:config_file, path, reason}`.
 
   The project file is the nearest `.tackle/config.json` at or above the working
   directory, stopping at the Git root (`Tackle.ProjectFiles`). It is read
@@ -213,7 +214,7 @@ defmodule Tackle.Config do
          {:ok, cwd} <- fetch_cwd(opts, Keyword.get(overrides, :context, %{})),
          {:ok, config_path} <- Tackle.Paths.config_file(env: env),
          {:ok, project_file} <- read_project_config(cwd, overrides, config_path),
-         {:ok, file_opts} <- ConfigFile.load(config_path, project_file),
+         {:ok, file_opts, layers} <- ConfigFile.load(config_path, project_file),
          {declared, file_opts} = Keyword.pop(file_opts, :providers, %{}),
          {:ok, entries} <-
            Tackle.Plugins.provider_entries(
@@ -227,7 +228,10 @@ defmodule Tackle.Config do
          {:ok, session_opts} <- default_missing_model(session_opts, providers),
          {:ok, session_opts} <- default_session_titles(session_opts),
          session_opts = default_compile_gate(session_opts, Path.dirname(config_path)),
-         {:ok, config} <- session_opts |> Keyword.put(:providers, providers) |> new() do
+         {:ok, config} <-
+           session_opts
+           |> Keyword.put(:providers, providers)
+           |> build_from_files(file_options(file_opts, env_opts, overrides), layers) do
       load_system_prompt(
         config,
         Keyword.get(session_opts, :system_prompt),
@@ -284,21 +288,37 @@ defmodule Tackle.Config do
   """
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
   def new(opts) when is_list(opts) do
+    case build(opts) do
+      {:error, _option, reason} -> {:error, reason}
+      result -> result
+    end
+  end
+
+  def new(opts), do: {:error, {:invalid_config, opts}}
+
+  # `new/1`, except that an error of an option a configuration file can set is
+  # `{:error, option, reason}`, so `load/1` can name the file.
+  defp build(opts) do
     with :ok <- validate_keyword(opts),
          :ok <- validate_known_options(opts),
          {:ok, opts} <- normalize_thinking_option(opts),
          {:ok, providers} <- fetch_providers(opts),
-         {:ok, model_ref} <- fetch_model_ref(opts),
-         {:ok, llm} <- LLM.select(providers, model_ref),
+         {:ok, model_ref} <- tag(fetch_model_ref(opts), :model),
+         {:ok, llm} <- tag(LLM.select(providers, model_ref), :model),
          {:ok, session_titles} <-
-           SessionTitles.new(Keyword.get(opts, :session_titles), providers),
-         {:ok, watchdog} <- Watchdog.new(Keyword.get(opts, :watchdog), providers),
-         {:ok, narration} <- Narration.new(Keyword.get(opts, :narration), providers),
+           tag(SessionTitles.new(Keyword.get(opts, :session_titles), providers), :session_titles),
+         {:ok, watchdog} <- tag(Watchdog.new(Keyword.get(opts, :watchdog), providers), :watchdog),
+         {:ok, narration} <-
+           tag(Narration.new(Keyword.get(opts, :narration), providers), :narration),
          {:ok, decision_model} <-
-           resolve_decision_model(Keyword.get(opts, :decision_model), providers),
-         {:ok, review} <- ReviewSettings.new(Keyword.get(opts, :review), providers),
-         {:ok, compile_gate} <- resolve_compile_gate(Keyword.get(opts, :compile_gate)),
-         :ok <- validate_agents(Keyword.get(opts, :agents, %{}), providers),
+           tag(
+             resolve_decision_model(Keyword.get(opts, :decision_model), providers),
+             :decision_model
+           ),
+         {:ok, review} <- tag(ReviewSettings.new(Keyword.get(opts, :review), providers), :review),
+         {:ok, compile_gate} <-
+           tag(resolve_compile_gate(Keyword.get(opts, :compile_gate)), :compile_gate),
+         :ok <- tag(validate_agents(Keyword.get(opts, :agents, %{}), providers), :agents),
          {:ok, tools} <- validate_tools(Keyword.get(opts, :tools, Tackle.Tools.default())),
          {:ok, hooks} <- validate_modules(:hooks, Keyword.get(opts, :hooks, [])),
          :ok <- validate_optional_string(:system_prompt, Keyword.get(opts, :system_prompt)),
@@ -343,7 +363,8 @@ defmodule Tackle.Config do
     end
   end
 
-  def new(opts), do: {:error, {:invalid_config, opts}}
+  defp tag({:error, reason}, option), do: {:error, option, reason}
+  defp tag(result, _option), do: result
 
   @doc """
   Changes settings of a built configuration with the checks `new/1` applies.
@@ -414,6 +435,42 @@ defmodule Tackle.Config do
     )
   end
 
+  # An invalid value that a configuration file set is reported as
+  # `{:config_file, path, reason}`. When both files set the option, the user
+  # file is named if its value fails on its own, as it does in a directory
+  # without a project file; otherwise the project file made it fail.
+  defp build_from_files(opts, file_options, layers) do
+    case build(opts) do
+      {:error, option, reason} ->
+        if option in file_options,
+          do: {:error, file_error(opts, option, reason, layers)},
+          else: {:error, reason}
+
+      result ->
+        result
+    end
+  end
+
+  # The options whose values come from the configuration files.
+  defp file_options(file_opts, env_opts, overrides),
+    do: Keyword.keys(file_opts) -- Keyword.keys(env_opts ++ overrides)
+
+  defp file_error(opts, option, reason, layers) do
+    case Enum.filter(layers, fn {_path, layer_opts} -> Keyword.has_key?(layer_opts, option) end) do
+      [] ->
+        reason
+
+      [{path, _opts}] ->
+        {:config_file, path, reason}
+
+      [{user_path, user_opts}, {project_path, _opts}] ->
+        case build(Keyword.put(opts, option, Keyword.fetch!(user_opts, option))) do
+          {:error, ^option, user_reason} -> {:config_file, user_path, user_reason}
+          _valid -> {:config_file, project_path, reason}
+        end
+    end
+  end
+
   defp validate_agent_state_options!(opts) do
     unless is_list(opts) and Keyword.keyword?(opts) and Keyword.keys(opts) -- [:session_id] == [] do
       raise ArgumentError,
@@ -476,11 +533,11 @@ defmodule Tackle.Config do
     llm_opts = Keyword.get(opts, :llm_opts, [])
 
     with true <- Keyword.keyword?(llm_opts),
-         {:ok, llm_opts} <- Thinking.put_llm_opts(llm_opts, level) do
+         {:ok, llm_opts} <- tag(Thinking.put_llm_opts(llm_opts, level), :thinking) do
       {:ok, opts |> Keyword.delete(:thinking) |> Keyword.put(:llm_opts, llm_opts)}
     else
       false -> {:error, {:invalid_option, :llm_opts, llm_opts}}
-      {:error, reason} -> {:error, reason}
+      error -> error
     end
   end
 
@@ -666,7 +723,7 @@ defmodule Tackle.Config do
   defp read_project_file(files, path) do
     case ProjectFiles.read(files, path) do
       {:ok, contents} -> {:ok, {path, contents}}
-      {:error, reason} -> {:error, {:config_file_unreadable, path, reason}}
+      {:error, reason} -> {:error, {:config_file, path, {:unreadable, reason}}}
     end
   end
 

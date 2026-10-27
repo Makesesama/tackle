@@ -698,7 +698,13 @@ to `TACKLE_MODEL` and `TACKLE_THINKING`): `"model": null` selects the first
 available model, `"thinking": null` the model's default level, and
 `"agents": {"scout": null}` drops the user's settings for that profile. A
 project may not set `providers`, `show_subagent_sidebar`, or `jail`, not even
-to `null`. For example:
+to `null`. An error in a file names it: `{:config_file, path, reason}`, where
+`reason` is `:malformed`, `:expected_object`, `{:unreadable, posix}`,
+`{:unknown_fields, fields}`, `{:invalid_field, field}`, `{:invalid_agent,
+name}`, `{:invalid_provider, id}`, or the error of an invalid value, such as
+`{:unknown_model, ref}`. A merged object both files set is blamed on the user
+file when the user's value fails on its own, and otherwise on the project
+file. For example:
 
 ```json
 {

@@ -133,7 +133,7 @@ defmodule Tackle.CLI.JailTest do
     File.write!(path, ~s({"jail": {"env": ["GH-TOKEN"]}}))
     env = Map.put(env, "TACKLE_EXEC_LAUNCHER", launcher(root))
 
-    assert {:error, {:invalid_config_field, ^path, "jail"}} =
+    assert {:error, {:config_file, ^path, {:invalid_field, "jail"}}} =
              Jail.ensure_started(env: env, cwd: workspace, verify_isolation: false)
 
     refute Process.whereis(Tackle.CLI.Jail.Supervisor)

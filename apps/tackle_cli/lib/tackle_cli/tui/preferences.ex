@@ -43,7 +43,7 @@ defmodule Tackle.CLI.TUI.Preferences do
       case File.read(path) do
         {:ok, json} -> JSON.decode(json)
         {:error, :enoent} -> {:ok, %{}}
-        {:error, reason} -> {:error, {:config_file_unreadable, path, reason}}
+        {:error, reason} -> {:error, {:config_file, path, {:unreadable, reason}}}
       end
     end
   end
@@ -52,8 +52,8 @@ defmodule Tackle.CLI.TUI.Preferences do
     case File.lstat(path) do
       {:error, :enoent} -> :ok
       {:ok, %File.Stat{type: :regular}} -> :ok
-      {:ok, _} -> {:error, {:config_file_unreadable, path, :unsafe_target}}
-      {:error, reason} -> {:error, {:config_file_unreadable, path, reason}}
+      {:ok, _} -> {:error, {:config_file, path, :unsafe_target}}
+      {:error, reason} -> {:error, {:config_file, path, {:unreadable, reason}}}
     end
   end
 end

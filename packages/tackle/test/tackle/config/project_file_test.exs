@@ -124,20 +124,22 @@ defmodule Tackle.Config.ProjectFileTest do
 
     # A null for a field a project may not set is still refused.
     path = write(project(ctx.repo), ~s({"providers": null}))
-    assert {:error, {:unknown_config_fields, ^path, ["providers"]}} = load(ctx)
+    assert {:error, {:config_file, ^path, {:unknown_fields, ["providers"]}}} = load(ctx)
   end
 
   test "a project file cannot declare providers or CLI preferences", ctx do
     path = write(project(ctx.repo), ~s({"providers": {"evil": {"adapter": "test"}}}))
-    assert {:error, {:unknown_config_fields, ^path, ["providers"]}} = load(ctx)
+    assert {:error, {:config_file, ^path, {:unknown_fields, ["providers"]}}} = load(ctx)
 
     write(project(ctx.repo), ~s({"show_subagent_sidebar": false}))
-    assert {:error, {:unknown_config_fields, ^path, ["show_subagent_sidebar"]}} = load(ctx)
+
+    assert {:error, {:config_file, ^path, {:unknown_fields, ["show_subagent_sidebar"]}}} =
+             load(ctx)
   end
 
   test "a project file cannot pass host environment variables into the jail", ctx do
     path = write(project(ctx.repo), ~s({"jail": {"env": ["AWS_SECRET_ACCESS_KEY"]}}))
-    assert {:error, {:unknown_config_fields, ^path, ["jail"]}} = load(ctx)
+    assert {:error, {:config_file, ^path, {:unknown_fields, ["jail"]}}} = load(ctx)
 
     # The user's own setting is kept when a project file is present.
     write(ctx.home, ~s({"jail": {"env": ["GH_TOKEN"]}}))
@@ -205,14 +207,14 @@ defmodule Tackle.Config.ProjectFileTest do
 
   test "project and user files are validated and reported separately", ctx do
     path = write(project(ctx.repo), ~s({"model": ""}))
-    assert {:error, {:invalid_config_field, ^path, "model"}} = load(ctx)
+    assert {:error, {:config_file, ^path, {:invalid_field, "model"}}} = load(ctx)
 
     write(project(ctx.repo), "{not json")
-    assert {:error, {:malformed_config_file, ^path}} = load(ctx)
+    assert {:error, {:config_file, ^path, :malformed}} = load(ctx)
 
     write(project(ctx.repo), ~s({"model": "test/project"}))
     user = write(ctx.home, ~s({"thinking": "extreme"}))
-    assert {:error, {:invalid_config_field, ^user, "thinking"}} = load(ctx)
+    assert {:error, {:config_file, ^user, {:invalid_field, "thinking"}}} = load(ctx)
   end
 
   test "outside a repository the user file is not read again as a project file", ctx do
@@ -267,18 +269,53 @@ defmodule Tackle.Config.ProjectFileTest do
   test "agent settings are validated against the providers", ctx do
     write(ctx.home, ~s({"model": "test/user"}))
 
-    write(project(ctx.repo), ~s({"agents": {"scout": {"model": "test/missing"}}}))
-    assert {:error, {:invalid_agent_settings, "scout", _reason}} = load(ctx)
+    path = write(project(ctx.repo), ~s({"agents": {"scout": {"model": "test/missing"}}}))
+
+    assert {:error, {:config_file, ^path, {:invalid_agent_settings, "scout", _reason}}} =
+             load(ctx)
 
     write(project(ctx.repo), ~s({"agents": {"scout": {"thinking": "extreme"}}}))
 
-    assert {:error, {:invalid_agent_settings, "scout", {:invalid_thinking_level, "extreme"}}} =
+    assert {:error,
+            {:config_file, ^path,
+             {:invalid_agent_settings, "scout", {:invalid_thinking_level, "extreme"}}}} =
              load(ctx)
 
-    path = write(project(ctx.repo), ~s({"agents": {"scout": {"tools": ["bash"]}}}))
-    assert {:error, {:invalid_config_agent, ^path, "scout"}} = load(ctx)
+    write(project(ctx.repo), ~s({"agents": {"scout": {"tools": ["bash"]}}}))
+    assert {:error, {:config_file, ^path, {:invalid_agent, "scout"}}} = load(ctx)
 
     write(project(ctx.repo), ~s({"agents": ["scout"]}))
-    assert {:error, {:invalid_config_field, ^path, "agents"}} = load(ctx)
+    assert {:error, {:config_file, ^path, {:invalid_field, "agents"}}} = load(ctx)
+  end
+
+  test "an invalid value is reported with the file that set it", ctx do
+    user = write(ctx.home, ~s({"model": "test/user", "narration": {"model": "test/missing"}}))
+    path = write(project(ctx.repo), ~s({"narration": {"interval_seconds": 3}}))
+
+    # Both files set narration; the user's value fails on its own.
+    assert {:error, {:config_file, ^user, {:unknown_model, "test/missing"}}} = load(ctx)
+
+    # The user's value is valid, so the project's made the merged value fail.
+    write(ctx.home, ~s({"model": "test/user", "narration": {"model": "test/user"}}))
+    write(project(ctx.repo), ~s({"narration": {"interval_seconds": 0}}))
+
+    assert {:error, {:config_file, ^path, {:invalid_option, :narration, interval_seconds: 0}}} =
+             load(ctx)
+
+    # A value only one file sets names that file.
+    write(project(ctx.repo), ~s({"model": "test/missing"}))
+    assert {:error, {:config_file, ^path, {:unknown_model, "test/missing"}}} = load(ctx)
+
+    write(project(ctx.repo), ~s({}))
+    write(ctx.home, ~s({"session_titles": {"model": "test/missing"}}))
+    assert {:error, {:config_file, ^user, {:unknown_model, "test/missing"}}} = load(ctx)
+
+    # A value from the environment or the overrides names no file, and the
+    # files' values it replaces are not checked.
+    write(ctx.home, ~s({"model": "test/missing"}))
+    env = Map.put(ctx.env, "TACKLE_MODEL", "test/gone")
+    assert {:error, {:unknown_model, "test/gone"}} = load(%{ctx | env: env})
+    assert {:error, {:unknown_model, "test/gone"}} = load(ctx, overrides: [model: "test/gone"])
+    assert {:ok, %{model_ref: "test/user"}} = load(ctx, overrides: [model: "test/user"])
   end
 end

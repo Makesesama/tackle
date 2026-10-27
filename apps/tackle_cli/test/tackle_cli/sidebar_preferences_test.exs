@@ -51,10 +51,10 @@ defmodule Tackle.CLI.SidebarPreferencesTest do
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, ~s({"show_subagent_sidebar":"false"}))
 
-    assert {:error, {:invalid_config_field, ^path, "show_subagent_sidebar"}} =
+    assert {:error, {:config_file, ^path, {:invalid_field, "show_subagent_sidebar"}}} =
              Preferences.sidebar()
 
-    assert {:error, {:invalid_config_field, ^path, "show_subagent_sidebar"}} =
+    assert {:error, {:config_file, ^path, {:invalid_field, "show_subagent_sidebar"}}} =
              Preferences.put_sidebar(true)
 
     assert File.read!(path) == ~s({"show_subagent_sidebar":"false"})
