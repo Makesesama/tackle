@@ -102,7 +102,9 @@ Every first-party adapter replaces `@adapter_id` with `opts[:provider_id]` for:
 
 - `CredentialStore.fetch/put` namespaces (Codex, Anthropic, Ollama).
 - Refresh locks: `:global.trans({{module, :credential_refresh, handle, provider_id}, ...})`
-  (Codex, Anthropic).
+  (Codex, Anthropic). Since replaced by
+  `Tackle.Lib.CredentialStore.with_lock(handle, provider_id, fun)`, which
+  `auth.json` holds across OS processes.
 - Settings: read `opts[:provider_settings]` instead of
   `opts[:provider_options][@adapter_id]` (OpenRouter, Ollama).
 

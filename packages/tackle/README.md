@@ -1007,6 +1007,8 @@ holding a lock on one provider namespace (`.auth.json.<hash>.lock`), such as
 an OAuth refresh that spends a rotating refresh token, so that only one VM
 refreshes at a time; it waits up to 60 seconds, is released when the function
 returns or raises or the caller dies, and does not block other namespaces.
+The Codex and Anthropic adapters hold it while they refresh a login, and the
+CLI while it refreshes an MCP server's OAuth credentials.
 Both are `Tackle.FileLock`s: operating-system locks where `flock` exists,
 owner records only as strong as the recorded PID elsewhere. OS keyrings are
 not implemented. A file that becomes

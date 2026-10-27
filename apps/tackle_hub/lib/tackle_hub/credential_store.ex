@@ -3,7 +3,9 @@ defmodule Tackle.Hub.CredentialStore do
   Database credential store for adapters, per provider owner
   (docs/TACKLE_HUB_PLAN.md §7.2, §7.12). A handle names one user's
   providers, and ids are provider names, as in model references. Always use
-  `handle/1`, including across concurrent runs: Codex's refresh lock is keyed
+  `handle/1`, including across concurrent runs: the store does not implement
+  the optional `c:Tackle.Lib.CredentialStore.with_lock/3`, so the lock
+  adapters hold while they refresh is a `:global` lock within this BEAM keyed
   on this stable handle. Fetch reads the database every time, and writes use
   a transaction, without a cache. Missing providers are never created by
   credential writes; deleting credentials of a missing provider is

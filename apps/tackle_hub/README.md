@@ -661,7 +661,11 @@ decrypting them; deleted credentials are stored as SQL NULL
 `Tackle.Hub.CredentialStore.handle(owner_id)` is
 `{Tackle.Hub.CredentialStore, owner_id}`, and ids in it are provider names.
 Pass the owner's handle as the backend/adapter's `:credential_store` for every
-run, so Codex's refresh lock serialises refresh-token rotation. `fetch/2` reads Postgres afresh, `put/3`
+run, so Codex's refresh lock serialises refresh-token rotation. The store does
+not implement the optional `with_lock/3` callback, so
+`Tackle.Lib.CredentialStore.with_lock/3`, which adapters hold while they
+refresh, falls back to a `:global` lock keyed on the handle and provider name,
+covering one BEAM (and the nodes connected to it). `fetch/2` reads Postgres afresh, `put/3`
 writes transactionally, and `delete/2` removes only credentials. Missing or
 cleared credentials return `:error`; writes to missing providers return
 `{:error, {:unknown_provider, name}}`; deletion is idempotent. Disabled providers

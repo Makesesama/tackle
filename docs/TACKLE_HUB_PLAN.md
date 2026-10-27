@@ -318,8 +318,12 @@ Use the **device-code flow**
 cannot do this) shows the user code and verification URL, waits for
 completion in a task, and stores the returned credentials. The adapter
 refreshes expired tokens itself and writes them back with `put/3`. It
-serialises refreshes with a `:global` lock keyed on the store handle and the
-provider id, and re-reads the credentials inside the lock. Therefore:
+serialises refreshes with `Tackle.Lib.CredentialStore.with_lock/3` on the
+provider id and re-reads the credentials inside the lock. This store does not
+implement the optional `with_lock/3` callback, so that is a `:global` lock
+keyed on the store handle and the provider id, within one BEAM (a Postgres
+advisory lock could implement the callback if the hub ever runs several
+nodes). Therefore:
 
 - use one **stable handle** for all runs,
   `{Tackle.Hub.CredentialStore, :default}`, never a per-run reference, or
