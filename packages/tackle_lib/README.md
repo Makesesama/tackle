@@ -458,7 +458,15 @@ reason}`), `put/3`, and `delete/2`, using
 `Tackle.Lib.LLM.Provider.id(opts, adapter_id)` as the namespace so each provider
 keeps its own login; `Tackle.Lib.LLM.Provider.settings(opts)` reads the
 provider's settings (`%{}` when absent). Adapters that refresh credentials
-should include the provider id in any refresh lock.
+run the refresh inside `Tackle.Lib.CredentialStore.with_lock(handle,
+namespace, fun)`, which holds an exclusive lock on the namespace, shared by
+every process using the same storage, while `fun` runs in the caller, and
+returns `fun`'s result; `fun` fetches the credentials again first, since
+another process may have refreshed them meanwhile. A failure to get the lock
+is `{:error, {:credential_lock_failed, reason}}`. Stores implement the
+optional `with_lock/3` callback for a lock across OS processes (the harness's
+`auth.json` store does); for others `with_lock/3` locks within this BEAM with
+`:global.trans/2`.
 
 `Tackle.Lib.LLM.Provider` also holds the lookups adapters share:
 `string_setting/3` reads a string setting, `put_base_url/2` applies the
