@@ -519,7 +519,7 @@ defmodule Tackle.CLI.RunTest do
     {:ok, _apps} = Application.ensure_all_started(:tackle)
     session_id = seed_session(home, "compressed", cwd: home)
     {:ok, path} = Storage.journal_path(session_id, home: home, cwd: home)
-    assert {:ok, _plain, _compressed} = Tackle.Session.Compression.compress_file(path)
+    assert {:ok, _plain, _compressed} = Tackle.Session.CompressedFile.compress_file(path)
     refute File.exists?(path)
 
     File.cd!(home, fn ->

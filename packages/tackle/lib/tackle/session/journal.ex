@@ -63,7 +63,7 @@ defmodule Tackle.Session.Journal do
   alias Tackle.Session.Catalog
   alias Tackle.Session.Catalog.Entry
   alias Tackle.Session.Codec
-  alias Tackle.Session.Compression
+  alias Tackle.Session.CompressedFile
   alias Tackle.Session.Journal.Watchdog
   alias Tackle.Session.Log
   alias Tackle.Session.Projection
@@ -398,7 +398,7 @@ defmodule Tackle.Session.Journal do
   # the owner opens it.
   defp open_writable(session_id, opts) do
     with {:ok, path} <- Storage.journal_path(session_id, opts),
-         :ok <- Compression.restore(path) do
+         :ok <- CompressedFile.restore(path) do
       Reader.open_writable(session_id, opts)
     end
   end

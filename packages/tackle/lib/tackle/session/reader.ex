@@ -24,7 +24,7 @@ defmodule Tackle.Session.Reader do
   files (`write_journal/2`) get names of their own, so they coexist with it.
   """
 
-  alias Tackle.Session.Compression
+  alias Tackle.Session.CompressedFile
   alias Tackle.Session.Log
   alias Tackle.Session.Projection
   alias Tackle.Session.ProjectionError
@@ -62,7 +62,7 @@ defmodule Tackle.Session.Reader do
   @spec read(String.t(), keyword()) :: {:ok, replay()} | {:error, term()}
   def read(session_id, opts \\ []) do
     with {:ok, path} <- journal_path(session_id, opts) do
-      Compression.with_readable(path, &read_file(session_id, &1, path))
+      CompressedFile.with_readable(path, &read_file(session_id, &1, path))
     end
   end
 

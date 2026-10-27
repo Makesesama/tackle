@@ -1,11 +1,12 @@
 defmodule Tackle.Session.Compression do
   @moduledoc """
-  Compressed storage for idle session journals.
+  Background compression of idle session journals.
 
   A journal that has not been written for a while (seven days by default) is
-  replaced by a zstd-compressed copy of its exact bytes, `session.dlog.zst`.
-  Agent sessions are mostly text and tool output, which compress about three
-  to four times; encrypted provider reasoning compresses little.
+  replaced by a zstd-compressed copy of its exact bytes, `session.dlog.zst`
+  (`Tackle.Session.CompressedFile`, which also describes how copies are
+  verified). Agent sessions are mostly text and tool output, which compress
+  about three to four times; encrypted provider reasoning compresses little.
 
   Compression is transparent to readers and writers:
 
@@ -15,14 +16,8 @@ defmodule Tackle.Session.Compression do
       under the writer lock before opening it, so the session continues as an
       ordinary journal.
 
-  The plain journal is authoritative. Compression writes and verifies the
-  compressed copy before deleting the plain file, and restoring writes the
-  plain file before deleting the compressed one, so an interruption leaves at
-  most a redundant copy. Every decompression is checked against the original
-  size recorded in the zstd frame (zstd itself returns a truncated frame's
-  partial output without an error) and against the frame checksum. A
-  compressed journal never changes, so its summary sidecar is rewritten from a
-  full replay before compression and the catalog can index it without
+  A compressed journal never changes, so its summary sidecar is rewritten
+  from a full replay before compression and the catalog can index it without
   decompressing.
 
   The expensive work (replay, compression, verification) happens before the
@@ -37,6 +32,7 @@ defmodule Tackle.Session.Compression do
   require Logger
 
   alias Tackle.Session.Catalog
+  alias Tackle.Session.CompressedFile
   alias Tackle.Session.Journal
   alias Tackle.Session.Reader
   alias Tackle.Session.Storage
@@ -45,9 +41,7 @@ defmodule Tackle.Session.Compression do
   @min_age :timer.hours(24 * 7)
   @min_interval :timer.hours(6)
   @stale_temp_age :timer.hours(1)
-  @level 3
   @marker "compression.marker"
-  @read_prefix "session.dlog.read-"
 
   @type report :: %{
           compressed: non_neg_integer(),
@@ -55,10 +49,6 @@ defmodule Tackle.Session.Compression do
           bytes_after: non_neg_integer(),
           skipped: non_neg_integer()
         }
-
-  @doc "Whether zstd compression is available in this runtime (OTP 28 or later)."
-  @spec available?() :: boolean()
-  def available?, do: Code.ensure_loaded?(:zstd)
 
   @doc """
   Compresses every idle journal and recovery copy, active and archived.
@@ -80,7 +70,7 @@ defmodule Tackle.Session.Compression do
     storage_opts = Keyword.drop(opts, [:min_age, :min_interval])
 
     cond do
-      not available?() ->
+      not CompressedFile.available?() ->
         {:error, :zstd_unavailable}
 
       not due?(storage_opts, Keyword.get(opts, :min_interval, @min_interval)) ->
@@ -131,22 +121,17 @@ defmodule Tackle.Session.Compression do
   # modification time, which `swap/3` detects before anything is replaced.
   defp prepare(session_id, location, path) do
     with {:ok, stat} <- File.stat(path, time: :posix),
-         {:ok, plain} <- read(path),
-         {:ok, replay} <- Reader.read(session_id, Keyword.put(location, :path, path)),
-         {:ok, compressed} <- compress(plain),
-         {:ok, ^plain} <- decompress(compressed, path) do
+         {:ok, compressed, plain_size} <- CompressedFile.compress(path),
+         {:ok, replay} <- Reader.read(session_id, Keyword.put(location, :path, path)) do
       {:ok,
        %{
          path: path,
          stat: {stat.size, stat.mtime},
-         plain_size: byte_size(plain),
+         plain_size: plain_size,
          compressed: compressed,
          sidecar:
            Catalog.sidecar(replay.projection, %{"size" => stat.size, "mtime" => stat.mtime})
        }}
-    else
-      {:ok, _different} -> {:error, {:verify_failed, path}}
-      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -164,20 +149,15 @@ defmodule Tackle.Session.Compression do
   end
 
   defp swap_locked(session_id, location, prepared) do
-    %{path: path, compressed: compressed} = prepared
-    destination = Storage.compressed_path(path)
+    %{path: path, compressed: compressed, plain_size: plain_size} = prepared
 
     with :ok <- ensure_unchanged(path, prepared.stat),
          {:ok, summary} <- Storage.summary_path(session_id, location),
          :ok <- Storage.atomic_write(summary, prepared.sidecar, create_dir: false),
-         :ok <- Storage.atomic_write(destination, compressed, create_dir: false),
-         :ok <- verify_file(destination, path, prepared.plain_size),
-         :ok <- remove(path) do
-      {:compressed, prepared.plain_size, byte_size(compressed)}
+         :ok <- CompressedFile.replace(path, compressed, plain_size) do
+      {:compressed, plain_size, byte_size(compressed)}
     else
-      {:error, reason} ->
-        if File.regular?(path), do: _ = File.rm(destination)
-        {:skipped, session_id, reason}
+      {:error, reason} -> {:skipped, session_id, reason}
     end
   end
 
@@ -186,17 +166,6 @@ defmodule Tackle.Session.Compression do
       {:ok, %File.Stat{type: :regular, size: ^size, mtime: ^mtime}} -> :ok
       {:ok, _changed} -> {:error, :journal_changed}
       {:error, reason} -> {:error, {:journal_missing, reason}}
-    end
-  end
-
-  # The written file is checked for the full original size, which also catches
-  # a short write; its content was already verified in memory.
-  defp verify_file(compressed_path, path, plain_size) do
-    with {:ok, binary} <- read(compressed_path),
-         {:ok, plain} <- decompress(binary, path) do
-      if byte_size(plain) == plain_size,
-        do: :ok,
-        else: {:error, {:verify_failed, compressed_path}}
     end
   end
 
@@ -223,190 +192,13 @@ defmodule Tackle.Session.Compression do
   end
 
   defp compress_recovery_copy(path, session_id) do
-    case compress_file(path) do
+    case CompressedFile.compress_file(path) do
       {:ok, before, compressed} -> {:compressed, before, compressed}
       {:error, reason} -> {:skipped, session_id, reason}
     end
   end
 
-  # -- files ---------------------------------------------------------------------
-
-  @doc """
-  Replaces `path` with a verified zstd copy at `path <> ".zst"`.
-
-  Returns the plain and compressed sizes. The plain file is deleted only after
-  the compressed copy is written and decompresses to the same bytes. The
-  directory is never created, so a file whose directory was moved meanwhile
-  is left alone. Used for recovery copies, which no writer appends to.
-  """
-  @spec compress_file(String.t()) ::
-          {:ok, non_neg_integer(), non_neg_integer()} | {:error, term()}
-  def compress_file(path) do
-    destination = Storage.compressed_path(path)
-
-    with {:ok, plain} <- read(path),
-         {:ok, compressed} <- compress(plain),
-         :ok <- Storage.atomic_write(destination, compressed, create_dir: false),
-         :ok <- verify(destination, plain),
-         :ok <- remove(path) do
-      {:ok, byte_size(plain), byte_size(compressed)}
-    else
-      {:error, reason} ->
-        # The plain file is intact; drop a copy that failed verification.
-        if File.regular?(path), do: _ = File.rm(destination)
-        {:error, reason}
-    end
-  end
-
-  @doc """
-  Restores the plain journal at `path` from its compressed copy.
-
-  Call it while holding the session's writer lock. A missing compressed copy,
-  or a plain journal that already exists, is left alone: the plain journal is
-  authoritative, and a leftover compressed copy is removed.
-  """
-  @spec restore(String.t()) :: :ok | {:error, term()}
-  def restore(path) do
-    compressed_path = Storage.compressed_path(path)
-
-    cond do
-      not File.regular?(compressed_path) ->
-        :ok
-
-      File.regular?(path) ->
-        remove(compressed_path)
-
-      true ->
-        with {:ok, plain} <- decompress_file(compressed_path),
-             :ok <- Storage.atomic_write(path, plain) do
-          remove(compressed_path)
-        end
-    end
-  end
-
-  @doc """
-  Runs `fun` with a readable plain journal for `path`.
-
-  A plain journal is passed through. Otherwise a compressed journal is
-  decompressed into a private temporary file beside it for the duration of
-  `fun`. A plain journal that is compressed between the check and the read is
-  retried from its compressed copy.
-  """
-  @spec with_readable(String.t(), (String.t() -> result)) :: result | {:error, term()}
-        when result: term()
-  def with_readable(path, fun) do
-    compressed_path = Storage.compressed_path(path)
-
-    cond do
-      File.regular?(path) ->
-        path |> fun.() |> retry_compressed(path, compressed_path, fun)
-
-      File.regular?(compressed_path) ->
-        read_compressed(path, compressed_path, fun)
-
-      true ->
-        fun.(path)
-    end
-  end
-
-  # The plain journal was compressed between the check and the read.
-  defp retry_compressed({:error, _reason} = error, path, compressed_path, fun) do
-    if not File.exists?(path) and File.regular?(compressed_path),
-      do: read_compressed(path, compressed_path, fun),
-      else: error
-  end
-
-  defp retry_compressed(result, _path, _compressed_path, _fun), do: result
-
-  defp read_compressed(path, compressed_path, fun) do
-    temp = Path.join(Path.dirname(path), @read_prefix <> unique())
-
-    with {:ok, plain} <- decompress_file(compressed_path),
-         :ok <- write_private(temp, plain) do
-      try do
-        fun.(temp)
-      after
-        _ = File.rm(temp)
-      end
-    else
-      # A writable owner restored the plain journal meanwhile.
-      {:error, {:read_failed, ^compressed_path, :enoent}} = error ->
-        if File.regular?(path), do: fun.(path), else: error
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  defp decompress_file(path) do
-    with {:ok, compressed} <- read(path), do: decompress(compressed, path)
-  end
-
-  # zstd returns a truncated frame's partial output without an error, so the
-  # result must match the content size the frame header declares.
-  defp decompress(compressed, path) do
-    if available?() do
-      with {:ok, %{frameContentSize: size}} when is_integer(size) <-
-             :zstd.get_frame_header(compressed),
-           plain = compressed |> :zstd.decompress() |> IO.iodata_to_binary(),
-           ^size <- byte_size(plain) do
-        {:ok, plain}
-      else
-        other -> {:error, {:decompress_failed, path, decompress_reason(other)}}
-      end
-    else
-      {:error, {:zstd_unavailable, path}}
-    end
-  rescue
-    error -> {:error, {:decompress_failed, path, Exception.message(error)}}
-  catch
-    kind, reason -> {:error, {:decompress_failed, path, {kind, reason}}}
-  end
-
-  defp decompress_reason(size) when is_integer(size), do: {:truncated, size}
-  defp decompress_reason({:ok, _header}), do: :unknown_content_size
-  defp decompress_reason(other), do: other
-
-  defp compress(plain) do
-    options = %{compressionLevel: @level, checksumFlag: true}
-    {:ok, plain |> :zstd.compress(options) |> IO.iodata_to_binary()}
-  rescue
-    error -> {:error, {:compress_failed, Exception.message(error)}}
-  end
-
-  defp verify(compressed_path, plain) do
-    case decompress_file(compressed_path) do
-      {:ok, ^plain} -> :ok
-      {:ok, _other} -> {:error, {:verify_failed, compressed_path}}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp read(path) do
-    case File.read(path) do
-      {:ok, binary} -> {:ok, binary}
-      {:error, reason} -> {:error, {:read_failed, path, reason}}
-    end
-  end
-
-  defp remove(path) do
-    case File.rm(path) do
-      :ok -> :ok
-      {:error, :enoent} -> :ok
-      {:error, reason} -> {:error, {:remove_failed, path, reason}}
-    end
-  end
-
-  defp write_private(path, content) do
-    with :ok <- File.write(path, content, [:raw, :exclusive]),
-         :ok <- File.chmod(path, Storage.file_mode()) do
-      :ok
-    else
-      {:error, reason} ->
-        _ = File.rm(path)
-        {:error, {:write_failed, path, reason}}
-    end
-  end
+  # -- temporary files -----------------------------------------------------------
 
   # Read copies and interrupted atomic writes from a process that died.
   defp sweep_temporary_files(session_id, location) do
@@ -415,7 +207,7 @@ defmodule Tackle.Session.Compression do
       cutoff = System.os_time(:second) - div(@stale_temp_age, 1000)
 
       files
-      |> Enum.filter(&(String.starts_with?(&1, @read_prefix) or String.contains?(&1, ".tmp-")))
+      |> Enum.filter(&(CompressedFile.read_copy?(&1) or String.contains?(&1, ".tmp-")))
       |> Enum.map(&Path.join(dir, &1))
       |> Enum.filter(&idle?(&1, cutoff))
       |> Enum.each(&File.rm/1)
@@ -423,8 +215,6 @@ defmodule Tackle.Session.Compression do
 
     :ok
   end
-
-  defp unique, do: Integer.to_string(System.unique_integer([:positive]))
 
   # -- pass bookkeeping ---------------------------------------------------------
 

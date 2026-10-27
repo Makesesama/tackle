@@ -4,6 +4,7 @@ defmodule Tackle.Session.CompressionTest do
   import Tackle.Test.Runtime
 
   alias Tackle.Session.Catalog
+  alias Tackle.Session.CompressedFile
   alias Tackle.Session.Compression
   alias Tackle.Session.Journal
   alias Tackle.Session.Storage
@@ -127,7 +128,7 @@ defmodule Tackle.Session.CompressionTest do
     File.write!(Storage.compressed_path(path), "not zstd")
 
     assert {:ok, _replay} = Tackle.inspect_session(session_id, home: ctx.home, cwd: cwd)
-    assert :ok = Compression.restore(path)
+    assert :ok = CompressedFile.restore(path)
     assert File.regular?(path)
     refute File.exists?(Storage.compressed_path(path))
   end
@@ -141,7 +142,7 @@ defmodule Tackle.Session.CompressionTest do
     assert {:error, {:decompress_failed, _path, _reason}} =
              Tackle.inspect_session(session_id, home: ctx.home, cwd: cwd)
 
-    assert {:error, {:decompress_failed, _path, _reason}} = Compression.restore(path)
+    assert {:error, {:decompress_failed, _path, _reason}} = CompressedFile.restore(path)
     assert File.regular?(Storage.compressed_path(path))
   end
 
@@ -214,7 +215,7 @@ defmodule Tackle.Session.CompressionTest do
     assert {:error, {:decompress_failed, _path, _reason}} =
              Tackle.inspect_session(session_id, location)
 
-    assert {:error, {:decompress_failed, _path, _reason}} = Compression.restore(path)
+    assert {:error, {:decompress_failed, _path, _reason}} = CompressedFile.restore(path)
     refute File.exists?(path)
     assert File.regular?(zst)
   end
