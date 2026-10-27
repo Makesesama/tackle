@@ -168,7 +168,7 @@ defmodule Tackle.Auth.Provider do
   defp login_as(adapters, id, name, opts) do
     with :ok <- validate_name(name),
          {:ok, accounts} <- current_accounts(opts),
-         {:ok, entries} <- Plugins.provider_entries(adapters, plugin_opts(opts)),
+         {:ok, entries} <- Plugins.provider_entries(adapters, plugin_opts(opts, accounts)),
          :ok <- check_default(entries, name),
          {:ok, adapter, base} <- login_source(id, entries, accounts),
          {:ok, adapter_id} <- Provider.adapter_id(adapter),
@@ -198,17 +198,8 @@ defmodule Tackle.Auth.Provider do
     case Keyword.fetch(opts, :accounts) do
       {:ok, %{} = accounts} -> {:ok, accounts}
       {:ok, accounts} -> {:error, {:invalid_option, :accounts, accounts}}
-      :error -> stored_accounts()
+      :error -> Auth.accounts()
     end
-  end
-
-  defp stored_accounts do
-    case Auth.accounts() do
-      {:ok, accounts} -> {:ok, accounts}
-      {:error, reason} -> {:error, {:accounts_unavailable, reason}}
-    end
-  catch
-    :exit, reason -> {:error, {:accounts_unavailable, reason}}
   end
 
   # A provider id names its adapter and becomes the account's base (an
@@ -268,7 +259,7 @@ defmodule Tackle.Auth.Provider do
   # account cannot be recorded, the credentials just stored for it are
   # deleted. A re-login keeps them, since its previous record still stands.
   defp record_account(name, account, recorded?) do
-    case stored_accounts() do
+    case Auth.accounts() do
       {:ok, %{^name => ^account}} ->
         :ok
 
@@ -292,7 +283,7 @@ defmodule Tackle.Auth.Provider do
   # same name for another adapter belongs to another host's provider.
   defp forget_account(%Provider{id: id, adapter: adapter}) do
     with {:ok, adapter_id} <- Provider.adapter_id(adapter),
-         {:ok, accounts} <- stored_accounts() do
+         {:ok, accounts} <- Auth.accounts() do
       case accounts do
         %{^id => %{"adapter" => ^adapter_id}} -> Auth.delete_account(id)
         %{} -> :ok

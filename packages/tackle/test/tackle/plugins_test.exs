@@ -162,18 +162,61 @@ defmodule Tackle.PluginsTest do
                "plugged" => %{"adapter" => "inst"}
              })
 
-    assert {:error, {:invalid_provider_declaration, "gpu"}} =
+    assert {:error, {:invalid_provider, "gpu"}} =
              Plugins.merge_providers([Adapter], %{}, %{"gpu" => %{"models" => []}})
 
-    assert {:error, {:invalid_provider_id, "Bad"}} =
+    assert {:error, {:invalid_provider, "Bad"}} =
              Plugins.merge_providers([Adapter], %{}, %{"Bad" => %{"adapter" => "plugged"}})
 
     # Invalid ids fail even for adapters this host lacks.
-    assert {:error, {:invalid_provider_id, "Bad"}} =
+    assert {:error, {:invalid_provider, "Bad"}} =
              Plugins.merge_providers([Adapter], %{}, %{"Bad" => %{"adapter" => "missing"}})
 
     assert {:error, {:invalid_account, "work"}} =
              Plugins.merge_providers([Adapter], %{"work" => "plugged"}, %{})
+  end
+
+  # Declarations and accounts follow the rules config.json and auth.json
+  # apply, whichever way they reach the merge.
+  test "checks declarations and accounts as their files do" do
+    assert {:error, {:invalid_provider, "gpu"}} =
+             Plugins.merge_providers([Adapter], %{}, %{"gpu" => %{"adapter" => "Not An Id"}})
+
+    assert Plugins.validate_declarations(%{"gpu" => %{"adapter" => "Not An Id"}}) ==
+             {:error, {:invalid_provider, "gpu"}}
+
+    assert {:error, {:invalid_account, "work"}} =
+             Plugins.merge_providers([Adapter], %{"work" => %{"adapter" => "Not An Id"}}, %{})
+
+    # auth.json accepts a null base, which is no base.
+    assert {:ok, entries} =
+             Plugins.merge_providers(
+               [Adapter],
+               %{"work" => %{"adapter" => "plugged", "base" => nil}},
+               %{}
+             )
+
+    assert Enum.map(entries, &{&1.provider.id, &1.source}) == [
+             {"plugged", :default},
+             {"work", :account}
+           ]
+  end
+
+  test "an account recorded with a null base is merged" do
+    on_exit(fn -> Tackle.Auth.delete_account("plugged-nullbase") end)
+    home = Path.join(System.tmp_dir!(), "tackle-plugins-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(home) end)
+
+    assert :ok =
+             Tackle.Auth.put_account("plugged-nullbase", %{"adapter" => "plugged", "base" => nil})
+
+    assert {:ok, providers} =
+             Plugins.available_providers([Adapter], env: %{"TACKLE_HOME" => home})
+
+    assert "plugged-nullbase" in Enum.map(providers, & &1.id)
+
+    assert {:ok, %{"plugged-nullbase" => account}} = Tackle.Auth.accounts()
+    assert account == %{"adapter" => "plugged"}
   end
 
   test "skips providers this host cannot use instead of failing" do

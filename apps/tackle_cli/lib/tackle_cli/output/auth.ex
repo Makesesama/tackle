@@ -289,8 +289,9 @@ defmodule Tackle.CLI.Output.Auth do
       "an \"adapter\" naming an adapter type id."
   end
 
-  def error_message({:invalid_provider_declaration, provider}) do
-    "Provider #{inspect(provider)} in config.json must name its adapter under \"adapter\"."
+  def error_message({:invalid_provider, provider}) do
+    "Provider #{inspect(provider)} is invalid. Each entry needs a valid id and an " <>
+      "\"adapter\" naming an adapter type id."
   end
 
   def error_message({:invalid_provider_setting, provider, key, _value}) do

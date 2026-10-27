@@ -183,6 +183,7 @@ defmodule Tackle.CLI.Output.AuthTest do
       {{:duplicate_adapter_type, "ollama"}, ~s(share the adapter type "ollama")},
       {{:config_file, "/home/config.json", {:invalid_provider, "work"}},
        ~s(Provider "work" in /home/config.json is invalid.)},
+      {{:invalid_provider, "work"}, ~s(Provider "work" is invalid.)},
       {{:invalid_provider_setting, "work", "base_url", 42},
        ~s(Provider "work" has an invalid "base_url" setting.)},
       {{:invalid_provider_settings, "work", {"api_key", "maybe"}},

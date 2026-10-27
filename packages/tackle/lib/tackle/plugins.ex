@@ -21,7 +21,8 @@ defmodule Tackle.Plugins do
        names an adapter type id under `"adapter"` and every other key is an
        opaque setting.
     3. `:account` — accounts recorded by `tackle auth login ID --as NAME`
-       (`Tackle.Auth.accounts/0`).
+       (`Tackle.Auth.accounts/0`), checked as `auth.json` checks them
+       (`Tackle.Auth.validate_account/2`).
 
   A `config.json` entry for a default provider id must name the same adapter
   type; its settings are merged over the defaults. Naming a different adapter
@@ -143,6 +144,27 @@ defmodule Tackle.Plugins do
     do: {:error, {:invalid_provider_sources, {adapters, accounts, declarations}}}
 
   @doc """
+  Checks provider declarations shaped like the `config.json` `"providers"`
+  object, as `Tackle.Config.load/1` does for the file and the merge does for
+  `:config_providers`: every id and the adapter type id under its
+  `"adapter"` must be valid provider ids (`Tackle.Lib.LLM.Provider.valid_id?/1`),
+  or `{:error, {:invalid_provider, id}}`. Whether this host has the adapter
+  is not checked.
+  """
+  @spec validate_declarations(declarations()) :: :ok | {:error, {:invalid_provider, term()}}
+  def validate_declarations(declarations) when is_map(declarations) do
+    case Enum.find(Enum.sort(declarations), &(not valid_declaration?(&1))) do
+      nil -> :ok
+      {id, _entry} -> {:error, {:invalid_provider, id}}
+    end
+  end
+
+  defp valid_declaration?({id, %{"adapter" => adapter_id}}),
+    do: Provider.valid_id?(id) and Provider.valid_id?(adapter_id)
+
+  defp valid_declaration?(_declaration), do: false
+
+  @doc """
   Returns canonical `provider_id/model` references of the providers of
   `adapters`; see `available_providers/2`.
   """
@@ -177,17 +199,8 @@ defmodule Tackle.Plugins do
     case Keyword.fetch(opts, :accounts) do
       {:ok, %{} = accounts} -> {:ok, accounts}
       {:ok, accounts} -> {:error, {:invalid_option, :accounts, accounts}}
-      :error -> stored_accounts()
+      :error -> Tackle.Auth.accounts()
     end
-  end
-
-  defp stored_accounts do
-    case Tackle.Auth.accounts() do
-      {:ok, accounts} -> {:ok, accounts}
-      {:error, reason} -> {:error, {:accounts_unavailable, reason}}
-    end
-  catch
-    :exit, reason -> {:error, {:accounts_unavailable, reason}}
   end
 
   defp fetch_config_providers(opts) do
@@ -231,48 +244,29 @@ defmodule Tackle.Plugins do
     end
   end
 
+  # Accounts are checked as `auth.json` checks them.
   defp account_declarations(accounts) do
     accounts
     |> Enum.sort()
     |> Enum.reduce_while({:ok, []}, fn {id, account}, {:ok, acc} ->
-      if valid_account?(id, account),
-        do: {:cont, {:ok, [{id, account["adapter"], account["base"]} | acc]}},
-        else: {:halt, {:error, {:invalid_account, id}}}
+      case Tackle.Auth.validate_account(id, account) do
+        {:ok, account} -> {:cont, {:ok, [{id, account["adapter"], account["base"]} | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
     end)
     |> reverse_ok()
   end
-
-  defp valid_account?(id, %{"adapter" => adapter_id} = account) do
-    Provider.valid_id?(id) and is_binary(adapter_id) and
-      (not Map.has_key?(account, "base") or Provider.valid_id?(account["base"]))
-  end
-
-  defp valid_account?(_id, _account), do: false
 
   # Declarations of adapter types this host lacks are skipped once their
   # shape is known to be valid.
   defp config_declarations(declarations, types) do
-    declarations
-    |> Enum.sort()
-    |> Enum.reduce_while({:ok, []}, fn
-      {id, %{"adapter" => adapter_id} = entry}, {:ok, acc} when is_binary(adapter_id) ->
-        cond do
-          not Provider.valid_id?(id) ->
-            {:halt, {:error, {:invalid_provider_id, id}}}
-
-          Map.has_key?(types, adapter_id) ->
-            settings = Map.delete(entry, "adapter")
-            provider = %Provider{id: id, adapter: types[adapter_id], settings: settings}
-            {:cont, {:ok, [provider | acc]}}
-
-          true ->
-            {:cont, {:ok, acc}}
-        end
-
-      {id, _entry}, _acc ->
-        {:halt, {:error, {:invalid_provider_declaration, id}}}
-    end)
-    |> reverse_ok()
+    with :ok <- validate_declarations(declarations) do
+      {:ok,
+       for {id, %{"adapter" => adapter_id} = entry} <- Enum.sort(declarations),
+           Map.has_key?(types, adapter_id) do
+         %Provider{id: id, adapter: types[adapter_id], settings: Map.delete(entry, "adapter")}
+       end}
+    end
   end
 
   defp reverse_ok({:ok, list}), do: {:ok, Enum.reverse(list)}

@@ -156,7 +156,7 @@ defmodule Tackle.Auth.Store do
   end
 
   def handle_call({:put_account, provider_id, account}, _from, state) do
-    case normalize_account(provider_id, account) do
+    case Tackle.Auth.validate_account(provider_id, account) do
       {:ok, account} ->
         change(state, fn providers, accounts ->
           {providers, Map.put(accounts, provider_id, account)}
@@ -357,7 +357,7 @@ defmodule Tackle.Auth.Store do
 
   defp valid_accounts?(%{"accounts" => %{} = accounts}) do
     Enum.all?(accounts, fn {provider_id, account} ->
-      match?({:ok, _account}, normalize_account(provider_id, account))
+      match?({:ok, _account}, Tackle.Auth.validate_account(provider_id, account))
     end)
   end
 
@@ -370,24 +370,10 @@ defmodule Tackle.Auth.Store do
     envelope
     |> Map.get("accounts", %{})
     |> Map.new(fn {provider_id, account} ->
-      {:ok, account} = normalize_account(provider_id, account)
+      {:ok, account} = Tackle.Auth.validate_account(provider_id, account)
       {provider_id, account}
     end)
   end
-
-  # Keeps only the known keys; `"base"` is optional.
-  defp normalize_account(provider_id, %{"adapter" => adapter_id} = account) do
-    base = Map.get(account, "base")
-
-    if Provider.valid_id?(provider_id) and Provider.valid_id?(adapter_id) and
-         (is_nil(base) or Provider.valid_id?(base)) do
-      {:ok, Map.take(account, ["adapter", "base"])}
-    else
-      {:error, {:invalid_account, provider_id}}
-    end
-  end
-
-  defp normalize_account(provider_id, _account), do: {:error, {:invalid_account, provider_id}}
 
   defp valid_providers?(providers) do
     Enum.all?(providers, fn

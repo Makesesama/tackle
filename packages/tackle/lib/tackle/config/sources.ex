@@ -95,7 +95,6 @@ defmodule Tackle.Config.Sources do
          {:ok, overrides} <- fetch_overrides(opts),
          :ok <- validate_override_context(overrides),
          {:ok, adapters} <- fetch_available_adapters(opts),
-         {:ok, accounts} <- fetch_accounts(opts),
          {:ok, builtin_skills} <- fetch_builtin_skills(opts),
          {:ok, instructions} <- fetch_instructions(opts),
          {:ok, catalog_hooks} <- fetch_catalog_hooks(opts, overrides),
@@ -109,9 +108,9 @@ defmodule Tackle.Config.Sources do
          {:ok, file_opts, layers} <- ConfigFile.load(config_path, project_file),
          {declared, file_opts} = Keyword.pop(file_opts, :providers, %{}),
          {:ok, entries} <-
-           Tackle.Plugins.provider_entries(adapters,
-             accounts: accounts,
-             config_providers: declared
+           Tackle.Plugins.provider_entries(
+             adapters,
+             opts |> Keyword.take([:accounts]) |> Keyword.put(:config_providers, declared)
            ),
          {:ok, prompt_files} <-
            SystemPrompt.read(
@@ -185,23 +184,6 @@ defmodule Tackle.Config.Sources do
       {:error, {:ok, adapters}} -> {:error, {:invalid_option, :available_adapters, adapters}}
       {:error, :error} -> {:error, {:missing_option, :available_adapters}}
     end
-  end
-
-  defp fetch_accounts(opts) do
-    case Keyword.fetch(opts, :accounts) do
-      {:ok, %{} = accounts} -> {:ok, accounts}
-      {:ok, accounts} -> {:error, {:invalid_option, :accounts, accounts}}
-      :error -> stored_accounts()
-    end
-  end
-
-  defp stored_accounts do
-    case Tackle.Auth.accounts() do
-      {:ok, accounts} -> {:ok, accounts}
-      {:error, reason} -> {:error, {:accounts_unavailable, reason}}
-    end
-  catch
-    :exit, reason -> {:error, {:accounts_unavailable, reason}}
   end
 
   defp fetch_catalog_hooks(opts, overrides) do

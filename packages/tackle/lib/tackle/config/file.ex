@@ -1,7 +1,6 @@
 defmodule Tackle.Config.File do
   @moduledoc false
 
-  alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.Thinking
   alias Tackle.Review.Settings, as: ReviewSettings
 
@@ -257,8 +256,9 @@ defmodule Tackle.Config.File do
 
   # Configured provider instances, keyed by provider id. Each entry names an
   # adapter type id under `"adapter"`; every other key is an opaque setting the
-  # adapter interprets. Adapter types are checked when providers are merged
-  # (`Tackle.Plugins.merge_providers/3`), since only the host knows them.
+  # adapter interprets. Whether the host has the adapter is checked when
+  # providers are merged (`Tackle.Plugins.merge_providers/3`), since only the
+  # host knows them.
   defp providers_options(path, config) do
     case Map.fetch(config, "providers") do
       {:ok, %{} = providers} -> validate_providers(path, providers)
@@ -268,16 +268,11 @@ defmodule Tackle.Config.File do
   end
 
   defp validate_providers(path, providers) do
-    case Enum.find(providers, &(not valid_provider_entry?(&1))) do
-      nil -> {:ok, [providers: providers]}
-      {id, _entry} -> {:error, {:config_file, path, {:invalid_provider, id}}}
+    case Tackle.Plugins.validate_declarations(providers) do
+      :ok -> {:ok, [providers: providers]}
+      {:error, reason} -> {:error, {:config_file, path, reason}}
     end
   end
-
-  defp valid_provider_entry?({id, %{"adapter" => adapter}}),
-    do: Provider.valid_id?(id) and Provider.valid_id?(adapter)
-
-  defp valid_provider_entry?(_entry), do: false
 
   defp sidebar_option(path, config) do
     case Map.fetch(config, "show_subagent_sidebar") do

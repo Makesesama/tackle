@@ -970,7 +970,7 @@ default providers.
 injects only a non-secret `Tackle.Lib.CredentialStore` handle into adapter
 options. `Tackle.Auth.Provider` runs an adapter's login, logout, status, and
 usage flows for one provider, passing the provider's id and settings to the
-adapter. `login(id, as: name)` creates the account `name` on the adapter that
+adapter. `login(adapters, id, as: name)` creates the account `name` on the adapter that
 `id` names (a provider id or an adapter type id) and stores its credentials
 under `name`; a failed login leaves no account behind. Logging out of an
 account deletes its credentials and its record; logging out of a default or
@@ -988,8 +988,12 @@ re-reads it and applies only its own change to what it finds, and reads load
 the file again once it was replaced or modified since the last read. The
 moment between a change's re-read and its rename is not locked across VMs, so
 two VMs changing the file at the same instant can still lose one change;
-cross-VM locking and OS keyrings are deferred. `Tackle.Auth.accounts/0`
-returns `{:ok, accounts}`, or `{:error, reason}` when the file cannot be read.
+cross-VM locking and OS keyrings are deferred. `Tackle.Auth.accounts/0`, the
+one way to read the accounts, returns `{:ok, accounts}`, or
+`{:error, {:accounts_unavailable, reason}}` when the file cannot be read or
+the store is not running. An account record is checked by
+`Tackle.Auth.validate_account/2` wherever it comes from: its id, `"adapter"`,
+and `"base"`, if any, must be valid provider ids (a `null` base is no base).
 
 ## Development
 
