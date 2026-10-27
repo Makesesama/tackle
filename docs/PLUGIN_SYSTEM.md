@@ -13,13 +13,13 @@ Tackle accepts trusted modules **already available to the running BEAM**:
 
 - Adapters are always explicit: trusted host code passes them to
   `Tackle.Config.load/1` (`:available_adapters` or a `:catalog`, one of which
-  is required) and as the first argument of `Tackle.Plugins` and
-  `Tackle.Auth.Provider` functions. There is no application-environment
+  is required) and as the first argument of `Tackle.Providers` and
+  `Tackle.Auth.Flows` functions. There is no application-environment
   adapter list, and nothing discovers projects or adds code paths. Whether the
   providers offer a model is checked once, after the merge below, for every
   adapter source. `Tackle.Lib.LLM` is the adapter contract; neither CLI
   arguments nor the user config file may name adapter modules.
-- `Tackle.Plugins.available_providers/2` turns those adapters into providers
+- `Tackle.Providers.available_providers/2` turns those adapters into providers
   (`Tackle.Lib.LLM.Provider`), the configured instances that model references
   name (`provider/model`): each adapter's default providers, accounts recorded
   by `tackle auth login ADAPTER --as NAME`, and the `config.json` `"providers"`

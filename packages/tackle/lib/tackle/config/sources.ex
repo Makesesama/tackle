@@ -108,7 +108,7 @@ defmodule Tackle.Config.Sources do
          {:ok, file_opts, layers} <- ConfigFile.load(config_path, project_file),
          {declared, file_opts} = Keyword.pop(file_opts, :providers, %{}),
          {:ok, entries} <-
-           Tackle.Plugins.provider_entries(
+           Tackle.Providers.provider_entries(
              adapters,
              opts |> Keyword.take([:accounts]) |> Keyword.put(:config_providers, declared)
            ),

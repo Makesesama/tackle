@@ -116,17 +116,17 @@ defmodule Tackle.CLI.Distribution do
 
   They include the adapters' default providers, accounts recorded by
   `tackle auth login ADAPTER --as NAME`, and the `config.json` `"providers"`
-  object (see `Tackle.Plugins.available_providers/2`).
+  object (see `Tackle.Providers.available_providers/2`).
   """
   @spec available_providers() :: {:ok, [Tackle.Lib.LLM.Provider.t()]} | {:error, term()}
   def available_providers do
-    with {:ok, adapters} <- adapters(), do: Tackle.Plugins.available_providers(adapters)
+    with {:ok, adapters} <- adapters(), do: Tackle.Providers.available_providers(adapters)
   end
 
   @doc "Model references offered by `available_providers/0`."
   @spec available_models() :: {:ok, [String.t()]} | {:error, term()}
   def available_models do
-    with {:ok, adapters} <- adapters(), do: Tackle.Plugins.available_model_refs(adapters)
+    with {:ok, adapters} <- adapters(), do: Tackle.Providers.available_model_refs(adapters)
   end
 
   @doc """

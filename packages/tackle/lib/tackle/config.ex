@@ -13,7 +13,7 @@ defmodule Tackle.Config do
   prevalidated adapter and hook selection. Catalog tools require a separate
   explicit grant by the host. Adapter modules are executable types; a session
   selects models from providers (`Tackle.Lib.LLM.Provider`), configured
-  instances of those adapters (see `Tackle.Plugins`).
+  instances of those adapters (see `Tackle.Providers`).
 
   Harness sessions always execute tools concurrently
   (`Tackle.Lib.Tool.Policy.concurrent/0`) under the session's own tool supervisor.
@@ -165,10 +165,10 @@ defmodule Tackle.Config do
   providers of those adapters (the `config.json` `"providers"` object) but
   cannot name or load modules.
 
-  The session's providers are merged by `Tackle.Plugins.provider_entries/2`
+  The session's providers are merged by `Tackle.Providers.provider_entries/2`
   from the adapters' default providers, the recorded accounts, and the
   `config.json` providers, and must then offer a model, whichever source
-  supplied the adapters. `:accounts` (`t:Tackle.Plugins.accounts/0`)
+  supplied the adapters. `:accounts` (`t:Tackle.Providers.accounts/0`)
   defaults to `Tackle.Auth.accounts/0`. Tests and embedding hosts may supply
   an `:env` map; normal callers use the process environment. `:cwd` selects the working
   directory used for prompt discovery and built-in tools.
@@ -566,7 +566,7 @@ defmodule Tackle.Config do
     if Keyword.has_key?(session_opts, :model) do
       {:ok, session_opts}
     else
-      with {:ok, model_ref} <- Tackle.Plugins.default_model_ref(providers) do
+      with {:ok, model_ref} <- Tackle.Providers.default_model_ref(providers) do
         {:ok, Keyword.put(session_opts, :model, model_ref)}
       end
     end

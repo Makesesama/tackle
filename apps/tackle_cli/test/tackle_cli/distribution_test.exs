@@ -140,7 +140,7 @@ defmodule Tackle.CLI.DistributionTest do
     assert selection.provider_id == "ollama-cloud"
     assert selection.model == "gpt-oss:120b"
 
-    assert {:ok, providers} = Tackle.Auth.Provider.list(adapters)
+    assert {:ok, providers} = Tackle.Auth.Flows.list(adapters)
     provider = Enum.find(providers, &(&1.id == "ollama-cloud"))
     assert provider.module == Tackle.Plugins.Ollama
     assert provider.adapter == "ollama"
@@ -149,10 +149,10 @@ defmodule Tackle.CLI.DistributionTest do
     refute provider.capabilities.usage
 
     assert {:error, {:unsupported_provider_flow, "ollama-cloud", :usage}} =
-             Tackle.Auth.Provider.usage(adapters, "ollama-cloud")
+             Tackle.Auth.Flows.usage(adapters, "ollama-cloud")
 
     # The local server needs no key, so it reports no credential status.
-    assert {:ok, :not_required} = Tackle.Auth.Provider.status(adapters, "ollama")
+    assert {:ok, :not_required} = Tackle.Auth.Flows.status(adapters, "ollama")
   end
 
   test "exposes the default local Ollama decision model and configured chat models" do

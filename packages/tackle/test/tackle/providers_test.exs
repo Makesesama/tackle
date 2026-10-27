@@ -1,4 +1,4 @@
-defmodule Tackle.PluginsTest do
+defmodule Tackle.ProvidersTest do
   use ExUnit.Case, async: false
 
   defmodule Adapter do
@@ -45,8 +45,8 @@ defmodule Tackle.PluginsTest do
     def generate(_schema, _opts), do: {:error, :not_used}
   end
 
-  alias Tackle.Plugins
   alias Tackle.Plugins.Catalog
+  alias Tackle.Providers
 
   test "configuration loading uses the given adapters while overrides only select the model" do
     assert {:ok, config} =
@@ -85,7 +85,8 @@ defmodule Tackle.PluginsTest do
       "gpu" => %{"adapter" => "inst", "models" => ["big"]}
     }
 
-    assert {:ok, entries} = Plugins.merge_providers([Adapter, Instances], accounts, declarations)
+    assert {:ok, entries} =
+             Providers.merge_providers([Adapter, Instances], accounts, declarations)
 
     assert Enum.map(entries, &{&1.provider.id, &1.provider.adapter, &1.source}) == [
              {"plugged", Adapter, :default},
@@ -106,7 +107,7 @@ defmodule Tackle.PluginsTest do
     assert settings["cloud2"] == %{"region" => "us"}
 
     assert {:ok, refs} =
-             Plugins.available_model_refs([Adapter, Instances],
+             Providers.available_model_refs([Adapter, Instances],
                accounts: accounts,
                config_providers: declarations
              )
@@ -137,7 +138,9 @@ defmodule Tackle.PluginsTest do
       "from-other" => %{"adapter" => "inst", "base" => "plugged"}
     }
 
-    assert {:ok, entries} = Plugins.merge_providers([Adapter, Instances], accounts, declarations)
+    assert {:ok, entries} =
+             Providers.merge_providers([Adapter, Instances], accounts, declarations)
+
     settings = Map.new(entries, &{&1.provider.id, &1.provider.settings})
 
     # The base's environment key is not inherited.
@@ -158,39 +161,39 @@ defmodule Tackle.PluginsTest do
 
   test "rejects invalid config and config conflicting with default providers" do
     assert {:error, {:provider_adapter_conflict, "plugged"}} =
-             Plugins.merge_providers([Adapter, Instances], %{}, %{
+             Providers.merge_providers([Adapter, Instances], %{}, %{
                "plugged" => %{"adapter" => "inst"}
              })
 
     assert {:error, {:invalid_provider, "gpu"}} =
-             Plugins.merge_providers([Adapter], %{}, %{"gpu" => %{"models" => []}})
+             Providers.merge_providers([Adapter], %{}, %{"gpu" => %{"models" => []}})
 
     assert {:error, {:invalid_provider, "Bad"}} =
-             Plugins.merge_providers([Adapter], %{}, %{"Bad" => %{"adapter" => "plugged"}})
+             Providers.merge_providers([Adapter], %{}, %{"Bad" => %{"adapter" => "plugged"}})
 
     # Invalid ids fail even for adapters this host lacks.
     assert {:error, {:invalid_provider, "Bad"}} =
-             Plugins.merge_providers([Adapter], %{}, %{"Bad" => %{"adapter" => "missing"}})
+             Providers.merge_providers([Adapter], %{}, %{"Bad" => %{"adapter" => "missing"}})
 
     assert {:error, {:invalid_account, "work"}} =
-             Plugins.merge_providers([Adapter], %{"work" => "plugged"}, %{})
+             Providers.merge_providers([Adapter], %{"work" => "plugged"}, %{})
   end
 
   # Declarations and accounts follow the rules config.json and auth.json
   # apply, whichever way they reach the merge.
   test "checks declarations and accounts as their files do" do
     assert {:error, {:invalid_provider, "gpu"}} =
-             Plugins.merge_providers([Adapter], %{}, %{"gpu" => %{"adapter" => "Not An Id"}})
+             Providers.merge_providers([Adapter], %{}, %{"gpu" => %{"adapter" => "Not An Id"}})
 
-    assert Plugins.validate_declarations(%{"gpu" => %{"adapter" => "Not An Id"}}) ==
+    assert Providers.validate_declarations(%{"gpu" => %{"adapter" => "Not An Id"}}) ==
              {:error, {:invalid_provider, "gpu"}}
 
     assert {:error, {:invalid_account, "work"}} =
-             Plugins.merge_providers([Adapter], %{"work" => %{"adapter" => "Not An Id"}}, %{})
+             Providers.merge_providers([Adapter], %{"work" => %{"adapter" => "Not An Id"}}, %{})
 
     # auth.json accepts a null base, which is no base.
     assert {:ok, entries} =
-             Plugins.merge_providers(
+             Providers.merge_providers(
                [Adapter],
                %{"work" => %{"adapter" => "plugged", "base" => nil}},
                %{}
@@ -211,7 +214,7 @@ defmodule Tackle.PluginsTest do
              Tackle.Auth.put_account("plugged-nullbase", %{"adapter" => "plugged", "base" => nil})
 
     assert {:ok, providers} =
-             Plugins.available_providers([Adapter], env: %{"TACKLE_HOME" => home})
+             Providers.available_providers([Adapter], env: %{"TACKLE_HOME" => home})
 
     assert "plugged-nullbase" in Enum.map(providers, & &1.id)
 
@@ -222,7 +225,7 @@ defmodule Tackle.PluginsTest do
   test "skips providers this host cannot use instead of failing" do
     merged = fn accounts, declarations ->
       assert {:ok, entries} =
-               Plugins.merge_providers([Adapter, Instances], accounts, declarations)
+               Providers.merge_providers([Adapter, Instances], accounts, declarations)
 
       Enum.map(entries, &{&1.provider.id, &1.provider.adapter, &1.source})
     end
@@ -258,13 +261,13 @@ defmodule Tackle.PluginsTest do
     )
 
     assert {:ok, providers} =
-             Plugins.available_providers([Adapter, Instances], env: %{"TACKLE_HOME" => home})
+             Providers.available_providers([Adapter, Instances], env: %{"TACKLE_HOME" => home})
 
     assert Enum.map(providers, & &1.id) == ["plugged", "inst", "inst-cloud", "gpu"]
 
-    assert {:ok, "plugged/small"} = Plugins.default_model_ref(providers)
-    assert {:ok, "inst/local"} = Plugins.default_model_ref(tl(providers))
-    assert {:error, :no_models_configured} = Plugins.default_model_ref([])
+    assert {:ok, "plugged/small"} = Providers.default_model_ref(providers)
+    assert {:ok, "inst/local"} = Providers.default_model_ref(tl(providers))
+    assert {:error, :no_models_configured} = Providers.default_model_ref([])
   end
 
   test "models declared only in config.json are enough" do
@@ -292,25 +295,26 @@ defmodule Tackle.PluginsTest do
     end
 
     assert {:ok, ["cfg/local"]} =
-             Plugins.available_model_refs([ConfigOnly], env: env, accounts: %{})
+             Providers.available_model_refs([ConfigOnly], env: env, accounts: %{})
   end
 
   test "reports invalid options in the shapes Tackle.Config uses" do
     assert {:error, {:invalid_option, :accounts, :none}} =
-             Plugins.provider_entries([Adapter], accounts: :none, config_providers: %{})
+             Providers.provider_entries([Adapter], accounts: :none, config_providers: %{})
 
     assert {:error, {:invalid_option, :config_providers, []}} =
-             Plugins.provider_entries([Adapter], accounts: %{}, config_providers: [])
+             Providers.provider_entries([Adapter], accounts: %{}, config_providers: [])
 
-    assert {:error, {:invalid_plugin_options, :none}} = Plugins.provider_entries([Adapter], :none)
+    assert {:error, {:invalid_provider_options, :none}} =
+             Providers.provider_entries([Adapter], :none)
   end
 
   test "adapters are explicit" do
     assert {:error, :no_adapters_configured} =
-             Plugins.provider_entries([], accounts: %{}, config_providers: %{})
+             Providers.provider_entries([], accounts: %{}, config_providers: %{})
 
     assert {:error, {:invalid_adapters_configuration, Adapter}} =
-             Plugins.provider_entries(Adapter, accounts: %{}, config_providers: %{})
+             Providers.provider_entries(Adapter, accounts: %{}, config_providers: %{})
 
     assert {:error, {:missing_option, :available_adapters}} =
              Tackle.Config.load(overrides: [model: "plugged/small"], env: %{})

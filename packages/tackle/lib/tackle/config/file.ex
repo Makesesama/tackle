@@ -297,7 +297,7 @@ defmodule Tackle.Config.File do
   # Configured provider instances, keyed by provider id. Each entry names an
   # adapter type id under `"adapter"`; every other key is an opaque setting the
   # adapter interprets. Whether the host has the adapter is checked when
-  # providers are merged (`Tackle.Plugins.merge_providers/3`), since only the
+  # providers are merged (`Tackle.Providers.merge_providers/3`), since only the
   # host knows them.
   defp providers_options(path, config) do
     case Map.fetch(config, "providers") do
@@ -308,7 +308,7 @@ defmodule Tackle.Config.File do
   end
 
   defp validate_providers(path, providers) do
-    case Tackle.Plugins.validate_declarations(providers) do
+    case Tackle.Providers.validate_declarations(providers) do
       :ok -> {:ok, [providers: providers]}
       {:error, reason} -> {:error, {:config_file, path, reason}}
     end

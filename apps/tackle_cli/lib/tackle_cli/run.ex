@@ -1,7 +1,7 @@
 defmodule Tackle.CLI.Run do
   @moduledoc false
 
-  alias Tackle.Auth.Provider
+  alias Tackle.Auth.Flows
   alias Tackle.CLI.Distribution
   alias Tackle.CLI.Interaction
   alias Tackle.CLI.Output
@@ -260,7 +260,7 @@ defmodule Tackle.CLI.Run do
 
     with {:ok, adapters} <- auth_adapters(),
          :ok <- ensure_human_format(output, :login),
-         :ok <- Provider.login(adapters, provider, login_opts) do
+         :ok <- Flows.login(adapters, provider, login_opts) do
       :login |> AuthOutput.render_action(logged_in, :ok, output) |> then(&Output.puts(output, &1))
       0
     else
@@ -278,7 +278,7 @@ defmodule Tackle.CLI.Run do
     output = auth_output(opts)
 
     with {:ok, adapters} <- auth_adapters(),
-         {:ok, providers} <- Provider.list(adapters) do
+         {:ok, providers} <- Flows.list(adapters) do
       providers
       |> Enum.map(&auth_status_entry(adapters, &1))
       |> AuthOutput.render_status(output)
@@ -296,7 +296,7 @@ defmodule Tackle.CLI.Run do
 
     with {:ok, adapters} <- auth_adapters(),
          {:ok, [matching]} <- auth_providers(adapters, provider),
-         {:ok, status} <- Provider.status(adapters, provider) do
+         {:ok, status} <- Flows.status(adapters, provider) do
       [%{provider: matching, result: {:ok, status}}]
       |> AuthOutput.render_status(output)
       |> then(&Output.puts(output, &1))
@@ -319,7 +319,7 @@ defmodule Tackle.CLI.Run do
     with {:ok, adapters} <- auth_adapters(),
          :ok <- ensure_human_format(output, :logout),
          :ok <- confirm_logout(provider, output),
-         :ok <- Provider.logout(adapters, provider) do
+         :ok <- Flows.logout(adapters, provider) do
       :logout
       |> AuthOutput.render_action(provider, :ok, output)
       |> then(&Output.puts(output, &1))
@@ -350,7 +350,7 @@ defmodule Tackle.CLI.Run do
     output = auth_output(opts)
 
     with {:ok, adapters} <- auth_adapters(),
-         {:ok, providers} <- Provider.list(adapters) do
+         {:ok, providers} <- Flows.list(adapters) do
       providers
       |> auth_usage_entries(adapters)
       |> AuthOutput.render_usage(output)
@@ -368,7 +368,7 @@ defmodule Tackle.CLI.Run do
 
     with {:ok, adapters} <- auth_adapters(),
          {:ok, _providers} <- auth_providers(adapters, provider),
-         {:ok, report} <- Provider.usage(adapters, provider) do
+         {:ok, report} <- Flows.usage(adapters, provider) do
       [%{provider: provider, result: {:ok, report}}]
       |> AuthOutput.render_usage(output)
       |> then(&Output.puts(output, &1))
@@ -406,7 +406,7 @@ defmodule Tackle.CLI.Run do
   end
 
   defp auth_providers(adapters, provider) do
-    with {:ok, providers} <- Provider.list(adapters),
+    with {:ok, providers} <- Flows.list(adapters),
          {:ok, matching} <- find_auth_provider(provider, providers) do
       {:ok, [matching]}
     end
@@ -424,13 +424,13 @@ defmodule Tackle.CLI.Run do
   end
 
   defp auth_status_entry(adapters, provider) do
-    %{provider: provider, result: Provider.status(adapters, provider.id)}
+    %{provider: provider, result: Flows.status(adapters, provider.id)}
   end
 
   defp auth_usage_entries(providers, adapters) do
     providers
     |> Enum.map(fn provider ->
-      %{provider: provider.id, result: Provider.usage(adapters, provider.id)}
+      %{provider: provider.id, result: Flows.usage(adapters, provider.id)}
     end)
     |> Enum.reject(fn
       %{result: {:error, {:unsupported_provider_flow, _provider, :usage}}} -> true

@@ -21,8 +21,8 @@
 > - Selections carry `:provider_id`/`:provider_settings`
 >   (`Selection.provider/1` rebuilds the struct) instead of `:provider` plus a
 >   type-id `adapter_id`.
-> - Adapters are passed explicitly: `Tackle.Plugins.available_providers/2`
->   and every `Tackle.Auth.Provider` function take the host's adapter modules
+> - Adapters are passed explicitly: `Tackle.Providers.available_providers/2`
+>   and every `Tackle.Auth.Flows` function take the host's adapter modules
 >   first, and `Tackle.Config.load/1` takes `:available_adapters` or a
 >   `:catalog`. The `:tackle, :adapters` application environment is gone.
 
@@ -44,8 +44,8 @@ Automatic failover or rotation between providers is out of scope.
   indexes adapters by calling `module.adapter_id()` and rejects duplicate ids
   (`packages/tackle_lib/lib/tackle_lib/llm/selection.ex`). `Decision.Selection`
   shares the same index.
-- `Tackle.Plugins.Catalog` and `Tackle.Plugins` deduplicate adapters by
-  `adapter_id/0`; `Tackle.Auth.Provider` resolves an id to a module and stores
+- `Tackle.Plugins.Catalog` and `Tackle.Providers` deduplicate adapters by
+  `adapter_id/0`; `Tackle.Auth.Flows` resolves an id to a module and stores
   credentials under `adapter.adapter_id()`.
 - Adapters hard-code their id for credential namespaces, `provider_options`
   lookups, and refresh locks (`codex.ex` `@adapter_id "openai-codex"`, Anthropic,
@@ -89,7 +89,7 @@ ref and `auth.json` entry keeps working.
   arity-0 versions when exported: `models/1`, `model_info/2`,
   `decision_models/1`, `local?/1`.
 - `generate_with`/`stream`/`decide` inject `provider_id:` and
-  `provider_settings:` into adapter opts. `Tackle.Auth.Provider` does the same
+  `provider_settings:` into adapter opts. `Tackle.Auth.Flows` does the same
   for `login/logout/status/usage`. A small helper
   `Tackle.Lib.LLM.provider_id(opts, default)` keeps adapters short.
 
@@ -153,7 +153,7 @@ The provider list is merged from three sources, lowest precedence first:
    naming an adapter type the host lacks is skipped, and so is an account
    that collides with a default or `config.json` provider of another adapter.
 
-- `Tackle.Plugins.available_providers/1` returns `[Provider.t()]`.
+- `Tackle.Providers.available_providers/1` returns `[Provider.t()]`.
   `available_model_refs/1` and `default_model_ref/1` iterate providers.
   `Catalog` stays module-level, deduplicated by adapter type id.
 - The existing `"provider_options"` key (a map keyed by id) and the

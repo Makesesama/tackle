@@ -128,7 +128,7 @@ Harness configuration selects available plugin implementations.
 
 The harness package does not depend on the CLI or any other app. The CLI depends on the harness and declares the bundled plugin dependencies of its distribution. `apps/tackle_hub` does not use the harness: it depends on the packages it needs (`tackle_lib`, `tackle_runtime`, `tackle_review`, `tackle_tools`, `tackle_exec`, and its adapters). This keeps the dependency graph acyclic.
 
-Distinguish distribution composition from runtime composition: the executable supplies available packages and passes their modules to the harness explicitly, as a `Tackle.Plugins.Catalog`; `Tackle.Plugins` merges the providers of those adapters, and `Tackle.Plugins.Loader` adds the contributions of explicitly enabled, precompiled plugin projects at startup. The CLI's release is assembled with Burrito; third-party plugin installation remains undecided.
+Distinguish distribution composition from runtime composition: the executable supplies available packages and passes their modules to the harness explicitly, as a `Tackle.Plugins.Catalog`; `Tackle.Providers` merges the providers of those adapters, and `Tackle.Plugins.Loader` adds the contributions of explicitly enabled, precompiled plugin projects at startup. The CLI's release is assembled with Burrito; third-party plugin installation remains undecided.
 
 ## 4. Shared frontend contract
 

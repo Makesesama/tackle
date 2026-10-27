@@ -42,7 +42,7 @@ For local development, run Mix from `packages/tackle` rather than the repo root.
 The harness accepts already-loaded adapter and capability modules, which
 trusted host code passes explicitly: `Tackle.Config.load/1` takes them as
 `:available_adapters` or through a `Tackle.Plugins.Catalog` (`:catalog`), and
-`Tackle.Plugins` and `Tackle.Auth.Provider` take them as their first argument.
+`Tackle.Providers` and `Tackle.Auth.Flows` take them as their first argument.
 There is no application-environment adapter list.
 General extension-project discovery remains out of scope; configuration data
 and frontend arguments only select models declared by modules supplied by the
@@ -915,7 +915,7 @@ it supplies the built-in prompt but does not discover prompt files.
 A provider is one configured instance of an adapter: its id is the prefix of
 model references (`codex-work/gpt-5.5`) and the namespace of its credentials.
 One adapter can back several providers, each with its own settings and login.
-`Tackle.Plugins.available_providers/2` merges them from three sources, lowest
+`Tackle.Providers.available_providers/2` merges them from three sources, lowest
 precedence first:
 
 1. the default providers of each configured adapter (usually one, whose id is
@@ -979,7 +979,7 @@ default providers.
 
 `Tackle.Auth` stores one opaque map per provider id in `$TACKLE_HOME/auth.json` and
 injects only a non-secret `Tackle.Lib.CredentialStore` handle into adapter
-options. `Tackle.Auth.Provider` runs an adapter's login, logout, status, and
+options. `Tackle.Auth.Flows` runs an adapter's login, logout, status, and
 usage flows for one provider, passing the provider's id and settings to the
 adapter. `login(adapters, id, as: name)` creates the account `name` on the adapter that
 `id` names (a provider id or an adapter type id) and stores its credentials

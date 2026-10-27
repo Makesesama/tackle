@@ -7,14 +7,14 @@ defmodule Tackle.Auth do
   file and returns only one provider namespace at a time.
 
   Adapter-driven login, logout, status, and usage flows live in
-  `Tackle.Auth.Provider`, which resolves a provider by its id and stores the
+  `Tackle.Auth.Flows`, which resolves a provider by its id and stores the
   credentials returned by the adapter through this module.
 
   The same file records provider *accounts*: providers created by
   `tackle auth login ID --as NAME`. Each maps a provider id to a record naming
   the adapter type id that backs it (`"adapter"`) and, when `ID` was a
   provider id, that base provider (`"base"`), whose settings the account
-  inherits. `Tackle.Plugins` merges them into the
+  inherits. `Tackle.Providers` merges them into the
   available providers. Accounts are not part of the
   `Tackle.Lib.CredentialStore` contract and are reachable only through this
   module.
@@ -62,7 +62,7 @@ defmodule Tackle.Auth do
 
   @doc ~S"""
   Validates one account record, as `auth.json` stores it and
-  `Tackle.Plugins` merges it.
+  `Tackle.Providers` merges it.
 
   `provider_id`, the record's `"adapter"`, and its `"base"`, when set, must
   be valid provider ids (`Tackle.Lib.LLM.Provider.valid_id?/1`); a `nil` base

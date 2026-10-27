@@ -1,4 +1,4 @@
-defmodule Tackle.Plugins do
+defmodule Tackle.Providers do
   @moduledoc """
   Merges the providers that a host's adapters back, and lists their models.
 
@@ -114,7 +114,7 @@ defmodule Tackle.Plugins do
     end
   end
 
-  def provider_entries(_adapters, opts), do: {:error, {:invalid_plugin_options, opts}}
+  def provider_entries(_adapters, opts), do: {:error, {:invalid_provider_options, opts}}
 
   @doc """
   Merges adapter default providers, configured provider declarations, and
