@@ -19,12 +19,21 @@ defmodule Tackle.Plugins.Anthropic do
   the injected `Tackle.Lib.CredentialStore` and retries one request after a
   `401`.
 
+  OAuth credentials carry a rotating refresh token: once spent, it is invalid
+  for everyone else. A refresh runs inside
+  `Tackle.Lib.CredentialStore.with_lock/3` on the provider's namespace. Under
+  the lock the adapter fetches the credentials again and refreshes only if they
+  still need it; otherwise it uses what another process stored meanwhile. When
+  the store's lock spans operating-system processes, as `Tackle.Auth.Store`'s
+  does for `auth.json`, only one process spends the refresh token. A failure to
+  get the lock returns `{:error, {:credential_lock_failed, reason}}`.
+
   ## Providers
 
   Several providers can share this adapter, each with its own login. The host
   passes the provider as `opts[:provider_id]` and `opts[:provider_settings]`;
   without them the adapter acts as the default `"anthropic"` provider. The
-  provider id is the credential namespace and part of the refresh lock;
+  provider id is the credential namespace, which a refresh locks;
   `Tackle.Lib.LLM` reports it as the response's `:provider` and stamps it on
   replayable `:provider_state`.
 
@@ -492,15 +501,15 @@ defmodule Tackle.Plugins.Anthropic do
     end
   end
 
-  # The lock is per store and provider, so refreshing one account never waits
-  # on (or races with) another account's refresh.
+  # Refresh tokens rotate: a token spent by one process is invalid for every
+  # other, and reusing it may revoke the login. The store's namespace lock
+  # covers every process sharing the storage (such as several VMs sharing
+  # auth.json), so only one refreshes; the others wait and then return what it
+  # stored. The lock is per provider, so accounts refresh independently.
   defp refresh_locked(handle, rejected_access_token, opts) do
-    lock_id = {{__MODULE__, :credential_refresh, handle, provider_id(opts)}, self()}
-
-    case :global.trans(lock_id, fn -> refresh_current(handle, rejected_access_token, opts) end) do
-      {:aborted, reason} -> {:error, {:credential_refresh_lock_failed, reason}}
-      result -> result
-    end
+    CredentialStore.with_lock(handle, provider_id(opts), fn ->
+      refresh_current(handle, rejected_access_token, opts)
+    end)
   end
 
   defp refresh_current(handle, rejected_access_token, opts) do

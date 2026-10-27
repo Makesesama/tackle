@@ -24,6 +24,33 @@ defmodule Tackle.Plugins.AnthropicTest do
     def delete(agent, namespace), do: Agent.update(agent, &Map.delete(&1, namespace))
   end
 
+  # Two handles on one storage, each standing for an OS process sharing
+  # auth.json. Its lock is keyed by the storage and namespace, not by the
+  # handle, and reports each request for it to the test.
+  defmodule SharedStore do
+    @behaviour Tackle.Lib.CredentialStore
+
+    @impl true
+    def fetch({agent, _process, _test}, namespace),
+      do: Agent.get(agent, &Map.fetch(&1, namespace))
+
+    @impl true
+    def put({agent, _process, _test}, namespace, credentials),
+      do: Agent.update(agent, &Map.put(&1, namespace, credentials))
+
+    @impl true
+    def delete({agent, _process, _test}, namespace),
+      do: Agent.update(agent, &Map.delete(&1, namespace))
+
+    @impl true
+    def with_lock({agent, process, test}, namespace, fun) do
+      send(test, {:lock_requested, process})
+      lock_id = {{__MODULE__, agent, namespace}, self()}
+      {:locked, result} = :global.trans(lock_id, fn -> {:locked, fun.()} end)
+      result
+    end
+  end
+
   defmodule Interaction do
     @behaviour Tackle.Lib.Interaction
 
@@ -634,6 +661,64 @@ defmodule Tackle.Plugins.AnthropicTest do
       stored = Agent.get(agent, & &1)
       assert stored["claude-work"]["refresh_token"] == "rotated-work-refresh"
       assert stored["claude-home"]["refresh_token"] == "rotated-home-refresh"
+    end
+
+    test "processes sharing a store spend a refresh token once" do
+      {CredentialStore, agent} =
+        start_store(%{"claude-work" => oauth_credentials("expired", "old", 0)})
+
+      test_pid = self()
+      {:ok, spent} = Agent.start_link(fn -> [] end)
+
+      # The provider rejects a spent refresh token, as on refresh-token reuse.
+      request = fn options ->
+        if Keyword.has_key?(options, :into) do
+          send(test_pid, {:authorization, header(options, "authorization")})
+          feed_chunks(options, [text_wire("ok")], 200)
+        else
+          {:ok, %{"refresh_token" => refresh}} = JSON.decode(options[:body])
+          send(test_pid, {:token_request, refresh})
+
+          if refresh in Agent.get_and_update(spent, &{&1, [refresh | &1]}) do
+            {:ok, %Req.Response{status: 400, headers: %{}, body: ~s({"error":"invalid_grant"})}}
+          else
+            send(test_pid, {:refresh_blocked, self()})
+            assert_receive :release, 1_000
+            token_response("sk-ant-oat-new", "rotated")
+          end
+        end
+      end
+
+      generate = fn process ->
+        store = {SharedStore, {agent, process, test_pid}}
+        opts = provider_opts(store, request) |> Keyword.put(:provider_id, "claude-work")
+        Task.async(fn -> generate(nil, opts) end)
+      end
+
+      first = generate.(:first)
+      assert_receive {:refresh_blocked, blocked}, 1_000
+      assert_receive {:token_request, "old"}
+
+      # The second process waits for the lock (or, without it, spends the
+      # token too) while the first still refreshes.
+      second = generate.(:second)
+
+      receive do
+        {:lock_requested, :second} -> :ok
+        {:token_request, "old"} -> :ok
+      after
+        1_000 -> flunk("the second request neither locked nor refreshed")
+      end
+
+      send(blocked, :release)
+      assert {:ok, %{data: %{"content" => "ok"}}} = Task.await(first, 1_000)
+      assert {:ok, %{data: %{"content" => "ok"}}} = Task.await(second, 1_000)
+
+      assert_receive {:authorization, "Bearer sk-ant-oat-new"}
+      assert_receive {:authorization, "Bearer sk-ant-oat-new"}
+      refute_received {:token_request, _refresh}
+      assert Agent.get(spent, & &1) == ["old"]
+      assert Agent.get(agent, & &1)["claude-work"]["refresh_token"] == "rotated"
     end
 
     test "replays continuation state only to the provider and model that produced it" do

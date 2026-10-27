@@ -21,7 +21,7 @@ defmodule Tackle.Plugins.Codex do
   (`codex-work/gpt-5.5`, `codex-home/gpt-5.5`). The host passes the provider
   as `opts[:provider_id]` and `opts[:provider_settings]`; without them the
   adapter acts as the default `"openai-codex"` provider. The provider id is the
-  credential namespace and part of the refresh lock. `Tackle.Lib.LLM` reports
+  credential namespace, which a refresh locks. `Tackle.Lib.LLM` reports
   it as the response's `:provider` and stamps it on replayable
   `:provider_state`, so one account's state is never replayed to another.
 
@@ -31,6 +31,19 @@ defmodule Tackle.Plugins.Codex do
 
   Honoured settings: `"base_url"` (the ChatGPT backend base URL). An explicit
   `:base_url` option wins over it.
+
+  ## Credential refresh
+
+  Credentials carry a rotating refresh token: once spent, it is invalid for
+  everyone else. `stream/3` and `usage/1` refresh expiring credentials before
+  a request, and once after a `401`, inside
+  `Tackle.Lib.CredentialStore.with_lock/3` on the provider's namespace. Under
+  the lock they fetch the credentials again and refresh only if they still
+  need it; otherwise they use what another process stored meanwhile. When the
+  store's lock spans operating-system processes, as `Tackle.Auth.Store`'s does
+  for `auth.json`, only one process spends the refresh token. Providers
+  refresh independently. A failure to get the lock returns
+  `{:error, {:credential_lock_failed, reason}}`.
 
   ## Output limit and stop reasons
 
@@ -767,15 +780,15 @@ defmodule Tackle.Plugins.Codex do
     end
   end
 
-  # The lock is per store and provider, so refreshing one account never waits
-  # on (or races with) another account's refresh.
+  # Refresh tokens rotate: a token spent by one process is invalid for every
+  # other, and reusing it may revoke the login. The store's namespace lock
+  # covers every process sharing the storage (such as several VMs sharing
+  # auth.json), so only one refreshes; the others wait and then return what it
+  # stored. The lock is per provider, so accounts refresh independently.
   defp refresh_locked(handle, rejected_access_token, opts) do
-    lock_id = {{__MODULE__, :credential_refresh, handle, provider_id(opts)}, self()}
-
-    case :global.trans(lock_id, fn -> refresh_current(handle, rejected_access_token, opts) end) do
-      {:aborted, reason} -> {:error, {:credential_refresh_lock_failed, reason}}
-      result -> result
-    end
+    CredentialStore.with_lock(handle, provider_id(opts), fn ->
+      refresh_current(handle, rejected_access_token, opts)
+    end)
   end
 
   defp refresh_current(handle, rejected_access_token, opts) do

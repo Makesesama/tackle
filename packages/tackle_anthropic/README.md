@@ -47,6 +47,13 @@ Anthropic requires a newer client. System-prompt rewriting can be tuned with
 Credentials contain access and rotating refresh tokens. The adapter refreshes
 expiring credentials before requests, persists rotated tokens through the
 injected `Tackle.Lib.CredentialStore`, and retries one request after a `401`.
+A refresh runs inside `Tackle.Lib.CredentialStore.with_lock/3` on the
+provider's namespace: under the lock the adapter fetches the credentials again
+and refreshes only if they still need it, otherwise it uses what another
+process stored meanwhile. With `Tackle.Auth.Store`, whose lock spans every
+process sharing `auth.json` (several CLIs, or a CLI and `tackle sdk`), only one
+process spends a refresh token; a reused one fails and may revoke the login. A
+failure to get the lock returns `{:error, {:credential_lock_failed, reason}}`.
 
 ### API key
 
@@ -77,8 +84,8 @@ alias Tackle.Lib.LLM.Provider
 The selection passes `:provider_id` and `:provider_settings` to the adapter, and
 hosts pass the same options to `login/1` and `status/1`. Without them the
 adapter acts as the default `"anthropic"` provider. The provider id is the
-credential namespace read, refreshed, and written back; part of the OAuth
-refresh lock, so accounts refresh independently. `Tackle.Lib.LLM` reports it
+credential namespace read, refreshed, and written back, and the namespace an
+OAuth refresh locks, so accounts refresh independently. `Tackle.Lib.LLM` reports it
 as the response's `:provider` and stamps it on replayable `provider_state`.
 Only the default
 `"anthropic"` provider falls back to `ANTHROPIC_API_KEY` when no credentials
