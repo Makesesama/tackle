@@ -4,6 +4,7 @@ defmodule Tackle.Config.FileTest do
   alias Tackle.Config
   alias Tackle.Config.File, as: ConfigFile
   alias Tackle.Config.Narration
+  alias Tackle.Config.Watchdog
   alias Tackle.Elixir.CompileGate.Settings, as: CompileGateSettings
   alias Tackle.Lib.LLM.Provider
 
@@ -632,6 +633,24 @@ defmodule Tackle.Config.FileTest do
     )
 
     assert {:error, {:invalid_option, :watchdog, after_seconds: 0}} = load.()
+
+    # The first check must fit the longest Erlang timer, 2^32 - 1 milliseconds.
+    for seconds <- [1.0e308, 4_294_968] do
+      write_config(
+        home,
+        JSON.encode!(%{"watchdog" => %{"model" => "judge/small", "after_seconds" => seconds}})
+      )
+
+      assert {:error, {:invalid_option, :watchdog, after_seconds: ^seconds}} = load.()
+    end
+
+    write_config(
+      home,
+      JSON.encode!(%{"watchdog" => %{"model" => "judge/small", "after_seconds" => 4_294_967.295}})
+    )
+
+    assert {:ok, %{watchdog: watchdog}} = load.()
+    assert Watchdog.after_ms(watchdog) == 4_294_967_295
 
     write_config(home, JSON.encode!(%{"watchdog" => %{"model" => "judge/missing"}}))
     assert {:error, {:unknown_decision_model, "judge/missing"}} = load.()

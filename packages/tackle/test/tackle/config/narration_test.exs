@@ -43,4 +43,26 @@ defmodule Tackle.Config.NarrationTest do
     assert {:error, {:invalid_option, :narration, interval_seconds: -1}} =
              Narration.new([model: "local/small", interval_seconds: -1], [Adapter])
   end
+
+  test "every interval fits the longest Erlang timer" do
+    for key <- [:interval_seconds, :first_after_seconds],
+        seconds <- [1.0e308, 4_294_968, 4_294_967.296] do
+      assert {:error, {:invalid_option, :narration, [{^key, ^seconds}]}} =
+               Narration.new([{:model, "local/small"}, {key, seconds}], [Adapter])
+    end
+
+    assert {:ok, config} =
+             Narration.new(
+               [
+                 model: "local/small",
+                 interval_seconds: 4_294_967.295,
+                 first_after_seconds: 0.001
+               ],
+               [Adapter]
+             )
+
+    assert Narration.interval_ms(config) == 4_294_967_295
+    assert Narration.first_after_ms(config) == 1
+    assert is_reference(Process.send_after(self(), :never, Narration.interval_ms(config)))
+  end
 end

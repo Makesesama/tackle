@@ -16,6 +16,9 @@ defmodule Tackle.Config.Narration do
     * `:first_after_seconds` - how long a run works before its first
       narration (default 5), so short runs are never narrated.
 
+  Both are positive numbers of seconds up to 4,294,967.295, the longest
+  Erlang timer (`2^32 - 1` milliseconds).
+
   In `config.json`:
 
       "narration": {"model": "ollama/gemma4:12b", "interval_seconds": 5,
@@ -27,6 +30,8 @@ defmodule Tackle.Config.Narration do
 
   @default_interval_seconds 5
   @default_first_after_seconds 5
+  # The longest Erlang timer, `2^32 - 1` milliseconds, in seconds.
+  @max_seconds 4_294_967_295 / 1_000
 
   @enforce_keys [:model_ref, :selection]
   defstruct [
@@ -130,8 +135,11 @@ defmodule Tackle.Config.Narration do
 
   defp fetch_seconds(opts, key, default) do
     case Keyword.get(opts, key, default) do
-      seconds when is_number(seconds) and seconds > 0 -> {:ok, seconds}
-      seconds -> invalid([{key, seconds}])
+      seconds when is_number(seconds) and seconds > 0 and seconds <= @max_seconds ->
+        {:ok, seconds}
+
+      seconds ->
+        invalid([{key, seconds}])
     end
   end
 

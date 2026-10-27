@@ -9,7 +9,9 @@ defmodule Tackle.Config.Watchdog do
       `"ollama/tev1:4b"`, resolved eagerly through `Tackle.Lib.Decision.select/2`
       against the session's providers so an unknown model fails configuration.
     * `:after_seconds` - how long a `bash` command runs before its first check
-      (default 60). Later checks back off while the command looks healthy.
+      (default 60), a positive number of seconds up to 4,294,967.295, the
+      longest Erlang timer (`2^32 - 1` milliseconds). Later checks back off
+      while the command looks healthy.
     * `:threshold` - minimum probability, in `(0, 1]`, of a stop verdict
       (`waiting_for_input`, `infinite_loop`, or `stalled`) before the command
       is stopped (default 0.85).
@@ -24,6 +26,8 @@ defmodule Tackle.Config.Watchdog do
 
   @default_after_seconds 60
   @default_threshold 0.85
+  # The longest Erlang timer, `2^32 - 1` milliseconds, in seconds.
+  @max_after_seconds 4_294_967_295 / 1_000
 
   @enforce_keys [:model_ref, :selection]
   defstruct [
@@ -116,8 +120,11 @@ defmodule Tackle.Config.Watchdog do
 
   defp fetch_after_seconds(opts) do
     case Keyword.get(opts, :after_seconds, @default_after_seconds) do
-      seconds when is_number(seconds) and seconds > 0 -> {:ok, seconds}
-      seconds -> invalid(after_seconds: seconds)
+      seconds when is_number(seconds) and seconds > 0 and seconds <= @max_after_seconds ->
+        {:ok, seconds}
+
+      seconds ->
+        invalid(after_seconds: seconds)
     end
   end
 

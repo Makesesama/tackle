@@ -735,7 +735,8 @@ stalled, and backs off exponentially while it looks healthy. A stop verdict with
 probability at or above `threshold` (default 0.85) stops just that call; the
 agent receives the reason as the command's error and continues. A failing
 decision model never stops anything. `model` is a decision model reference
-such as `"ollama/tev1:4b"` (see `Tackle.Lib.Decision`):
+such as `"ollama/tev1:4b"` (see `Tackle.Lib.Decision`). `after_seconds` is a
+positive number of seconds up to 4,294,967.295, the longest Erlang timer:
 
 ```json
 { "watchdog": { "model": "ollama/tev1:4b", "after_seconds": 60, "threshold": 0.85 } }
@@ -824,7 +825,8 @@ there is no fallback to the session model, which may be a paid remote one —
 and must be a chat model reference such as `"ollama/gemma4:12b"`. The request
 is tool-free with `reasoning_effort: :none` and `max_tokens: 60`, so the
 model's adapter should accept both. A failing model logs one warning and is
-retried with back-off; it never affects the agents:
+retried with back-off; it never affects the agents. Both intervals are positive
+numbers of seconds up to 4,294,967.295, the longest Erlang timer:
 
 ```json
 { "narration": { "model": "ollama/gemma4:12b", "interval_seconds": 5, "first_after_seconds": 5 } }
