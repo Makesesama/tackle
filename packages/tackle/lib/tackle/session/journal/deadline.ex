@@ -11,6 +11,7 @@ defmodule Tackle.Session.Journal.Deadline do
   use GenServer
   require Logger
 
+  alias Tackle.FileLock
   alias Tackle.Session.Reader
   alias Tackle.Session.Storage
   alias Tackle.StatusRedaction
@@ -521,7 +522,7 @@ defmodule Tackle.Session.Journal.Deadline do
     # or diagnostic write cannot prevent closing the backend and releasing its
     # lock. Each operation has its own independent deadline.
     next =
-      if match?(%Storage.Lock{port: nil}, state.lock),
+      if match?(%FileLock{port: nil}, state.lock),
         do: start_reporter(state, fn -> release_fallback_lock(state) end),
         else: state
 
@@ -534,7 +535,7 @@ defmodule Tackle.Session.Journal.Deadline do
     %{state | reporters: Map.put(state.reporters, ref, pid)}
   end
 
-  defp release_fallback_lock(%{lock: %Storage.Lock{port: nil}} = state) do
+  defp release_fallback_lock(%{lock: %FileLock{port: nil}} = state) do
     # Close waits for dispatched backend work. Never release ownership
     # while the disk_log could still be writing after journal death.
     case Reader.close(Reader.name(state.session_id)) do

@@ -6,6 +6,7 @@ defmodule Tackle.Session.Storage.LockTest do
 
   import Tackle.Test.Runtime
 
+  alias Tackle.FileLock
   alias Tackle.Runtime.ID
   alias Tackle.Session.Storage
   alias Tackle.Session.Storage.Lock
@@ -24,7 +25,7 @@ defmodule Tackle.Session.Storage.LockTest do
   end
 
   test "records the owner in a private lock file and refuses a second owner", ctx do
-    assert {:ok, %Lock{port: nil, owner: owner} = lock} = Lock.acquire(ctx.dir)
+    assert {:ok, %FileLock{port: nil, owner: owner} = lock} = Lock.acquire(ctx.dir)
     assert owner["pid"] == System.pid()
     assert is_binary(owner["process_identity"])
 
@@ -41,7 +42,9 @@ defmodule Tackle.Session.Storage.LockTest do
   end
 
   test "Storage takes and releases the fallback lock of a session", ctx do
-    assert {:ok, %Lock{port: nil} = lock} = Storage.acquire_lock(ctx.session_id, home: ctx.home)
+    assert {:ok, %FileLock{port: nil} = lock} =
+             Storage.acquire_lock(ctx.session_id, home: ctx.home)
+
     assert File.exists?(Lock.path(ctx.dir))
     assert :ok = Storage.release_lock(lock)
     refute File.exists?(Lock.path(ctx.dir))

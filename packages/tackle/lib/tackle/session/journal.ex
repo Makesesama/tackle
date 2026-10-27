@@ -79,6 +79,7 @@ defmodule Tackle.Session.Journal do
   require Logger
 
   alias Tackle.Config
+  alias Tackle.FileLock
   alias Tackle.Lib.Message
   alias Tackle.Lib.Thinking
   alias Tackle.Lib.Tree
@@ -94,7 +95,6 @@ defmodule Tackle.Session.Journal do
   alias Tackle.Session.ProjectionError
   alias Tackle.Session.Reader
   alias Tackle.Session.Storage
-  alias Tackle.Session.Storage.Lock
   alias Tackle.StatusRedaction
 
   @registry Tackle.Session.JournalRegistry
@@ -607,7 +607,7 @@ defmodule Tackle.Session.Journal do
   end
 
   @impl true
-  def handle_info({port, {:exit_status, status}}, %{lock: %Lock{port: port}} = state) do
+  def handle_info({port, {:exit_status, status}}, %{lock: %FileLock{port: port}} = state) do
     {:stop, {:journal_failure, {:writer_lock_lost, status}}, state}
   end
 

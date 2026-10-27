@@ -43,6 +43,7 @@ defmodule Tackle.Session.Storage do
   versions are made private when a session is next opened for writing.
   """
 
+  alias Tackle.FileLock
   alias Tackle.Session.Storage.Lock
 
   @journal_file "session.dlog"
@@ -294,7 +295,7 @@ defmodule Tackle.Session.Storage do
 
   @doc "Releases a previously acquired ownership lock."
   @spec release_lock(Lock.t()) :: :ok
-  def release_lock(%Lock{} = lock), do: Lock.release(lock)
+  def release_lock(%FileLock{} = lock), do: Lock.release(lock)
 
   @doc "Lists session ids in the selected project (or legacy root without `:cwd`)."
   @spec list_session_ids(keyword()) :: {:ok, [String.t()]} | {:error, term()}
