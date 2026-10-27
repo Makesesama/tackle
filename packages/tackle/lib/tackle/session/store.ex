@@ -390,12 +390,7 @@ defmodule Tackle.Session.Store do
         parent: %{"session_id" => parent_id, "seq" => parent_seq}
       )
 
-    forked =
-      Log.event("session.forked", %{
-        "parent_session_id" => parent_id,
-        "parent_seq" => parent_seq,
-        "forked_at" => now()
-      })
+    forked = Log.session_forked(parent_id, parent_seq, now())
 
     [header, new_commit(new_id, 1, nil, [forked])] ++
       (commits

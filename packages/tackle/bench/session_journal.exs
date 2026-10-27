@@ -21,7 +21,7 @@
 #       length (commit #10, #1000, #5000).
 #   B2. Commit stages in-process: the public pieces the journal's private
 #       `commit/3` calls, in the same order and on a growing projection —
-#       event encoding, Log.commit, Log.validate_commit + Codec.validate,
+#       the Log event builder, Log.commit, Codec.validate of the event data,
 #       term_to_binary (what `:disk_log.log/2` does in the caller),
 #       Projection.apply_commit, the catalog entry (rebuilt with the public
 #       Catalog.Entry.from_projection/2 because `catalog_entry/2` is private;
@@ -833,15 +833,7 @@ defmodule Bench.Stages do
     now = now()
     header = Log.header(session_id: session_id, created_at: now, cwd: nil, parent: nil)
 
-    created =
-      Log.event("session.created", %{
-        "cwd" => nil,
-        "model_ref" => "bench/fake",
-        "thinking" => nil,
-        "title" => nil,
-        "tags" => [],
-        "tree" => true
-      })
+    created = Log.session_created(header, model_ref: "bench/fake", tree: true)
 
     state = %{
       session_id: session_id,
@@ -906,23 +898,12 @@ defmodule Bench.Stages do
     turn_id = Tackle.Runtime.ID.generate()
     state = %{state | turn_id: turn_id, active?: true}
 
-    commit(state, fn _state ->
-      Log.event("turn.started", %{
-        "turn_id" => turn_id,
-        "operation" => "run",
-        "input" => "bench",
-        "started_at" => now()
-      })
-    end)
+    commit(state, fn _state -> Log.turn_started(turn_id, :run, "bench", now()) end)
   end
 
   defp step(state, {:settle, _t}, _bytes) do
     {state, timings} =
-      commit(state, fn state ->
-        payload = %{"turn_id" => state.turn_id, "settled_at" => now()}
-        :ok = Codec.validate(payload)
-        Log.event("turn.completed", payload)
-      end)
+      commit(state, fn state -> Log.turn_settled("turn.completed", state.turn_id, %{}, now()) end)
 
     {%{state | active?: false}, timings}
   end
@@ -937,32 +918,15 @@ defmodule Bench.Stages do
     do: message_step(state, Workload.tool_result(i, bytes))
 
   defp step(state, {:tool_started, i}, _bytes) do
-    commit(state, fn _state ->
-      call = Codec.normalize(Workload.tool_call(i))
-
-      data = %{
-        "tool_call_id" => Map.get(call, "id"),
-        "name" => Map.get(call, "name"),
-        "arguments" => Map.get(call, "arguments") || %{},
-        "started_at" => now()
-      }
-
-      :ok = Codec.validate(data)
-      Log.event("tool.execution_started", data)
-    end)
+    commit(state, fn _state -> Log.tool_started(Workload.tool_call(i), now()) end)
   end
 
   defp message_step(state, message) do
     {state, timings} =
-      commit(state, fn state ->
-        {:ok, data} = Codec.encode_message(message)
-        Log.event("message.appended", Map.put(data_wrap(data), "parent_id", state.parent))
-      end)
+      commit(state, fn state -> Log.message_appended(message, {:tree, state.parent}) end)
 
     {%{state | parent: message.id}, timings}
   end
-
-  defp data_wrap(data), do: %{"message" => data}
 
   # Mirrors Tackle.Session.Journal.commit/3 minus the disk_log append and sync.
   defp commit(state, event_fun) do
@@ -981,10 +945,7 @@ defmodule Bench.Stages do
         )
       end)
 
-    {validate_us, :ok} =
-      time(fn ->
-        with :ok <- Log.validate_commit(commit, state.session_id, seq), do: Codec.validate(commit)
-      end)
+    {validate_us, :ok} = time(fn -> Codec.validate(event["data"]) end)
 
     {etf_us, etf} = time(fn -> :erlang.term_to_binary(commit) end)
 
@@ -1485,9 +1446,8 @@ defmodule Bench.Report do
     """
     ### B2. Commit stages in-process (no disk), p50 / p99
 
-    `event` = message/tool/turn event encoding (Codec.encode_message or
-    Codec.validate of tool/settle data), `envelope` = Log.commit, `validate` =
-    Log.validate_commit + Codec.validate of the whole commit, `term_to_binary` =
+    `event` = the Log event builder (which encodes a message), `envelope` =
+    Log.commit, `validate` = Codec.validate of the event data, `term_to_binary` =
     the encoding `:disk_log.log/2` performs in the journal process, `projection`
     = Projection.apply_commit, `summary` = the private catalog_entry/2 rebuilt
     with Catalog.Entry.from_projection/2, `catalog` = Catalog.record/1

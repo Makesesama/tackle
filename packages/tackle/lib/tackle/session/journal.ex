@@ -293,39 +293,9 @@ defmodule Tackle.Session.Journal do
   # (archived or trashed) before the lock was held is reported as not found.
   defp open_or_defer(session_id, path, opts) do
     if Storage.journal_exists?(session_id, opts) do
-      open_existing(session_id, opts)
+      materialize(session_id, opts, &Storage.acquire_existing_lock/2)
     else
       {:ok, deferred_state(session_id, path, opts)}
-    end
-  end
-
-  defp open_existing(session_id, opts) do
-    repair? = Keyword.get(opts, :repair, false)
-
-    Watchdog.stage(self(), :acquire_lock)
-
-    with {:ok, lock} <- Storage.acquire_existing_lock(session_id, opts) do
-      Watchdog.lock(self(), lock)
-      Watchdog.stage(self(), :open_replay)
-
-      case open_writable(session_id, Keyword.put(opts, :repair, repair?)) do
-        {:ok, opened} ->
-          build_state(session_id, lock, opened, opts)
-
-        {:error, reason} ->
-          Storage.release_lock(lock)
-          Watchdog.lock(self(), nil)
-          {:error, {:journal_open_failed, session_id, reason}}
-      end
-    end
-  end
-
-  # Runs under the writer lock: an idle journal stored compressed is restored
-  # to a plain journal before the owner opens it.
-  defp open_writable(session_id, opts) do
-    with {:ok, path} <- Storage.journal_path(session_id, opts),
-         :ok <- Compression.restore(path) do
-      Reader.open_writable(session_id, opts)
     end
   end
 
@@ -346,27 +316,66 @@ defmodule Tackle.Session.Journal do
 
   defp ensure_materialized(%{materialized?: true} = state), do: {:ok, state}
 
-  defp ensure_materialized(%{materialized?: false} = state) do
+  defp ensure_materialized(%{materialized?: false} = state),
+    do: materialize(state.session_id, state.open_opts, &Storage.acquire_lock/2)
+
+  # Takes the writer lock, opens the journal under it, and writes or replays
+  # what opening requires. Anything that fails after the lock is held closes
+  # the log, if it was opened, and releases the lock.
+  defp materialize(session_id, opts, acquire_lock) do
     Watchdog.stage(self(), :acquire_lock)
 
-    case Storage.acquire_lock(state.session_id, state.open_opts) do
-      {:ok, lock} ->
-        Watchdog.lock(self(), lock)
-        Watchdog.stage(self(), :open_replay)
+    with {:ok, lock} <- acquire_lock.(session_id, opts) do
+      Watchdog.lock(self(), lock)
+      Watchdog.stage(self(), :open_replay)
 
-        case open_writable(state.session_id, state.open_opts) do
-          {:ok, opened} ->
-            build_state(state.session_id, lock, opened, state.open_opts)
+      case open_locked(session_id, lock, opts) do
+        {:ok, state} ->
+          {:ok, state}
 
-          {:error, reason} ->
-            Storage.release_lock(lock)
-            Watchdog.lock(self(), nil)
-            {:error, {:journal_open_failed, state.session_id, reason}}
+        {:error, reason} ->
+          _ = Storage.release_lock(lock)
+          Watchdog.lock(self(), nil)
+          {:error, reason}
+      end
+    end
+  end
+
+  defp open_locked(session_id, lock, opts) do
+    case open_writable(session_id, opts) do
+      {:ok, opened} ->
+        with {:error, reason} <- initialize(opened, opened_state(session_id, lock, opened), opts) do
+          _ = Reader.close(opened.name)
+          {:error, reason}
         end
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, {:journal_open_failed, session_id, reason}}
     end
+  end
+
+  # An idle journal stored compressed is restored to a plain journal before
+  # the owner opens it.
+  defp open_writable(session_id, opts) do
+    with {:ok, path} <- Storage.journal_path(session_id, opts),
+         :ok <- Compression.restore(path) do
+      Reader.open_writable(session_id, opts)
+    end
+  end
+
+  defp opened_state(session_id, lock, opened) do
+    %{
+      session_id: session_id,
+      path: opened.path,
+      name: opened.name,
+      lock: lock,
+      next_seq: nil,
+      synced_seq: nil,
+      projection: nil,
+      live_turn?: false,
+      materialized?: true,
+      open_opts: nil
+    }
   end
 
   @impl true
@@ -379,13 +388,7 @@ defmodule Tackle.Session.Journal do
         {:reply, {:error, :turn_in_progress}, state}
 
       {:ok, state} ->
-        event =
-          Log.event("turn.started", %{
-            "turn_id" => turn_id,
-            "operation" => Atom.to_string(operation),
-            "input" => input,
-            "started_at" => now()
-          })
+        event = Log.turn_started(turn_id, operation, input, now())
 
         # Write-behind: the turn becomes durable with the first external tool
         # gate or a later sync. A turn lost to power loss has caused no external
@@ -409,8 +412,8 @@ defmodule Tackle.Session.Journal do
 
   def handle_call({:context_compacted, data}, _from, state) do
     with {:ok, data} <- compaction_data(state.projection, data),
-         event = Log.event("context.compacted", data),
-         {:ok, state, _seq} <- commit(state, [event], live_turn_id(state)) do
+         {:ok, state, _seq} <-
+           commit(state, [Log.context_compacted(data)], live_turn_id(state)) do
       {:reply, :ok, state}
     else
       error -> refuse_or_fail(state, error)
@@ -422,7 +425,7 @@ defmodule Tackle.Session.Journal do
 
     with {:ok, turn_id} <- active_turn_id(state),
          {:ok, parent} <- journal_parent(state.projection, parent),
-         {:ok, event} <- message_event(message, parent),
+         event = Log.message_appended(message, parent),
          {:ok, state, _seq} <- commit(state, [event], turn_id, sync?) do
       {:reply, :ok, state}
     else
@@ -432,7 +435,7 @@ defmodule Tackle.Session.Journal do
 
   def handle_call({:tool_started, call, sync?}, _from, state) do
     with {:ok, turn_id} <- active_turn_id(state),
-         {:ok, event} <- tool_event(call),
+         event = Log.tool_started(call, now()),
          {:ok, state, _seq} <- commit(state, [event], turn_id, sync?) do
       {:reply, :ok, state}
     else
@@ -449,17 +452,7 @@ defmodule Tackle.Session.Journal do
   end
 
   def handle_call({:tree_navigated, %Change{} = change}, _from, state) do
-    event =
-      Log.event("tree.navigated", %{
-        "from_id" => change.from_id,
-        "to_id" => change.to_id,
-        "selected_id" => change.selected_id,
-        "mode" => Atom.to_string(change.mode),
-        "revision" => change.revision,
-        "navigated_at" => now()
-      })
-
-    case commit(state, [event], live_turn_id(state)) do
+    case commit(state, [Log.tree_navigated(change, now())], live_turn_id(state)) do
       {:ok, state, _seq} -> {:reply, :ok, state}
       error -> refuse_or_fail(state, error)
     end
@@ -474,9 +467,7 @@ defmodule Tackle.Session.Journal do
   end
 
   def handle_call(:enable_tree, _from, state) do
-    event = Log.event("tree.enabled", %{"enabled_at" => now()})
-
-    case commit(state, [event], nil) do
+    case commit(state, [Log.tree_enabled(now())], nil) do
       {:ok, state, _seq} -> {:reply, :ok, state}
       error -> refuse_or_fail(state, error)
     end
@@ -511,11 +502,7 @@ defmodule Tackle.Session.Journal do
     # provider-specific option. Journals written before recorded the raw value
     # (`nil` when unset), which `Tackle.Session.Loader` still reads.
     event =
-      Log.event("session.configuration_changed", %{
-        "model_ref" => config.model_ref,
-        "thinking" => Thinking.from_llm_opts(config.llm_opts),
-        "changed_at" => now()
-      })
+      Log.configuration_changed(config.model_ref, Thinking.from_llm_opts(config.llm_opts), now())
 
     case commit(state, [event], nil) do
       {:ok, state, _seq} -> {:reply, :ok, state}
@@ -528,9 +515,7 @@ defmodule Tackle.Session.Journal do
   end
 
   def handle_call({:metadata_changed, attrs}, _from, state) do
-    event = Log.event("session.metadata_changed", Map.put_new(attrs, "changed_at", now()))
-
-    case commit(state, [event], nil) do
+    case commit(state, [Log.metadata_changed(attrs, now())], nil) do
       {:ok, state, _seq} -> {:reply, :ok, state}
       error -> refuse_or_fail(state, error)
     end
@@ -632,32 +617,6 @@ defmodule Tackle.Session.Journal do
 
   defp redact_projection(projection), do: projection
 
-  defp build_state(session_id, lock, opened, opts) do
-    state = %{
-      session_id: session_id,
-      path: opened.path,
-      name: opened.name,
-      lock: lock,
-      next_seq: nil,
-      synced_seq: nil,
-      projection: nil,
-      live_turn?: false,
-      materialized?: true,
-      open_opts: nil
-    }
-
-    case initialize(opened, state, opts) do
-      {:ok, state} ->
-        {:ok, state}
-
-      {:error, reason} ->
-        _ = Reader.close(opened.name)
-        _ = Storage.release_lock(lock)
-        Watchdog.lock(self(), nil)
-        {:error, reason}
-    end
-  end
-
   defp update_creation_config(opts, %Config{} = config) do
     opts
     |> Keyword.put(:model_ref, config.model_ref)
@@ -698,15 +657,7 @@ defmodule Tackle.Session.Journal do
         parent: Keyword.get(opts, :parent)
       )
 
-    created =
-      Log.event("session.created", %{
-        "cwd" => header["cwd"],
-        "model_ref" => Keyword.get(opts, :model_ref),
-        "thinking" => Keyword.get(opts, :thinking),
-        "title" => Keyword.get(opts, :title),
-        "tags" => Keyword.get(opts, :tags, []),
-        "tree" => Keyword.get(opts, :tree, false)
-      })
+    created = Log.session_created(header, opts)
 
     # The synced `session.created` commit also makes the header durable.
     with :ok <- stage(:append_header, 0, fn -> Reader.log(state.name, header) end) do
@@ -734,9 +685,7 @@ defmodule Tackle.Session.Journal do
         {:ok, state}
 
       info ->
-        event = Log.event("session.recovered", info)
-
-        case commit(state, [event], nil) do
+        case commit(state, [Log.session_recovered(info)], nil) do
           {:ok, state, _seq} -> {:ok, state}
           {_rejected_or_error, reason} -> {:error, reason}
         end
@@ -744,9 +693,11 @@ defmodule Tackle.Session.Journal do
   end
 
   # Returns `{:rejected, reason}` when the commit is refused before anything is
-  # written: it must validate and fold into the projection (pure and cheap)
-  # before it is appended, so a commit that replay would reject never reaches
-  # the file. `{:error, reason}` means appending or syncing failed.
+  # written: its event data must be durable plain data, checked once here, and
+  # it must fold into the projection (pure and cheap) before it is appended,
+  # so a commit that replay would reject never reaches the file. The envelope
+  # and the event versions are this build's (`Log.commit/1`, `Log.event/3`).
+  # `{:error, reason}` means appending or syncing failed.
   defp commit(state, events, turn_id, sync? \\ true) do
     seq = state.next_seq
 
@@ -760,7 +711,7 @@ defmodule Tackle.Session.Journal do
         events: events
       )
 
-    with :ok <- stage(:validate, seq, fn -> commit_validation(commit) end),
+    with :ok <- stage(:validate, seq, fn -> validate_data(events) end),
          {:ok, projection} <- stage(:projection, seq, fn -> fold(state.projection, commit) end),
          :ok <- stage(:append, seq, fn -> Reader.log(state.name, commit) end) do
       next = %{state | projection: projection, next_seq: seq + 1}
@@ -802,13 +753,23 @@ defmodule Tackle.Session.Journal do
   defp record_catalog(state, seq),
     do: stage(:catalog, seq, fn -> Catalog.record(catalog_entry(state)) end)
 
-  defp commit_validation(commit) do
-    with :ok <- Log.validate_commit(commit, commit["session_id"], commit["seq"]),
-         :ok <- Codec.validate(commit) do
-      :ok
-    else
-      {:error, reason} -> {:rejected, {:invalid_commit, reason}}
-    end
+  defp validate_data(events) do
+    Enum.reduce_while(events, :ok, fn %{"type" => type, "data" => data}, :ok ->
+      case Codec.validate(data) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:rejected, refusal(type, reason)}}
+      end
+    end)
+  end
+
+  # What the caller gave that is not durable plain data.
+  defp refusal("message.appended", reason), do: {:invalid_message, reason}
+  defp refusal("tool.execution_started", reason), do: {:invalid_tool_call, reason}
+
+  defp refusal(type, reason) do
+    if Log.terminal_event?(type),
+      do: {:invalid_settlement, reason},
+      else: {:invalid_commit, {:invalid_event_data, type, reason}}
   end
 
   # The caller's error, not the journal's: refuse it and stay usable. Anything
@@ -820,16 +781,6 @@ defmodule Tackle.Session.Journal do
     case live_turn_id(state) do
       nil -> {:rejected, :no_active_turn}
       turn_id -> {:ok, turn_id}
-    end
-  end
-
-  defp message_event(%Message{} = message, parent) do
-    case Codec.encode_message(message) do
-      {:ok, data} ->
-        {:ok, Log.event("message.appended", maybe_put_parent(%{"message" => data}, parent))}
-
-      {:error, reason} ->
-        {:rejected, reason}
     end
   end
 
@@ -853,49 +804,10 @@ defmodule Tackle.Session.Journal do
     end
   end
 
-  # `:none` attaches the message to the active entry; `{:tree, parent_id}`
-  # records the entry the message attaches to, including `nil` for a new root,
-  # alongside the message payload in the same commit.
-  defp maybe_put_parent(data, :none), do: data
-  defp maybe_put_parent(data, {:tree, parent_id}), do: Map.put(data, "parent_id", parent_id)
-
-  defp tool_event(call) do
-    call = normalize_tool_call(call)
-
-    data = %{
-      "tool_call_id" => Map.get(call, "id"),
-      "name" => Map.get(call, "name"),
-      "arguments" => Map.get(call, "arguments") || %{},
-      "started_at" => now()
-    }
-
-    case Codec.validate(data) do
-      :ok -> {:ok, Log.event("tool.execution_started", data)}
-      {:error, reason} -> {:rejected, {:invalid_tool_call, reason}}
-    end
-  end
-
-  defp normalize_tool_call(%Tackle.Lib.Tool.Call{} = call) do
-    call
-    |> Map.from_struct()
-    |> Map.take([:id, :name, :arguments])
-    |> Codec.normalize()
-  end
-
-  defp normalize_tool_call(call), do: Codec.normalize(call)
-
   defp settle_event(state, type, data) do
     with {:ok, turn_id} <- settled_turn_id(state, data["turn_id"]),
          :ok <- terminal_event(type) do
-      payload =
-        data
-        |> Map.put("turn_id", turn_id)
-        |> Map.put_new("settled_at", now())
-
-      case Codec.validate(payload) do
-        :ok -> {:ok, Log.event(type, payload), turn_id}
-        {:error, reason} -> {:rejected, {:invalid_settlement, reason}}
-      end
+      {:ok, Log.turn_settled(type, turn_id, data, now()), turn_id}
     end
   end
 

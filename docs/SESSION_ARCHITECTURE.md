@@ -325,7 +325,9 @@ Required envelope rules include:
 - every value passes the durable-data validator;
 - the commit folds into the current projection: no duplicate entry id, a known
   parent and navigation target, a decodable compaction; and
-- one commit remains below an application-defined maximum item size substantially lower than `:disk_log`'s 4 GB term limit.
+- each event's data remains below an application-defined maximum size (24 MB) substantially lower than `:disk_log`'s 4 GB term limit.
+
+The journal owner builds envelopes and events itself (`Tackle.Session.Log`'s builders), so their identity, sequence, and versions hold by construction; before appending it checks once that each event's data passes the durable-data validator and that the commit folds. Replay checks every rule.
 
 Unknown required events stop replay with an unsupported-schema error. Unknown optional extension events can be retained while the core projection ignores them.
 

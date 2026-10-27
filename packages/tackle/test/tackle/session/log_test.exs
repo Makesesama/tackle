@@ -1,6 +1,10 @@
 defmodule Tackle.Session.LogTest do
   use ExUnit.Case, async: true
 
+  alias Tackle.Lib.Message
+  alias Tackle.Lib.Tool.Call
+  alias Tackle.Lib.Tree.Change
+  alias Tackle.Session.Codec
   alias Tackle.Session.Log
 
   @session_id "session-1"
@@ -103,13 +107,6 @@ defmodule Tackle.Session.LogTest do
     end
   end
 
-  test "writing accepts only the current versions" do
-    assert :ok = Log.validate_commit(commit([appended(1, %{})]), @session_id, 1)
-
-    assert {:error, {:unsupported_event_version, "message.appended", 2}} =
-             Log.validate_commit(commit([appended(2, %{})]), @session_id, 1)
-  end
-
   test "names the events that settle a turn and the status each gives it" do
     for {type, status} <- [
           {"turn.completed", :completed},
@@ -126,5 +123,102 @@ defmodule Tackle.Session.LogTest do
       refute Log.terminal_event?(type)
       assert Log.terminal_status(type) == nil
     end
+  end
+
+  @at "2026-01-01T00:00:00Z"
+
+  test "builds the events the journal writes, each readable at its current version" do
+    message = %Message{id: "u1", role: :user, content: "hi", timestamp: ~U[2026-01-01 00:00:00Z]}
+    header = Log.header(session_id: @session_id, created_at: @at, cwd: "/work")
+
+    change = %Change{
+      from_id: "a",
+      to_id: "b",
+      selected_id: "b",
+      mode: :move,
+      revision: 2
+    }
+
+    events = [
+      Log.session_created(header, model_ref: "fake/model", title: "T", tree: true),
+      Log.session_recovered(%{"recovered_items" => 1, "bad_bytes" => 0}),
+      Log.session_forked("parent", 3, @at),
+      Log.configuration_changed("fake/model", "high", @at),
+      Log.metadata_changed(%{"title" => "T"}, @at),
+      Log.turn_started("t1", :run, "hi", @at),
+      Log.message_appended(message, :none),
+      Log.message_appended(message, {:tree, nil}),
+      Log.tool_started(%Call{id: "c1", name: "read", arguments: %{"path" => "a"}}, @at),
+      Log.turn_settled("turn.completed", "t1", %{"status" => "completed"}, @at),
+      Log.context_compacted(%{"compaction_id" => "k1"}),
+      Log.tree_navigated(change, @at),
+      Log.tree_enabled(@at)
+    ]
+
+    %{versions: versions} = Log.schema()
+
+    for event <- events do
+      assert event["version"] == Map.fetch!(versions, event["type"])
+      assert event["required"] == true
+      assert :ok = Codec.validate(event["data"])
+      assert {:ok, %{"events" => [^event]}} = Log.read_commit(commit([event]), @session_id, 1)
+    end
+  end
+
+  test "event builders shape their data" do
+    message = %Message{id: "u1", role: :user, content: "hi", timestamp: ~U[2026-01-01 00:00:00Z]}
+
+    assert Log.turn_started("t1", :repair, nil, @at)["data"] == %{
+             "turn_id" => "t1",
+             "operation" => "repair",
+             "input" => nil,
+             "started_at" => @at
+           }
+
+    # Without branching the parent is implied and not written.
+    assert Log.message_appended(message, :none)["data"] == %{
+             "message" => Codec.encode_message!(message)
+           }
+
+    assert Log.message_appended(message, {:tree, "p"})["data"]["parent_id"] == "p"
+
+    for call <- [
+          %Call{id: "c1", name: "read", arguments: %{"path" => "a"}},
+          %{id: "c1", name: "read", arguments: %{path: "a"}}
+        ] do
+      assert Log.tool_started(call, @at)["data"] == %{
+               "tool_call_id" => "c1",
+               "name" => "read",
+               "arguments" => %{"path" => "a"},
+               "started_at" => @at
+             }
+    end
+
+    assert Log.tool_started(%{"id" => "c2", "name" => "ls"}, @at)["data"]["arguments"] == %{}
+
+    # A settlement names its turn and keeps a time the caller recorded.
+    assert Log.turn_settled(
+             "turn.errored",
+             "t1",
+             %{"turn_id" => "x", "settled_at" => "then"},
+             @at
+           )[
+             "data"
+           ] == %{"turn_id" => "t1", "settled_at" => "then"}
+
+    assert Log.metadata_changed(%{"changed_at" => "then"}, @at)["data"] == %{
+             "changed_at" => "then"
+           }
+
+    header = Log.header(session_id: @session_id, created_at: @at, cwd: "/work")
+
+    assert Log.session_created(header, [])["data"] == %{
+             "cwd" => "/work",
+             "model_ref" => nil,
+             "thinking" => nil,
+             "title" => nil,
+             "tags" => [],
+             "tree" => false
+           }
   end
 end

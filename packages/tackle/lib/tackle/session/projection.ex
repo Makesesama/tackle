@@ -148,7 +148,8 @@ defmodule Tackle.Session.Projection do
   @doc """
   Applies one validated commit to a projection.
 
-  The commit envelope must already have passed `Tackle.Session.Log.validate_commit/3`.
+  The commit must be valid: read with `Tackle.Session.Log.read_commit/4`, or
+  built by the journal from `Tackle.Session.Log`'s builders with plain data.
   Unknown optional events are ignored by the core projection. A commit that
   cannot be folded consistently raises `Tackle.Session.ProjectionError` so
   replay can reject it instead of dropping history.
