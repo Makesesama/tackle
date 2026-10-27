@@ -142,6 +142,39 @@ defmodule Tackle.Session.StoragePauseTest do
     end
   end
 
+  test "a turn whose message append stalls on the disk pauses and finishes" do
+    scope = durable_scope(mode: :manual)
+    root = scope.root_agent_ref
+    {:ok, snapshot} = Tackle.subscribe(root)
+    {:ok, turn} = Tackle.submit(root, "seed")
+    assert_receive {:adapter_called, provider, _, _}
+    {:ok, journal} = Journal.whereis(snapshot.session_id)
+    ref = Process.monitor(journal)
+    log = Reader.name(snapshot.session_id)
+    :ok = :disk_log.block(log, true)
+
+    try do
+      # The answer is appended write-behind, without a sync, so the turn
+      # waits for the disk in the append itself.
+      send(provider, {:respond, "answer"})
+      assert_storage(snapshot.session_id, :delayed)
+      assert deadline_state(snapshot.session_id).stage == :append
+      assert {:ok, %{storage: :delayed, active_turn: %{id: ^turn}}} = Tackle.snapshot(root)
+      refute_receive {:DOWN, ^ref, :process, ^journal, _}, 250
+      refute_receive {:tackle_turn_finished, _, ^turn, _}, 20
+
+      :ok = :disk_log.unblock(log)
+      assert_storage(snapshot.session_id, :ready)
+      assert_receive {:tackle_turn_finished, _, ^turn, {:ok, _}}, 5_000
+      {:ok, replay} = read_journal(snapshot.session_id, home: scope.home)
+      assert Enum.map(replay.projection.messages, & &1["content"]) == ["seed", "answer"]
+      assert Enum.map(replay.commits, & &1["seq"]) == Enum.to_list(1..replay.last_seq)
+    after
+      :disk_log.unblock(log)
+      Process.demonitor(ref, [:flush])
+    end
+  end
+
   test "a storage pause still queues input for the active turn" do
     scope = durable_scope(mode: :manual)
     root = scope.root_agent_ref
@@ -495,13 +528,16 @@ defmodule Tackle.Session.StoragePauseTest do
     Map.put(scope, :home, home)
   end
 
-  defp await_sync(session_id) do
+  defp await_sync(session_id),
+    do: assert(eventually(fn -> deadline_state(session_id).stage == :sync end) == :ok)
+
+  defp deadline_state(session_id) do
     {:ok, journal} = Journal.whereis(session_id)
 
     [{deadline, _}] =
       Registry.lookup(JournalRegistry, {:journal_deadline, journal})
 
-    assert eventually(fn -> :sys.get_state(deadline).stage == :sync end) == :ok
+    :sys.get_state(deadline)
   end
 
   defp await_queued(session_id) do

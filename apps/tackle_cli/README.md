@@ -635,20 +635,20 @@ journal failures include a failure category and the last stage/sequence before
 cleanup. Reporting is best-effort, so a missing file does not rule out a journal
 failure. Check `recorded_at`, since resuming retains earlier crash reports.
 
-A live session sync that takes more than the default 15 seconds pauses the
-agent and displays **Waiting for session storage**. The CLI remains responsive:
+A live session write or sync that waits more than the default 15 seconds for
+the disk pauses the agent and displays **Waiting for session storage**. The CLI remains responsive:
 you can edit your draft, inspect the conversation, and request cancellation.
 No new model/tool work passes its durability boundary until storage confirms
-the pending sync; the same commit is never appended twice. Progress resumes
+the pending write; the same commit is never appended twice. Progress resumes
 automatically, including in one-shot runs (their normal answer timeout is
 suspended during the storage wait). A cancelled turn also settles only once
 the journal catches up; already-running external effects cannot be rolled
 back. Submissions that would start a turn and configuration changes are
 rejected while storage is delayed.
 
-The journal's deadline process still stops the scope for unknown append
-outcomes, actual storage errors, and bounded startup/cleanup failures. Its threshold is not a turn or
-idle-session timeout. A
+The journal's deadline process still stops the scope for stalls that are not
+disk waits, actual storage errors, and bounded startup/cleanup failures. Its
+threshold is not a turn or idle-session timeout. A
 `disk_log_sup` `shutdown_error` printed as OTP exits describes teardown; by
 itself it does not identify what originally stopped the agent. Do not blindly
 retry tools: `--abandon` acknowledges that the interrupted turn's external

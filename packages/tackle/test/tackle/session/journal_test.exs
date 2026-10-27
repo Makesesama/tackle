@@ -347,7 +347,9 @@ defmodule Tackle.Session.JournalTest do
       end
     end
 
-    test "a stalled append kills the owner, releases callers and saves diagnostics", ctx do
+    # The owner itself hangs before it reaches the disk, which is a fault, not
+    # slow storage (see the append pause below).
+    test "a hung owner kills itself, releases callers and saves diagnostics", ctx do
       {:ok, journal} = start_journal(ctx, journal_timeout: 250)
       {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
       :ok = :sys.suspend(journal)
@@ -361,6 +363,7 @@ defmodule Tackle.Session.JournalTest do
       assert_receive {:DOWN, ^ref, :process, ^journal, :killed}, 1_000
       assert {:error, {:journal_stalled, ^diagnostic}} = Task.await(second, 2_000)
       assert diagnostic["operation"] == "append_message"
+      assert diagnostic["stage"] == "queued"
       assert diagnostic["deadline_ms"] == 250
       assert diagnostic["elapsed_ms"] >= 250
       assert diagnostic["stacktrace"] != []
@@ -399,6 +402,44 @@ defmodule Tackle.Session.JournalTest do
         assert :ok = :disk_log.unblock(log)
         assert Task.await(task) == :ok
         assert_receive {:tackle_storage, ^session_id, :ready}
+        assert {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
+        assert [%{"content" => "hello"}] = replay.projection.messages
+        assert replay.last_seq == 3
+        {:ok, path} = Storage.journal_path(ctx.session_id, home: ctx.home)
+        refute File.exists?(Path.join(Path.dirname(path), "journal-failure.json"))
+      after
+        :disk_log.unblock(log)
+        Process.demonitor(ref, [:flush])
+        stop_journal(journal)
+      end
+    end
+
+    test "stalled disk append pauses the owner and resumes without a second append", ctx do
+      {:ok, journal} = start_journal(ctx, journal_timeout: 100)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
+      assert :ready = Deadline.subscribe(journal, self())
+      log = Reader.name(ctx.session_id)
+      assert :ok = :disk_log.block(log, true)
+      ref = Process.monitor(journal)
+
+      try do
+        message = Message.user("hello")
+        task = Task.async(fn -> Journal.append_message(journal, message, :none, sync: false) end)
+        session_id = ctx.session_id
+        assert_receive {:tackle_storage, ^session_id, :delayed}, 1_000
+
+        [{deadline, _}] =
+          Registry.lookup(Tackle.Session.JournalRegistry, {:journal_deadline, journal})
+
+        assert %{stage: :append} = :sys.get_state(deadline)
+        Process.sleep(250)
+        assert Task.yield(task, 20) == nil
+        refute_receive {:DOWN, ^ref, :process, ^journal, _}, 20
+        assert :ok = :disk_log.unblock(log)
+        assert Task.await(task) == :ok
+        assert_receive {:tackle_storage, ^session_id, :ready}
+
+        assert :ok = Journal.flush(journal)
         assert {:ok, replay} = Reader.read(ctx.session_id, home: ctx.home)
         assert [%{"content" => "hello"}] = replay.projection.messages
         assert replay.last_seq == 3

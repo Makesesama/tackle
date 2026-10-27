@@ -600,15 +600,23 @@ commits durable, not on every append.
 
 The implementation must propagate full-disk, permission, device, sync, and log-process failures. It must never suppress them to preserve apparent agent progress.
 
-### Slow live sync: pause and recover
+### Slow live storage: pause and recover
 
 The journal's deadline process treats its default 15-second deadline as a soft threshold
-only for a live `sync` stage. The journal keeps the original sync in flight and
+only for the stages in which a live request waits for the disk: appending
+(`:append`, and `:append_header` when a new session is materialized) and
+`:sync`. `:disk_log.log/2` is a call to the log's process, which writes its
+64 KiB cache with a blocking `write(2)` when the cache fills or its two-second
+timer fires, so under writeback pressure an append waits as long as a sync;
+since commits are written behind (§8), most commits never sync, and a slow disk
+shows up in the append. The journal keeps the original request in flight and
 the pending commit ID/sequence unchanged; it never re-appends or issues a second
-sync on expiry. Durability hooks and queued writes remain behind that barrier.
-A successful reply resumes progress automatically. Storage errors, unknown
-append outcomes, startup/replay, post-sync work, and cleanup remain fail-closed
-with hard bounds and explicit crash recovery.
+sync on expiry, and it logs a payload-free warning. Durability hooks and queued
+writes remain behind that barrier. A successful reply resumes progress
+automatically. Storage errors, stalls outside the disk waits (validation,
+projection, the post-write catalog update, an owner that stops responding),
+startup/replay, and cleanup remain fail-closed with hard bounds and explicit
+crash recovery. Work after a paused wait gets a fresh hard deadline.
 
 Session-side durability waits run in supervised tasks with correlated
 continuations, leaving snapshots and cancellation responsive. A session
@@ -623,7 +631,7 @@ requests / 24 MiB of encoded request data, returning `:journal_busy` at capacity
 The CLI shows “Waiting for session storage”; its one-shot answer timeout does
 not expire during that wait. Cancellation requests are accepted, but terminal
 settlement still waits for the journal, since the terminal event queues behind
-the stalled sync. Already-running parallel effects are
+the stalled write. Already-running parallel effects are
 not rolled back.
 
 ### 9.1 Compaction durability barrier

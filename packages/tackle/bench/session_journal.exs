@@ -39,13 +39,14 @@
 #   E. Contention: a background writer streams large chunks + fsync to the same
 #      filesystem while B1/C run, approximating a slow, busy disk.
 #
-#      WARNING: contention slows every fsync on that filesystem, including the
-#      journals of any live Tackle session whose TACKLE_HOME is on the same
-#      disk. A live session fails closed when a journal stage exceeds its
-#      journal deadline, so do not run contention mode (BENCH_CONTENTION=1/both)
-#      while an agent session on the same disk is running, including one that
-#      launched this script. A contended run took down the parent session
-#      once; the cause was never confirmed.
+#      WARNING: contention slows every write and fsync on that filesystem,
+#      including the journals of any live Tackle session whose TACKLE_HOME is
+#      on the same disk. A live session whose append or sync waits past its
+#      journal deadline pauses ("Waiting for session storage") until the disk
+#      catches up; before appends paused too, a contended run took down the
+#      parent session once (the likely cause, a stalled append, was never
+#      confirmed). Prefer not to run contention mode (BENCH_CONTENTION=1/both)
+#      while an agent session on the same disk is working.
 #
 # Storage defaults to `_bench_tmp/` inside this package (the repository's ext4
 # disk; /tmp and $HOME may be tmpfs where fsync is free). Everything written

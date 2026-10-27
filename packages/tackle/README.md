@@ -447,11 +447,12 @@ that would not replay) returns an error and leaves the journal usable; a
 message refused that way fails the turn with `{:message_not_journaled, reason}`,
 and the session rebuilds its state from the journal.
 
-An independent deadline process uses a 15-second threshold. A live `sync` that exceeds
-it pauses durable progress instead of killing the session. The original sync
-stays in flight with the same pending commit ID and sequence: it is neither
-re-appended nor retried. Successful completion resumes automatically. Session
-snapshots and cancellation remain responsive; subscribers receive
+An independent deadline process uses a 15-second threshold. A live append or
+`sync` that exceeds it while waiting for the disk pauses durable progress
+instead of killing the session. The original request stays in flight with the
+same pending commit ID and sequence: it is neither re-appended nor retried.
+Successful completion resumes automatically. Session snapshots and
+cancellation remain responsive; subscribers receive
 `{:tackle_storage, session_id, :delayed | :ready}` and snapshots expose `storage`.
 Cancellation is cooperative and settlement still waits for storage; effects
 already running are not rolled back.
@@ -470,8 +471,9 @@ The harness gates every provider dispatch (including retries and compaction
 summaries) behind outstanding journal work. A title-model request also waits
 behind outstanding journal work, without syncing.
 
-Startup/replay, unknown append outcomes, post-sync projection/catalog stalls,
-and termination cleanup still have hard deadlines. Expiry there stops the
+Startup/replay, stalls outside the disk waits (validation, projection, the
+catalog update after a write, an owner that stops responding), and termination
+cleanup still have hard deadlines. Expiry there stops the
 scope and requires ordinary replay/recovery, not a blind retry. Actual storage
 errors also remain fail-closed. Trusted hosts can override the threshold in
 milliseconds with `storage: [journal_timeout: 30_000]` on `Tackle.Session.Spec`.

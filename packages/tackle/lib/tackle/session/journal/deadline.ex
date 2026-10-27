@@ -3,10 +3,10 @@ defmodule Tackle.Session.Journal.Deadline do
 
   # The deadline process of one journal owner (`Tackle.Session.Journal`).
   # Every durable request passes through it: it admits and queues requests,
-  # bounds each with the journal timeout (a live sync only pauses storage, any
-  # other stage stops the owner), tells subscribers when storage is delayed,
-  # watches the writer lock, and reports a failed owner without payloads. It
-  # is not the agent's command watchdog, `Tackle.Watchdog`.
+  # bounds each with the journal timeout (a live storage wait only pauses
+  # storage, any other stage stops the owner), tells subscribers when storage
+  # is delayed, watches the writer lock, and reports a failed owner without
+  # payloads. It is not the agent's command watchdog, `Tackle.Watchdog`.
 
   use GenServer
   require Logger
@@ -20,6 +20,13 @@ defmodule Tackle.Session.Journal.Deadline do
   @report_timeout 2_000
   @max_queued_requests 64
   @max_queued_bytes 24 * 1024 * 1024
+
+  # The stages in which the owner waits for the disk inside `:disk_log`: an
+  # append can block behind the log's own cache write as long as a sync. A
+  # live request past its deadline in one of them pauses storage; a stall in
+  # any other stage (validation, projection, a hung owner, opening, cleanup)
+  # is a fault and stops the owner.
+  @storage_waits [:append_header, :append, :sync]
 
   def start(owner, session_id, opts) do
     # Do not make the owner our OTP parent: its EXIT would terminate this
@@ -177,12 +184,14 @@ defmodule Tackle.Session.Journal.Deadline do
 
   @impl true
   def handle_cast({:stage, stage, seq}, state) do
-    # Once sync returns, guard projection/catalog work with a fresh hard
-    # deadline. A storage pause must not mask a subsequent non-sync stall.
+    # Once the paused storage wait returns, guard the work after it with a
+    # fresh hard deadline. A storage pause must not mask a later stall in a
+    # stage that does not wait for the disk.
     state =
-      if state.delayed? and state.stage == :sync and stage != :sync do
+      if state.delayed? and state.stage in @storage_waits and stage not in @storage_waits do
         pending =
           Map.new(state.pending, fn {request, pending} ->
+            if pending.timer, do: Process.cancel_timer(pending.timer)
             token = make_ref()
             timer = Process.send_after(self(), {:expired, token}, state.timeout)
 
@@ -369,15 +378,20 @@ defmodule Tackle.Session.Journal.Deadline do
     end
   end
 
-  defp expire(%{stage: :sync, lifecycle: nil} = state, _operation, _started_at) do
+  defp expire(%{stage: stage, lifecycle: nil} = state, operation, started_at)
+       when stage in @storage_waits do
     pending =
       Map.new(state.pending, fn {request, pending} ->
         if pending.timer, do: Process.cancel_timer(pending.timer)
         {request, %{pending | timer: nil, token: nil}}
       end)
 
-    # Leave the original sync in flight: no append retry, no second sync.
-    {:noreply, set_delayed(%{state | pending: pending}, true)}
+    # Leave the original request in flight: no retried append, no second sync.
+    state = set_delayed(%{state | pending: pending}, true)
+    diagnostic = JSON.encode!(pause_diagnostic(state, operation, started_at))
+    # A logger slowed by the same disk must not hold up this process.
+    spawn(fn -> Logger.warning("Session journal storage is slow; pausing: " <> diagnostic) end)
+    {:noreply, state}
   end
 
   defp expire(state, operation, started_at), do: stall(state, operation, started_at)
@@ -428,18 +442,26 @@ defmodule Tackle.Session.Journal.Deadline do
   defp diagnostic(state, operation, started_at) do
     info = Process.info(state.owner, [:current_stacktrace, :status, :message_queue_len]) || []
 
+    state
+    |> pause_diagnostic(operation, started_at)
+    |> Map.merge(%{
+      "recorded_at" => DateTime.to_iso8601(DateTime.utc_now()),
+      "commit_outcome" => "unknown; replay required",
+      "process_status" => to_string(info[:status] || :dead),
+      "message_queue_len" => info[:message_queue_len],
+      "stacktrace" => Enum.map(Enum.take(info[:current_stacktrace] || [], 32), &stack_frame/1)
+    })
+  end
+
+  # What a request past its deadline was doing, without payloads.
+  defp pause_diagnostic(state, operation, started_at) do
     %{
       "session_id" => state.session_id,
       "operation" => to_string(operation),
       "stage" => to_string(state.stage),
       "sequence" => state.seq,
       "elapsed_ms" => System.monotonic_time(:millisecond) - started_at,
-      "deadline_ms" => state.timeout,
-      "recorded_at" => DateTime.to_iso8601(DateTime.utc_now()),
-      "commit_outcome" => "unknown; replay required",
-      "process_status" => to_string(info[:status] || :dead),
-      "message_queue_len" => info[:message_queue_len],
-      "stacktrace" => Enum.map(Enum.take(info[:current_stacktrace] || [], 32), &stack_frame/1)
+      "deadline_ms" => state.timeout
     }
   end
 

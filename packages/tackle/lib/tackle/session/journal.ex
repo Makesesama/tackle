@@ -34,17 +34,20 @@ defmodule Tackle.Session.Journal do
   Every durable request passes through an independent deadline process
   (`journal_timeout`, 15 seconds by default), which runs one request at a time
   and queues at most 64 more (24 MiB of request data); beyond that a request
-  is refused with `{:error, :journal_busy}`. A `sync` that misses the deadline
-  only marks storage delayed (the session, which `Tackle.Session.Durable`
-  subscribes, receives `{:tackle_storage, session_id, :delayed | :ready}`) and
-  stays in flight; it is never retried. Any other stage that misses it,
-  including opening and the owner's cleanup, stops the owner and its durable
-  scope rather than abandoning a request while execution continues. The commit
-  outcome may then be unknown: replay is required before any retry. For a
-  missed deadline or an unexpected exit, the deadline process logs a
-  payload-free diagnostic (operation or failure category, stage, sequence, and
-  for a stall its stack frames) and saves it as `journal-failure.json` beside
-  the journal.
+  is refused with `{:error, :journal_busy}`. A request that misses the
+  deadline while it waits for the disk (appending or syncing; `:disk_log`
+  can block an append behind its own cache write) only marks storage delayed
+  (the session, which `Tackle.Session.Durable` subscribes, receives
+  `{:tackle_storage, session_id, :delayed | :ready}`), logs a payload-free
+  warning, and stays in flight; it is never retried. Any other stage that
+  misses it, including opening and the owner's cleanup, stops the owner and
+  its durable scope rather than abandoning a request while execution
+  continues. The commit outcome may then be unknown: replay is required
+  before any retry. When it stops the owner for a missed deadline, or the
+  owner exits unexpectedly, the deadline process logs a payload-free
+  diagnostic (operation or failure category, stage, sequence, and for a
+  stall its stack frames) and saves it as `journal-failure.json` beside the
+  journal.
 
   ## Rejections and failures
 
