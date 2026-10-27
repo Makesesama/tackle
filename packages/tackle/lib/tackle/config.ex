@@ -198,11 +198,16 @@ defmodule Tackle.Config do
   system prompt is only the base prompt and the working directory, and no
   skill or `load_skill` tool is offered. `Tackle.Coding` uses it for
   profiles that set `instructions: false`, such as the code review stages.
+
+  An option list that is not a keyword list is
+  `{:error, {:invalid_loader_options, opts}}`, a repeated option
+  `{:error, {:duplicate_loader_option, key}}`, and unknown options
+  `{:error, {:unknown_loader_options, keys}}`; an invalid option value is
+  `{:error, {:invalid_option, key, value}}`.
   """
   @spec load(keyword()) :: {:ok, t()} | {:error, term()}
-  def load(opts) when is_list(opts) do
-    with :ok <- validate_keyword(opts),
-         :ok <- validate_loader_options(opts),
+  def load(opts) do
+    with :ok <- validate_option_list(opts, @loader_option_keys, :load),
          {:ok, overrides} <- fetch_overrides(opts),
          :ok <- validate_override_context(overrides),
          {:ok, adapters} <- fetch_available_adapters(opts),
@@ -244,8 +249,6 @@ defmodule Tackle.Config do
     end
   end
 
-  def load(opts), do: {:error, {:invalid_config_loader_options, opts}}
-
   @doc """
   Resolves and validates explicit session configuration.
 
@@ -285,22 +288,22 @@ defmodule Tackle.Config do
   which `Tackle.Coding` applies over the profiles' own `model` and `thinking`.
   Model references are resolved eagerly, so unavailable models are errors even
   for profile names that no discovered profile uses.
+
+  A malformed option list is `{:error, {:invalid_options, opts}}`,
+  `{:error, {:duplicate_option, key}}`, or `{:error, {:unknown_options, keys}}`.
   """
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
-  def new(opts) when is_list(opts) do
+  def new(opts) do
     case build(opts) do
       {:error, _option, reason} -> {:error, reason}
       result -> result
     end
   end
 
-  def new(opts), do: {:error, {:invalid_config, opts}}
-
   # `new/1`, except that an error of an option a configuration file can set is
   # `{:error, option, reason}`, so `load/1` can name the file.
   defp build(opts) do
-    with :ok <- validate_keyword(opts),
-         :ok <- validate_known_options(opts),
+    with :ok <- validate_option_list(opts, @option_keys, :new),
          {:ok, opts} <- normalize_thinking_option(opts),
          {:ok, providers} <- fetch_providers(opts),
          {:ok, model_ref} <- tag(fetch_model_ref(opts), :model),
@@ -382,12 +385,13 @@ defmodule Tackle.Config do
     * `:llm_opts` - adapter options merged into `llm_opts`; like `new/1`, they
       may not carry credentials.
 
-  Any other option is `{:error, {:unknown_update_options, keys}}`.
+  Any other option is `{:error, {:unknown_update_options, keys}}`, a repeated
+  one `{:error, {:duplicate_update_option, key}}`, and an option list that is
+  not a keyword list `{:error, {:invalid_update_options, opts}}`.
   """
   @spec update(t(), keyword()) :: {:ok, t()} | {:error, term()}
-  def update(%__MODULE__{} = config, opts) when is_list(opts) do
-    with :ok <- validate_keyword(opts),
-         :ok <- validate_update_options(opts),
+  def update(%__MODULE__{} = config, opts) do
+    with :ok <- validate_option_list(opts, @update_option_keys, :update),
          {:ok, model_ref} <- fetch_model_ref(model: Keyword.get(opts, :model, config.model_ref)),
          {:ok, llm} <- LLM.select(config.providers, model_ref),
          {:ok, context} <- updated_context(config.context, opts),
@@ -405,8 +409,6 @@ defmodule Tackle.Config do
        }}
     end
   end
-
-  def update(%__MODULE__{}, opts), do: {:error, {:invalid_config, opts}}
 
   @doc """
   Builds the initial library state for a configured session.
@@ -478,17 +480,28 @@ defmodule Tackle.Config do
     end
   end
 
-  defp validate_loader_options(opts) do
-    case Keyword.keys(opts) -- @loader_option_keys do
-      [] -> :ok
-      unknown -> {:error, {:unknown_loader_options, Enum.uniq(unknown)}}
-    end
-  end
+  # Each entry point reports a malformed option list with its own tags.
+  @option_list_errors %{
+    load: {:invalid_loader_options, :duplicate_loader_option, :unknown_loader_options},
+    new: {:invalid_options, :duplicate_option, :unknown_options},
+    update: {:invalid_update_options, :duplicate_update_option, :unknown_update_options}
+  }
 
-  defp validate_update_options(opts) do
-    case Keyword.keys(opts) -- @update_option_keys do
-      [] -> :ok
-      unknown -> {:error, {:unknown_update_options, Enum.uniq(unknown)}}
+  defp validate_option_list(opts, known_keys, entry_point) do
+    {invalid, duplicate, unknown} = Map.fetch!(@option_list_errors, entry_point)
+
+    cond do
+      not (is_list(opts) and Keyword.keyword?(opts)) ->
+        {:error, {invalid, opts}}
+
+      duplicate_key = duplicate(Keyword.keys(opts)) ->
+        {:error, {duplicate, duplicate_key}}
+
+      (unknown_keys = Keyword.keys(opts) -- known_keys) != [] ->
+        {:error, {unknown, Enum.uniq(unknown_keys)}}
+
+      true ->
+        :ok
     end
   end
 
@@ -652,7 +665,7 @@ defmodule Tackle.Config do
 
     cond do
       not Keyword.keyword?(overrides) ->
-        {:error, {:invalid_option, :overrides}}
+        {:error, {:invalid_option, :overrides, overrides}}
 
       Keyword.has_key?(overrides, :providers) ->
         {:error, {:reserved_override, :providers}}
@@ -678,7 +691,7 @@ defmodule Tackle.Config do
   defp fetch_environment(opts) do
     case Keyword.get_lazy(opts, :env, &System.get_env/0) do
       %{} = env -> {:ok, env}
-      _env -> {:error, {:invalid_option, :env}}
+      env -> {:error, {:invalid_option, :env, env}}
     end
   end
 
@@ -885,26 +898,6 @@ defmodule Tackle.Config do
 
       _level ->
         {:error, {:invalid_environment, "TACKLE_THINKING"}}
-    end
-  end
-
-  defp validate_keyword(opts) do
-    cond do
-      not Keyword.keyword?(opts) ->
-        {:error, {:invalid_config, opts}}
-
-      duplicate_key = duplicate(Keyword.keys(opts)) ->
-        {:error, {:duplicate_option, duplicate_key}}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp validate_known_options(opts) do
-    case Keyword.keys(opts) -- @option_keys do
-      [] -> :ok
-      unknown -> {:error, {:unknown_options, Enum.uniq(unknown)}}
     end
   end
 

@@ -267,6 +267,16 @@ defmodule Tackle.PluginsTest do
     assert {:ok, ["cfg/local"]} = Plugins.available_model_refs(env: env, accounts: %{})
   end
 
+  test "reports invalid options in the shapes Tackle.Config uses" do
+    assert {:error, {:invalid_option, :accounts, :none}} =
+             Plugins.provider_entries(adapters: [Adapter], accounts: :none, config_providers: %{})
+
+    assert {:error, {:invalid_option, :config_providers, []}} =
+             Plugins.provider_entries(adapters: [Adapter], accounts: %{}, config_providers: [])
+
+    assert {:error, {:invalid_plugin_options, :none}} = Plugins.provider_entries(:none)
+  end
+
   test "returns an explicit error when no adapters are configured" do
     Application.put_env(:tackle, :adapters, [])
 

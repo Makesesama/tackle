@@ -196,7 +196,7 @@ defmodule Tackle.Auth.Provider do
   defp current_accounts(opts) do
     case Keyword.fetch(opts, :accounts) do
       {:ok, %{} = accounts} -> {:ok, accounts}
-      {:ok, accounts} -> {:error, {:invalid_plugin_option, :accounts, accounts}}
+      {:ok, accounts} -> {:error, {:invalid_option, :accounts, accounts}}
       :error -> stored_accounts()
     end
   end

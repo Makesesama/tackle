@@ -203,6 +203,42 @@ defmodule Tackle.ConfigTest do
              Config.load(catalog: catalog, overrides: [hooks: [CatalogHook]])
   end
 
+  describe "load/1 options" do
+    setup do
+      home = Path.join(System.tmp_dir!(), "tackle-loader-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(home) end)
+      opts = [available_adapters: [Adapter], env: %{"TACKLE_HOME" => home}]
+      %{opts: opts, home: home}
+    end
+
+    test "a malformed option list is a loader error", %{opts: opts} do
+      assert {:error, {:invalid_loader_options, :none}} = Config.load(:none)
+      assert {:error, {:invalid_loader_options, [1]}} = Config.load([1])
+
+      assert {:error, {:duplicate_loader_option, :env}} =
+               Config.load([{:env, %{}} | opts])
+
+      assert {:error, {:unknown_loader_options, [:surprise, :root_tools]}} =
+               Config.load([surprise: true, root_tools: []] ++ opts)
+    end
+
+    test "invalid option values are three-tuples naming the option", %{opts: opts, home: home} do
+      load = &Config.load(Keyword.merge(opts, &1))
+      missing = Path.join(home, "missing")
+
+      assert {:error, {:invalid_option, :cwd, ^missing}} = load.(cwd: missing)
+      assert {:error, {:invalid_option, :cwd, 42}} = load.(cwd: 42)
+      assert {:error, {:invalid_option, :env, [{"HOME", "/"}]}} = load.(env: [{"HOME", "/"}])
+      assert {:error, {:invalid_option, :overrides, :none}} = load.(overrides: :none)
+      assert {:error, {:invalid_option, :overrides, [1]}} = load.(overrides: [1])
+      assert {:error, {:invalid_option, :catalog, :none}} = load.(catalog: :none)
+      assert {:error, {:invalid_option, :accounts, []}} = load.(accounts: [])
+
+      assert {:error, {:reserved_override, :providers}} =
+               load.(overrides: [providers: [Adapter]])
+    end
+  end
+
   test "resolves an explicit adapter and canonical model reference" do
     assert {:ok, config} =
              Config.new(
@@ -354,8 +390,9 @@ defmodule Tackle.ConfigTest do
              Config.update(config, llm_opts: [api_key: "must-not-enter-config"])
 
     assert {:error, {:unknown_update_options, [:tools]}} = Config.update(config, tools: [])
+    assert {:error, {:invalid_update_options, :none}} = Config.update(config, :none)
 
-    assert {:error, {:duplicate_option, :model}} =
+    assert {:error, {:duplicate_update_option, :model}} =
              Config.update(config, model: "test/small", model: "test/small")
 
     # Credentials a session put into its own options do not block updates.
@@ -427,6 +464,8 @@ defmodule Tackle.ConfigTest do
 
   test "returns explicit validation errors" do
     assert {:error, {:missing_option, :providers}} = Config.new(model: "test/small")
+    assert {:error, {:invalid_options, :none}} = Config.new(:none)
+    assert {:error, {:invalid_options, [1]}} = Config.new([1])
 
     assert {:error, {:unknown_model, "test/missing"}} =
              Config.new(providers: [Adapter], model: "test/missing")

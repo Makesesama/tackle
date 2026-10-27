@@ -197,7 +197,7 @@ defmodule Tackle.Plugins do
   defp fetch_accounts(opts) do
     case Keyword.fetch(opts, :accounts) do
       {:ok, %{} = accounts} -> {:ok, accounts}
-      {:ok, accounts} -> {:error, {:invalid_plugin_option, :accounts, accounts}}
+      {:ok, accounts} -> {:error, {:invalid_option, :accounts, accounts}}
       :error -> stored_accounts()
     end
   end
@@ -217,7 +217,7 @@ defmodule Tackle.Plugins do
         {:ok, declarations}
 
       {:ok, declarations} ->
-        {:error, {:invalid_plugin_option, :config_providers, declarations}}
+        {:error, {:invalid_option, :config_providers, declarations}}
 
       :error ->
         with {:ok, path} <- Tackle.Paths.config_file(Keyword.take(opts, [:env])),

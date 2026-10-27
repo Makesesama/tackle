@@ -300,6 +300,9 @@ defmodule Tackle.Auth.ProviderTest do
                )
              )
 
+    assert {:error, {:invalid_option, :accounts, :none}} =
+             Provider.login("multi", Keyword.merge(opts, as: "work", accounts: :none))
+
     # An adapter without login records nothing.
     assert {:error, {:unsupported_provider_flow, "work", :login}} =
              Provider.login("store-only", adapters: [StoreAdapter], as: "work")
