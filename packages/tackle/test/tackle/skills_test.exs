@@ -173,6 +173,31 @@ defmodule Tackle.SkillsTest do
       assert %{skills: [%Skill{name: "only"}]} = Skills.discover(cwd: project, user_home: nil)
     end
 
+    test "without :user_home, user skills come from the default home", %{root: root} do
+      project = git_project(root)
+      user_home = Path.join(root, "home")
+      write_skill_dir(user_home, "user", skill_file("user", "User."))
+
+      assert %{skills: [%Skill{name: "user"}], warnings: []} =
+               Skills.discover(cwd: project, env: %{"HOME" => user_home})
+    end
+
+    test "without a Git root, searches up to the home directory or only the working directory",
+         %{root: root} do
+      # A shared parent such as /tmp, where other users can plant skills.
+      write_skill(root, "planted", skill_file("planted", "Planted."))
+      cwd = Path.join(root, "project/apps")
+      File.mkdir_p!(cwd)
+      write_skill(Path.join(root, "project"), "parent", skill_file("parent", "Parent."))
+
+      assert %{skills: [], warnings: []} = Skills.discover(cwd: cwd, user_home: nil)
+
+      home = Path.join(root, "project")
+
+      assert %{skills: [%Skill{name: "parent"}], warnings: []} =
+               Skills.discover(cwd: cwd, user_home: home)
+    end
+
     test "returns an empty result when no skill exists", %{root: root} do
       project = git_project(root)
       assert %{skills: [], warnings: []} = Skills.discover(cwd: project, user_home: nil)

@@ -6,8 +6,9 @@ defmodule Tackle.Skills do
   declares a `name` and a `description`. Tackle follows the
   [Agent Skills standard](https://agentskills.io/specification) locations:
 
-    * the project `.agents/skills` directory in the working directory and its
-      ancestors up to the git repository root; and
+    * the project `.agents/skills` directory in the working directory and the
+      ancestors `Tackle.ProjectFiles.ancestors/3` searches (up to the Git root,
+      or without one up to the home directory); and
     * the user-level `~/.agents/skills` directory.
 
   Only the name, description, and skill directory are included in the system
@@ -59,6 +60,7 @@ defmodule Tackle.Skills do
   @type discover_option ::
           {:cwd, Path.t()}
           | {:user_home, String.t() | nil}
+          | {:env, %{optional(String.t()) => String.t()}}
           | {:executor, Tackle.Executor.t()}
           | {:builtins, [Skill.t()]}
 
@@ -76,7 +78,10 @@ defmodule Tackle.Skills do
 
     * `:cwd` - working directory for project discovery, defaults to the current
       working directory;
-    * `:user_home` - override for `~`; `nil` disables user skill discovery;
+    * `:user_home` - override for `~`; `nil` disables user skill discovery
+      and the home bound of the project search. Without it, `HOME` from
+      `:env` when given, else the operating-system home (see
+      `Tackle.Paths.user_home/1`);
     * `:executor` - executor for files inside the working directory (see
       `Tackle.ProjectFiles`), defaults to the local executor;
     * `:builtins` - built-in skills from `builtin/2`, which rank below every
@@ -85,7 +90,7 @@ defmodule Tackle.Skills do
   @spec discover([discover_option()]) :: discovery()
   def discover(opts \\ []) do
     cwd = opts |> Keyword.get(:cwd) |> resolve_cwd()
-    files = ProjectFiles.new(executor: Keyword.get(opts, :executor))
+    files = ProjectFiles.new(Keyword.take(opts, [:executor, :user_home, :env]))
 
     {skills, warnings} =
       (project_dirs(files, cwd) ++ global_dirs(opts))
@@ -381,29 +386,14 @@ defmodule Tackle.Skills do
 
   defp project_dirs(files, cwd) do
     files
-    |> ancestors(cwd)
+    |> ProjectFiles.ancestors(cwd)
     |> Enum.map(&Path.join([&1, @agents_dir, @skills_dir]))
   end
 
   defp global_dirs(opts) do
-    case Paths.agents_dir(user_home: Keyword.get(opts, :user_home)) do
+    case opts |> Keyword.take([:user_home, :env]) |> Paths.agents_dir() do
       {:ok, agents_dir} -> [Path.join(agents_dir, @skills_dir)]
       {:error, _reason} -> []
-    end
-  end
-
-  defp ancestors(files, dir) do
-    collect_ancestors(dir, ProjectFiles.git_root(files, dir), [])
-  end
-
-  defp collect_ancestors(dir, git_root, acc) do
-    parent = Path.dirname(dir)
-    acc = [dir | acc]
-
-    cond do
-      dir == parent -> :lists.reverse(acc)
-      git_root != nil and dir == git_root -> :lists.reverse(acc)
-      true -> collect_ancestors(parent, git_root, acc)
     end
   end
 

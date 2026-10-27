@@ -197,8 +197,10 @@ unadvertised code review stages described below) and discovers additional
 subagent definitions from Markdown files. User definitions live recursively
 under `$TACKLE_HOME/agents` (by default `~/.tackle/agents`); project definitions live under the nearest
 `.tackle/agents` directory at or above the configured working directory,
-stopping at the Git root. Precedence is built-in, then user, then project, so a
-valid project definition replaces a same-named user or built-in definition.
+up to the Git root (without one, up to your home directory when the working
+directory is under it, otherwise only the working directory). Precedence is
+built-in, then user, then project, so a valid project definition replaces a
+same-named user or built-in definition.
 
 An agent file contains a deliberately small YAML-frontmatter subset followed by
 its system prompt:
@@ -400,8 +402,8 @@ call ends. The harness itself only depends on `tackle_workflow` in its own test
 suite, which proves this wiring.
 
 Saved workflows are flat `<name>.lua` files in `$TACKLE_HOME/workflows` or the
-nearest project `.tackle/workflows` at or above cwd, stopping at the Git root.
-Project files override user files by name. Names use lowercase letters,
+nearest project `.tackle/workflows` at or above cwd, within the bounds used for
+`.tackle/agents`. Project files override user files by name. Names use lowercase letters,
 numbers, and single hyphens. The first-line `-- description` comment describes
 the workflow; configuration belongs in locals at the top, not tool parameters.
 Use the normal file tools to co-author scripts and tell the user their path.
@@ -658,7 +660,9 @@ package is the developer harness, not the former library.
 ## Agent Skills
 
 `Tackle.Skills` discovers `SKILL.md` files in project `.agents/skills`
-directories from the working directory up to the Git root, and in
+directories from the working directory up to the Git root (without one, up to
+your home directory when the working directory is under it, otherwise only the
+working directory), and in
 `~/.agents/skills`. The system prompt includes only skill names, descriptions,
 and directories. The model loads a skill's instructions on demand with the
 `load_skill` tool (`Tackle.Tools.LoadSkill`), which every agent offered a skill
@@ -702,8 +706,8 @@ validated as a whole.
 `config.json`, `auth.json`, and `plugins.json`.
 
 A project can carry its own `.tackle/config.json`. The harness uses the nearest
-one at or above the working directory, stopping at the Git root (as for
-`.tackle/agents`), and reads it through the session executor like `AGENTS.md`.
+one at or above the working directory, within the bounds used for
+`.tackle/agents`, and reads it through the session executor like `AGENTS.md`.
 It accepts the same fields as the user file except `providers`,
 `show_subagent_sidebar`, and `jail`: a repository chooses among the providers and accounts
 you configured but cannot declare its own, which could send your credentials
@@ -902,8 +906,12 @@ guidelines. The following optional UTF-8 files customize it:
 - `$TACKLE_HOME/SYSTEM.md` replaces the built-in base prompt;
 - `$TACKLE_HOME/APPEND_SYSTEM.md` appends global user guidance;
 - `$TACKLE_HOME/AGENTS.md` supplies global agent instructions; and
-- `AGENTS.md` files from the filesystem root through the working directory are
-  included from broadest to most specific.
+- `AGENTS.md` files of the working directory and its ancestors are included
+  from broadest to most specific: up to your home directory when the working
+  directory is under it (also above a Git root, so `~/AGENTS.md` applies),
+  otherwise up to the Git root, or only the working directory outside a Git
+  repository. Directories other users can write, such as `/tmp`, are not
+  searched on behalf of a project below them.
 
 The append and `AGENTS.md` layers are retained when an embedding caller supplies
 an explicit `:system_prompt` override to `Tackle.Config.load/1`. Pass `:cwd` to

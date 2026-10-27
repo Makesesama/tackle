@@ -227,8 +227,13 @@ defmodule Tackle.CLI.MCPTest do
       home = Path.join(root, ".tackle")
       File.mkdir_p!(home)
       System.put_env("TACKLE_HOME", home)
-      assert :none = Config.project(cwd: Path.join(root, "work"))
-      assert {:ok, nil} = Config.list_project(cwd: Path.join(root, "work"))
+      assert :none = Config.project(cwd: root)
+      assert {:ok, nil} = Config.list_project(cwd: root)
+
+      # Outside a Git repository and the home directory, the search covers
+      # only the working directory, so `work` is its own project.
+      assert {:ok, %{path: path}} = Config.project(cwd: Path.join(root, "work"))
+      assert path == Path.join(root, "work/.tackle/mcp.json")
     end
   end
 

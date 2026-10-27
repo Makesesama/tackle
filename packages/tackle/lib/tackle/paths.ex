@@ -32,19 +32,35 @@ defmodule Tackle.Paths do
   end
 
   @doc """
+  Resolves the user's home directory, or `nil` when there is none.
+
+  `:user_home` wins when given, even as `nil`; otherwise `HOME` (or
+  `USERPROFILE`) from `:env` when an environment is given; otherwise the
+  operating-system home.
+  """
+  @spec user_home([resolve_option()]) :: Path.t() | nil
+  def user_home(opts \\ []) do
+    home =
+      case {Keyword.fetch(opts, :user_home), Keyword.fetch(opts, :env)} do
+        {{:ok, home}, _env} -> home
+        {:error, {:ok, env}} -> Map.get(env, "HOME") || Map.get(env, "USERPROFILE")
+        {:error, :error} -> System.user_home()
+      end
+
+    if is_binary(home) and home != "", do: Path.expand(home)
+  end
+
+  @doc """
   Resolves the user-level `~/.agents` directory used by the Agent Skills standard.
 
-  The directory is independent of `TACKLE_HOME`; `:user_home` overrides the
-  operating-system home so callers and tests can stay hermetic.
+  The directory is independent of `TACKLE_HOME`; the home directory is
+  `user_home/1`'s, so callers and tests can stay hermetic.
   """
   @spec agents_dir([resolve_option()]) :: {:ok, Path.t()} | {:error, :user_home_unavailable}
   def agents_dir(opts \\ []) do
-    case Keyword.get_lazy(opts, :user_home, &System.user_home/0) do
-      value when is_binary(value) and value != "" ->
-        {:ok, Path.join(value, ".agents") |> Path.expand()}
-
-      _ ->
-        {:error, :user_home_unavailable}
+    case user_home(opts) do
+      nil -> {:error, :user_home_unavailable}
+      home -> {:ok, Path.join(home, ".agents")}
     end
   end
 

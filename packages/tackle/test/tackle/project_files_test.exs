@@ -219,7 +219,7 @@ defmodule Tackle.ProjectFilesTest do
       File.mkdir_p!(nested)
       File.mkdir_p!(Path.join(root, ".tackle"))
       File.write!(Path.join(root, ".tackle/config.json"), "{}")
-      files = ProjectFiles.new()
+      files = ProjectFiles.new(user_home: root)
 
       assert ProjectFiles.nearest_project_file(files, nested, ".tackle/config.json") ==
                Path.join(root, ".tackle/config.json")
@@ -229,6 +229,51 @@ defmodule Tackle.ProjectFilesTest do
 
       File.mkdir_p!(Path.join(workspace, ".git"))
       assert ProjectFiles.nearest_project_file(files, nested, ".tackle/config.json") == nil
+    end
+
+    test "without a Git root, the search stops at the home directory or the working directory",
+         %{root: root, workspace: workspace} do
+      nested = Path.join(workspace, "apps/cli")
+      File.mkdir_p!(nested)
+      # Any local user could plant these in a shared parent such as /tmp.
+      File.mkdir_p!(Path.join(root, ".tackle/agents"))
+
+      home = ProjectFiles.new(user_home: workspace)
+
+      assert ProjectFiles.ancestors(home, nested) == [
+               nested,
+               Path.join(workspace, "apps"),
+               workspace
+             ]
+
+      assert ProjectFiles.nearest_project_dir(home, nested, ".tackle/agents") == nil
+
+      elsewhere = ProjectFiles.new(user_home: Path.join(root, "other"))
+      assert ProjectFiles.ancestors(elsewhere, nested) == [nested]
+      assert ProjectFiles.ancestors(ProjectFiles.new(user_home: nil), nested) == [nested]
+      assert ProjectFiles.ancestors(ProjectFiles.new(env: %{}), nested) == [nested]
+
+      assert ProjectFiles.ancestors(ProjectFiles.new(env: %{"HOME" => root}), workspace) ==
+               [workspace, root]
+
+      assert ProjectFiles.ancestors(home, nested, beyond_git_root: true) ==
+               ProjectFiles.ancestors(home, nested)
+
+      File.mkdir_p!(Path.join(nested, ".git"))
+      assert ProjectFiles.ancestors(home, nested) == [nested]
+
+      assert ProjectFiles.ancestors(home, nested, beyond_git_root: true) ==
+               [nested, Path.join(workspace, "apps"), workspace]
+    end
+
+    test "the home directory bounds the search through its symlinks", %{root: root} do
+      real = Path.join(root, "real-home")
+      cwd = Path.join(real, "project")
+      File.mkdir_p!(cwd)
+      File.ln_s!(real, Path.join(root, "home-link"))
+      files = ProjectFiles.new(user_home: Path.join(root, "home-link"))
+
+      assert ProjectFiles.ancestors(files, cwd) == [cwd, real]
     end
 
     test "same_dir? compares expanded paths and file identity", %{

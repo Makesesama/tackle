@@ -172,6 +172,14 @@ defmodule Tackle.LocalReview.RulesTest do
       assert [%Rule{id: "child"}] = RuleDiscovery.discover(child_opts).rules
     end
 
+    test "without a Git root, does not climb above the working directory outside home", ctx do
+      put(Path.join(ctx.root, ".tackle/review/rules"), "planted.md", rule("planted"))
+      cwd = Path.join(ctx.root, "scratch")
+      File.mkdir_p!(cwd)
+
+      assert RuleDiscovery.discover(Keyword.put(ctx.opts, :cwd, cwd)).rules == []
+    end
+
     test "reads flat Markdown files only", %{opts: opts, project: project} do
       put(project, "notes.txt", rule("text"))
       put(Path.join(project, "nested"), "nested.md", rule("nested"))

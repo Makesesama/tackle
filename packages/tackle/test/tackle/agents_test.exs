@@ -78,6 +78,24 @@ defmodule Tackle.AgentsTest do
              "timeoutMs of agent slow is 300001; the limit is 300000 (five minutes)"
   end
 
+  describe "the project search" do
+    test "without a Git root, does not climb above the home directory", %{root: root} do
+      # Any local user can write a shared parent such as /tmp.
+      put(Path.join(root, ".tackle/agents"), "planted.md", agent("planted", ""))
+      cwd = Path.join(root, "scratch/work")
+      File.mkdir_p!(cwd)
+      env = %{"TACKLE_HOME" => Path.join(root, "tackle-home")}
+
+      assert Agents.discover(cwd: cwd, env: env, builtins: []).definitions == []
+
+      home = Path.join(root, "scratch")
+      put(Path.join(home, ".tackle/agents"), "own.md", agent("own", ""))
+
+      assert [%{name: "own", source: :project}] =
+               Agents.discover(cwd: cwd, env: Map.put(env, "HOME", home), builtins: []).definitions
+    end
+  end
+
   defp agent(name, extra) do
     "---\nname: #{name}\ndescription: The #{name} agent\n#{extra}\n---\nDo the #{name} work.\n"
   end

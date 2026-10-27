@@ -6,8 +6,11 @@ defmodule Tackle.SystemPrompt do
 
     1. an explicit base prompt, `$TACKLE_HOME/SYSTEM.md`, or the built-in prompt;
     2. `$TACKLE_HOME/APPEND_SYSTEM.md`, when present;
-    3. `$TACKLE_HOME/AGENTS.md` and `AGENTS.md` files from filesystem root to
-       the current working directory;
+    3. `$TACKLE_HOME/AGENTS.md` and the `AGENTS.md` files of the working
+       directory and its ancestors, broadest first: up to the home directory
+       when the working directory is under it, otherwise up to the Git root,
+       or only the working directory outside a Git repository (see
+       `Tackle.ProjectFiles.ancestors/3`);
     4. available Agent Skills from `.agents/skills`, when present; and
     5. the current working directory.
 
@@ -26,6 +29,7 @@ defmodule Tackle.SystemPrompt do
           {:base, String.t() | nil}
           | {:cwd, Path.t()}
           | {:home, Path.t()}
+          | {:user_home, Path.t() | nil}
           | {:tools, [module()]}
           | {:skills, [Skills.Skill.t()]}
           | {:executor, Executor.t()}
@@ -49,7 +53,7 @@ defmodule Tackle.SystemPrompt do
     with true <- Keyword.keyword?(opts),
          {:ok, files} <-
            opts
-           |> Keyword.take([:cwd, :home, :executor, :instructions])
+           |> Keyword.take([:cwd, :home, :user_home, :executor, :instructions])
            |> Keyword.put(:system, not is_binary(Keyword.get(opts, :base)))
            |> read() do
       compose(files, opts)
@@ -64,6 +68,9 @@ defmodule Tackle.SystemPrompt do
   @doc """
   Reads the prompt files for `:cwd` and `:home` through `:executor`.
 
+  `:user_home` (default: the operating-system home, `nil` for none) bounds
+  the `AGENTS.md` search (see `Tackle.ProjectFiles.ancestors/3`).
+
   `instructions: false` (default `true`) leaves `APPEND_SYSTEM.md` and the
   `AGENTS.md` files unread, and `system: false` (default `true`) `SYSTEM.md`.
   A file that cannot be read is kept as its error (see `t:files/0`).
@@ -75,7 +82,7 @@ defmodule Tackle.SystemPrompt do
          {:ok, home} <- fetch_path(opts, :home),
          {:ok, instructions} <- fetch_boolean(opts, :instructions),
          {:ok, system} <- fetch_boolean(opts, :system) do
-      files = ProjectFiles.new(executor: Keyword.get(opts, :executor))
+      files = ProjectFiles.new(Keyword.take(opts, [:executor, :user_home]))
 
       {:ok,
        %{
@@ -100,7 +107,7 @@ defmodule Tackle.SystemPrompt do
   @doc """
   Composes the prompt from files `read/1` read, without reading anything.
 
-  Takes `build/1`'s options except `:home` and `:executor`. With
+  Takes `build/1`'s options except `:home`, `:user_home`, and `:executor`. With
   `instructions: true`, the files must have been read with instructions.
   """
   @spec compose(files(), [build_option()]) :: {:ok, String.t()} | {:error, term()}
@@ -235,7 +242,10 @@ defmodule Tackle.SystemPrompt do
     paths =
       [
         Path.join(home, "AGENTS.md")
-        | Enum.map(ancestor_directories(cwd), &Path.join(&1, "AGENTS.md"))
+        | files
+          |> ProjectFiles.ancestors(cwd, beyond_git_root: true)
+          |> Enum.reverse()
+          |> Enum.map(&Path.join(&1, "AGENTS.md"))
       ]
       |> Enum.uniq()
 
@@ -252,19 +262,6 @@ defmodule Tackle.SystemPrompt do
 
   defp reverse_context_files({:ok, files}), do: {:ok, Enum.reverse(files)}
   defp reverse_context_files({:error, reason}), do: {:error, reason}
-
-  defp ancestor_directories(cwd), do: ancestor_directories(cwd, [])
-
-  defp ancestor_directories(directory, directories) do
-    parent = Path.dirname(directory)
-    directories = [directory | directories]
-
-    if parent == directory do
-      directories
-    else
-      ancestor_directories(parent, directories)
-    end
-  end
 
   defp add_optional(prompt, nil), do: prompt
   defp add_optional(prompt, content), do: PromptBuilder.add_raw(prompt, content)

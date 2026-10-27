@@ -27,8 +27,9 @@ defmodule Tackle.SystemPromptTest do
     cwd = Path.join(project, "apps/example")
     File.mkdir_p!(home)
     File.mkdir_p!(cwd)
+    File.mkdir_p!(Path.join(project, ".git"))
     on_exit(fn -> File.rm_rf!(root) end)
-    %{cwd: cwd, home: home, project: project}
+    %{root: root, cwd: cwd, home: home, project: project}
   end
 
   test "builds the default coding prompt with available tools and cwd", %{cwd: cwd, home: home} do
@@ -120,6 +121,62 @@ defmodule Tackle.SystemPromptTest do
     assert prompt =~ ~s(<project_instructions path="#{Path.join(home, "AGENTS.md")}">)
     assert prompt =~ ~s(<project_instructions path="#{Path.join(project, "AGENTS.md")}">)
     assert prompt =~ ~s(<project_instructions path="#{Path.join(cwd, "AGENTS.md")}">)
+  end
+
+  describe "the AGENTS.md search" do
+    setup %{root: root, home: home} do
+      # `user` is the user's home directory and `home` is `$TACKLE_HOME`.
+      user = Path.join(root, "user")
+      cwd = Path.join(user, "dev/repo/lib")
+      File.mkdir_p!(cwd)
+
+      for dir <- [root, user, Path.join(user, "dev"), Path.join(user, "dev/repo"), cwd],
+          do: File.write!(Path.join(dir, "AGENTS.md"), "Guidance from #{dir}.")
+
+      %{user: user, cwd: cwd, opts: [home: home, tools: [], user_home: user]}
+    end
+
+    test "without a Git root, stops at the home directory", %{root: root, user: user} = ctx do
+      assert {:ok, prompt} = SystemPrompt.build([cwd: ctx.cwd] ++ ctx.opts)
+      assert prompt =~ "Guidance from #{user}."
+      assert prompt =~ "Guidance from #{ctx.cwd}."
+      refute prompt =~ "Guidance from #{root}."
+    end
+
+    test "outside the home directory, covers only the working directory or the Git root",
+         %{root: root, user: user} = ctx do
+      outside = Path.join(root, "elsewhere/lib")
+      File.mkdir_p!(outside)
+      File.write!(Path.join(outside, "AGENTS.md"), "Guidance from #{outside}.")
+      File.write!(Path.join(root, "elsewhere/AGENTS.md"), "Guidance from elsewhere.")
+
+      assert {:ok, prompt} = SystemPrompt.build([cwd: outside] ++ ctx.opts)
+      assert prompt =~ "Guidance from #{outside}."
+      refute prompt =~ "Guidance from elsewhere."
+      refute prompt =~ "Guidance from #{root}."
+      refute prompt =~ "Guidance from #{user}."
+
+      File.mkdir_p!(Path.join(root, "elsewhere/.git"))
+      assert {:ok, prompt} = SystemPrompt.build([cwd: outside] ++ ctx.opts)
+      assert prompt =~ "Guidance from elsewhere."
+      refute prompt =~ "Guidance from #{root}."
+    end
+
+    test "under the home directory, climbs past the Git root to the home directory",
+         %{root: root, user: user} = ctx do
+      File.mkdir_p!(Path.join(user, "dev/repo/.git"))
+
+      assert {:ok, prompt} = SystemPrompt.build([cwd: ctx.cwd] ++ ctx.opts)
+
+      assert_in_order(prompt, [
+        "Guidance from #{user}.",
+        "Guidance from #{user}/dev.",
+        "Guidance from #{user}/dev/repo.",
+        "Guidance from #{ctx.cwd}."
+      ])
+
+      refute prompt =~ "Guidance from #{root}."
+    end
   end
 
   test "uses SYSTEM.md as the global base and an explicit base takes precedence", %{

@@ -148,7 +148,8 @@ defmodule Tackle.Config do
   including invalid values only they set, are `{:config_file, path, reason}`.
 
   The project file is the nearest `.tackle/config.json` at or above the working
-  directory, stopping at the Git root (`Tackle.ProjectFiles`). It is read
+  directory, within `Tackle.ProjectFiles.ancestors/3`, other than
+  `$TACKLE_HOME/config.json` itself. It is read
   through the session executor (the `:context` override's `:executor`, which
   is validated before anything is read), layered over `$TACKLE_HOME/config.json` with
   JSON objects merged recursively, and may not set `providers`: it selects

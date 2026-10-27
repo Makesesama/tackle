@@ -9,7 +9,7 @@ defmodule Tackle.LocalReview.Rules do
     1. the built-in rules embedded in `Tackle.Review.Rules`;
     2. `$TACKLE_HOME/review/rules`;
     3. the nearest `.tackle/review/rules` at or above the working directory,
-       stopping at the Git root.
+       within the bounds of `Tackle.ProjectFiles.ancestors/3`.
 
   Non-Markdown files and subdirectories are ignored. Files in the workspace
   are read through the session executor (see `Tackle.ProjectFiles`).

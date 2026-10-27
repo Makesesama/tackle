@@ -87,6 +87,7 @@ defmodule Tackle.Config.FileTest do
   test "loads the effective system prompt for the configured cwd", %{home: home, env: env} do
     cwd = Path.join(home, "workspace/nested")
     File.mkdir_p!(cwd)
+    File.mkdir_p!(Path.join(home, "workspace/.git"))
     File.write!(Path.join(home, "APPEND_SYSTEM.md"), "Global addition.")
     File.write!(Path.join(home, "AGENTS.md"), "Global instructions.")
     File.write!(Path.join(Path.dirname(cwd), "AGENTS.md"), "Workspace instructions.")

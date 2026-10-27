@@ -104,7 +104,9 @@ defmodule Tackle.Config.Sources do
          {:ok, cwd} <- fetch_cwd(opts, context),
          {:ok, config_path} <- Tackle.Paths.config_file(env: env),
          home = Path.dirname(config_path),
-         {:ok, project_file} <- read_project_config(cwd, executor, home),
+         user_home = Tackle.Paths.user_home(env: env),
+         files = ProjectFiles.new(executor: executor, user_home: user_home),
+         {:ok, project_file} <- read_project_config(files, cwd, home),
          {:ok, file_opts, layers} <- ConfigFile.load(config_path, project_file),
          {declared, file_opts} = Keyword.pop(file_opts, :providers, %{}),
          {:ok, entries} <-
@@ -116,6 +118,7 @@ defmodule Tackle.Config.Sources do
            SystemPrompt.read(
              cwd: cwd,
              home: home,
+             user_home: user_home,
              executor: executor,
              instructions: instructions
            ) do
@@ -131,7 +134,10 @@ defmodule Tackle.Config.Sources do
          catalog_hooks: catalog_hooks,
          instructions: instructions,
          skills:
-           if(instructions, do: discover_skills(cwd, env, executor, builtin_skills), else: []),
+           if(instructions,
+             do: discover_skills(cwd, user_home, executor, builtin_skills),
+             else: []
+           ),
          prompt_files: prompt_files
        }}
     end
@@ -233,9 +239,7 @@ defmodule Tackle.Config.Sources do
   # The project file lives in the workspace, so it is read through the session
   # executor like `AGENTS.md`. Outside any Git repository the search can reach
   # `$TACKLE_HOME` itself, whose config.json is the user file, not a project.
-  defp read_project_config(cwd, executor, home) do
-    files = ProjectFiles.new(executor: executor)
-
+  defp read_project_config(files, cwd, home) do
     case ProjectFiles.nearest_project_file(files, cwd, @project_config_file) do
       nil ->
         {:ok, nil}
@@ -295,9 +299,7 @@ defmodule Tackle.Config.Sources do
     names |> Enum.frequencies() |> Enum.filter(&(elem(&1, 1) > 1)) |> Enum.map(&elem(&1, 0))
   end
 
-  defp discover_skills(cwd, env, executor, builtins) do
-    user_home = Map.get(env, "HOME") || Map.get(env, "USERPROFILE")
-
+  defp discover_skills(cwd, user_home, executor, builtins) do
     discovery =
       Skills.discover(
         cwd: cwd,

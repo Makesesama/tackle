@@ -354,7 +354,9 @@ later runs (or after its credentials are fixed).
 
 A project can declare servers in `.tackle/mcp.json` (same
 `{"version": 1, "servers": {...}}` format) in the nearest `.tackle` directory at
-or above the working directory, stopping at the Git root. A project definition
+or above the working directory, up to the Git root (without one, up to your home
+directory when the working directory is under it, otherwise only the working
+directory). A project definition
 replaces a user definition with the same name; definitions are not merged.
 Project STDIO servers run on the host with the project root as their working
 directory, and a relative command such as `./bin/server` resolves against it.

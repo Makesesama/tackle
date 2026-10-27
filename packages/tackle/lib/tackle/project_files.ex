@@ -19,9 +19,15 @@ defmodule Tackle.ProjectFiles do
   time: once a resolved prefix lands inside the workspace, the rest of the
   path goes through the executor, so no symlink the jail can change is ever
   followed on the host. Writes route the same way.
+
+  Project discovery searches the working directory and its ancestors, up to
+  the nearest Git root. Without one it stops at the user's home directory
+  (inclusive) when the working directory is under it, and searches only the
+  working directory otherwise, so directories other users can write, such as
+  `/tmp`, are never searched on behalf of a project below them.
   """
 
-  alias Tackle.Executor
+  alias Tackle.{Executor, Paths}
 
   require Logger
 
@@ -33,14 +39,15 @@ defmodule Tackle.ProjectFiles do
 
   @max_symlinks 40
 
-  @enforce_keys [:executor, :workspace, :real_workspace]
-  defstruct [:executor, :workspace, :real_workspace]
+  @enforce_keys [:executor, :workspace, :real_workspace, :user_home]
+  defstruct [:executor, :workspace, :real_workspace, :user_home]
 
   @typedoc "Routes project file access between the session executor and the host."
   @type t :: %__MODULE__{
           executor: Executor.t(),
           workspace: Path.t() | nil,
-          real_workspace: Path.t() | nil
+          real_workspace: Path.t() | nil,
+          user_home: Path.t() | nil
         }
 
   @doc """
@@ -48,6 +55,12 @@ defmodule Tackle.ProjectFiles do
 
   Paths inside the executor's `c:Tackle.Executor.workspace/1` are read through
   it; everything else is read locally (see the module documentation).
+
+  Options:
+
+    * `:executor` - the session executor;
+    * `:user_home` and `:env` - select the user's home directory that bounds
+      project discovery outside a Git repository (see `Tackle.Paths.user_home/1`).
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
@@ -57,7 +70,8 @@ defmodule Tackle.ProjectFiles do
     %__MODULE__{
       executor: executor,
       workspace: workspace,
-      real_workspace: workspace && host_realpath(workspace)
+      real_workspace: workspace && host_realpath(workspace),
+      user_home: opts |> Keyword.take([:user_home, :env]) |> Paths.user_home()
     }
   end
 
@@ -83,13 +97,12 @@ defmodule Tackle.ProjectFiles do
   @doc """
   Finds the nearest existing project directory at or above `cwd`.
 
-  `relative_dir` is relative to each ancestor (for example `.tackle/agents`).
-  The search includes, but never passes, the nearest ancestor containing `.git`;
-  without one it stops at the filesystem root. All probes use this router.
+  `relative_dir` is relative to each directory `ancestors/3` returns (for
+  example `.tackle/agents`). All probes use this router.
   """
   @spec nearest_project_dir(t(), Path.t(), Path.t()) :: Path.t() | nil
   def nearest_project_dir(files, cwd, relative_dir),
-    do: nearest_project_path(files, cwd, relative_dir, &dir?/2)
+    do: nearest(files, cwd, relative_dir, &dir?/2)
 
   @doc """
   Finds the nearest existing regular file at `relative_path` at or above `cwd`
@@ -98,22 +111,65 @@ defmodule Tackle.ProjectFiles do
   """
   @spec nearest_project_file(t(), Path.t(), Path.t()) :: Path.t() | nil
   def nearest_project_file(files, cwd, relative_path),
-    do: nearest_project_path(files, cwd, relative_path, &regular?/2)
+    do: nearest(files, cwd, relative_path, &regular?/2)
 
-  defp nearest_project_path(files, cwd, relative_path, found?) do
-    cwd = Path.expand(cwd)
-    nearest_path(files, cwd, relative_path, found?, git_root(files, cwd))
+  defp nearest(files, cwd, relative_path, found?) do
+    files
+    |> ancestors(cwd)
+    |> Enum.map(&Path.join(&1, relative_path))
+    |> Enum.find(&found?.(files, &1))
   end
 
-  defp nearest_path(files, dir, relative_path, found?, boundary) do
-    candidate = Path.join(dir, relative_path)
+  @doc """
+  Returns `cwd` and the ancestors project discovery searches, nearest first:
+  up to the nearest Git root; without one, up to the user's home directory
+  when `cwd` is under it; otherwise only `cwd`.
+
+  With `beyond_git_root: true`, a `cwd` under the home directory is searched
+  up to the home directory even when its Git root is below it, as for
+  `AGENTS.md` files.
+  """
+  @spec ancestors(t(), Path.t(), keyword()) :: [Path.t()]
+  def ancestors(files, cwd, opts \\ []) do
+    cwd = Path.expand(cwd)
+    home = home_containing(files, cwd)
+
+    top =
+      case {git_root(files, cwd), home} do
+        {nil, nil} ->
+          cwd
+
+        {nil, home} ->
+          home
+
+        {root, nil} ->
+          root
+
+        {root, home} ->
+          if Keyword.get(opts, :beyond_git_root, false), do: higher(root, home), else: root
+      end
+
+    up_to(cwd, top, [])
+  end
+
+  # Both are ancestors of the same directory, so the shorter is the higher.
+  defp higher(a, b), do: if(byte_size(a) <= byte_size(b), do: a, else: b)
+
+  defp up_to(dir, top, acc) do
     parent = Path.dirname(dir)
 
-    cond do
-      found?.(files, candidate) -> candidate
-      dir == parent or dir == boundary -> nil
-      true -> nearest_path(files, parent, relative_path, found?, boundary)
-    end
+    if dir == top or dir == parent,
+      do: Enum.reverse([dir | acc]),
+      else: up_to(parent, top, [dir | acc])
+  end
+
+  # The home directory as a prefix of `cwd`, by text or after resolving its
+  # symlinks (`/home` -> `/var/home`), or nil.
+  defp home_containing(%__MODULE__{user_home: nil}, _cwd), do: nil
+
+  defp home_containing(%__MODULE__{user_home: home}, cwd) do
+    home = Path.expand(home)
+    Enum.find([home, host_realpath(home)], &contains?(&1, cwd))
   end
 
   @doc """

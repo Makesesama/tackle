@@ -3,9 +3,10 @@ defmodule Tackle.Workflows do
   Saved, self-contained Lua workflows co-authored with the user.
 
   Files live in `$TACKLE_HOME/workflows` and the nearest `.tackle/workflows`
-  at or above the working directory, stopping at the Git root. Discovery is
-  flat; project files override user files by name. There are no parameters or
-  approval gates: configuration belongs in locals inside the script.
+  at or above the working directory, within the bounds of
+  `Tackle.ProjectFiles.ancestors/3`. Discovery is flat; project files override
+  user files by name. There are no parameters or approval gates: configuration
+  belongs in locals inside the script.
 
   Filesystem access uses `Tackle.ProjectFiles`, including its 1 MiB read cap
   and its routing of host symlinks into the workspace through the executor.

@@ -23,4 +23,16 @@ defmodule Tackle.PathsTest do
       assert dir == Path.join([home, "sessions", Paths.project_key(cwd), "session-1"])
     end
   end
+
+  test "user_home prefers the option, then HOME of the environment, then the system" do
+    assert Paths.user_home(user_home: "/home/a/../b") == "/home/b"
+    assert Paths.user_home(user_home: nil, env: %{"HOME" => "/home/a"}) == nil
+    assert Paths.user_home(env: %{"HOME" => "/home/a"}) == "/home/a"
+    assert Paths.user_home(env: %{"USERPROFILE" => "/home/c"}) == "/home/c"
+    assert Paths.user_home(env: %{"HOME" => ""}) == nil
+    assert Paths.user_home(env: %{}) == nil
+    assert Paths.user_home() == System.user_home() |> Path.expand()
+    assert Paths.agents_dir(env: %{"HOME" => "/home/a"}) == {:ok, "/home/a/.agents"}
+    assert Paths.agents_dir(user_home: nil) == {:error, :user_home_unavailable}
+  end
 end

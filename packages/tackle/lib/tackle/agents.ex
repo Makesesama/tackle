@@ -3,10 +3,11 @@ defmodule Tackle.Agents do
   Discovers declarative subagent profiles from Markdown files.
 
   User profiles live under `$TACKLE_HOME/agents` and project profiles under the
-  nearest `.tackle/agents` directory at or above the working directory, stopping
-  at the Git root. Files are discovered recursively. Precedence is built-in,
-  then user, then project; a higher-precedence valid definition replaces a
-  lower-precedence definition with the same name.
+  nearest `.tackle/agents` directory at or above the working directory, within
+  the bounds of `Tackle.ProjectFiles.ancestors/3`. Files are discovered
+  recursively. Precedence is built-in, then user, then project; a
+  higher-precedence valid definition replaces a lower-precedence definition
+  with the same name.
 
   Files use a deliberately small YAML frontmatter subset followed by the child
   prompt. Configuration is inert: tool strings are resolved separately against
@@ -31,8 +32,8 @@ defmodule Tackle.Agents do
   @spec discover(keyword()) :: discovery()
   def discover(opts \\ []) do
     cwd = opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> Path.expand()
-    files = ProjectFiles.new(executor: Keyword.get(opts, :executor))
     env = Keyword.get_lazy(opts, :env, &System.get_env/0)
+    files = ProjectFiles.new(executor: Keyword.get(opts, :executor), env: env)
     builtins = Keyword.get(opts, :builtins, [])
 
     sources =

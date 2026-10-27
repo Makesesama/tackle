@@ -5,7 +5,8 @@ defmodule Tackle.CLI.MCP.Config do
   #
   #   * user: `$TACKLE_HOME/mcp.json`, trusted because only the user writes it;
   #   * project: `mcp.json` in the nearest `.tackle` directory at or above the
-  #     working directory (stopping at the Git root), usually committed.
+  #     working directory (within `Tackle.ProjectFiles.ancestors/3`), usually
+  #     committed.
   #
   # Both use `{"version": 1, "servers": {NAME => definition}}`. A project
   # definition replaces a user definition with the same name. Project servers
