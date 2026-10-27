@@ -89,8 +89,12 @@ defmodule Tackle.Config.ProjectFileTest do
     }))
 
     assert {:ok, config} = load(ctx)
-    assert config.review.profile == :quiet
-    assert config.review.models == %{detector: "test/user", verifier: "test/project"}
+    assert config.context.review_settings.profile == :quiet
+
+    assert config.context.review_settings.models == %{
+             detector: "test/user",
+             verifier: "test/project"
+           }
 
     assert config.agents == %{
              "scout" => %{model: "test/user", thinking: "high"},

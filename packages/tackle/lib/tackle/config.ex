@@ -106,7 +106,6 @@ defmodule Tackle.Config do
             system_prompt: nil,
             context: %{},
             max_iterations: :infinity,
-            tool_policy: nil,
             llm_opts: [],
             id_generator: &ID.uuid4/0,
             llm_stream: false,
@@ -115,8 +114,6 @@ defmodule Tackle.Config do
             session_titles: nil,
             watchdog: nil,
             narration: nil,
-            decision_model: nil,
-            review: nil,
             agents: %{},
             compile_gate: nil
 
@@ -129,7 +126,6 @@ defmodule Tackle.Config do
           system_prompt: String.t() | nil,
           context: map(),
           max_iterations: pos_integer() | :infinity,
-          tool_policy: Policy.t(),
           llm_opts: keyword(),
           id_generator: ID.generator(),
           llm_stream: boolean(),
@@ -138,8 +134,6 @@ defmodule Tackle.Config do
           session_titles: SessionTitles.t() | nil,
           watchdog: Watchdog.t() | nil,
           narration: Narration.t() | nil,
-          decision_model: Tackle.Lib.Decision.Selection.t() | nil,
-          review: ReviewSettings.t() | nil,
           agents: %{optional(String.t()) => agent_settings()},
           compile_gate: CompileGateSettings.t() | nil
         }
@@ -349,7 +343,6 @@ defmodule Tackle.Config do
            |> put_decisions(providers, decision_model)
            |> put_review(review),
          max_iterations: Keyword.get(opts, :max_iterations, :infinity),
-         tool_policy: Policy.concurrent(),
          llm_opts: Keyword.get(opts, :llm_opts, []),
          id_generator: Keyword.get(opts, :id_generator, &ID.uuid4/0),
          llm_stream: Keyword.get(opts, :llm_stream, false),
@@ -358,8 +351,6 @@ defmodule Tackle.Config do
          session_titles: session_titles,
          watchdog: watchdog,
          narration: narration,
-         decision_model: decision_model,
-         review: review,
          agents: Keyword.get(opts, :agents, %{}),
          compile_gate: compile_gate
        }}
@@ -428,7 +419,7 @@ defmodule Tackle.Config do
       system_prompt: config.system_prompt,
       context: put_compile_gate(config.context, config.compile_gate),
       max_iterations: config.max_iterations,
-      tool_policy: config.tool_policy,
+      tool_policy: Policy.concurrent(),
       llm_opts: config.llm_opts,
       id_generator: config.id_generator,
       session_id: Keyword.get(harness_opts, :session_id),

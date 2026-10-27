@@ -741,11 +741,6 @@ defmodule Tackle.Config.FileTest do
 
     assert {:ok, config} = load.()
 
-    assert %Tackle.Lib.Decision.Selection{
-             ref: "judge/small",
-             provider_settings: %{"base_url" => "http://judge.local"}
-           } = config.decision_model
-
     # Only providers implementing the decision contract are granted.
     assert config.context.decisions == %{
              providers: [
@@ -762,7 +757,6 @@ defmodule Tackle.Config.FileTest do
     # Without a default the adapters are still granted; scripts name a model.
     write_config(home, ~s({"decision_model": null}))
     assert {:ok, config} = load.()
-    assert config.decision_model == nil
 
     assert config.context.decisions == %{
              providers: [%Provider{id: "judge", adapter: JudgeAdapter, settings: %{}}],
@@ -826,13 +820,11 @@ defmodule Tackle.Config.FileTest do
     end
 
     assert {:ok, config} = load.()
-    assert config.review == nil
     refute Map.has_key?(config.context, :review_settings)
 
     write_config(home, ~s({"review": {"thinking": {"detector": "low", "scorer": "off"}}}))
     assert {:ok, config} = load.()
     review = %Tackle.Review.Settings{thinking: %{detector: "low", scorer: "off"}}
-    assert config.review == review
     assert config.context.review_settings == review
 
     write_config(home, ~s({
@@ -847,7 +839,7 @@ defmodule Tackle.Config.FileTest do
 
     assert {:ok, config} = load.()
 
-    assert config.review == %Tackle.Review.Settings{
+    assert config.context.review_settings == %Tackle.Review.Settings{
              profile: :quiet,
              models: %{verifier: "test/file"},
              thinking: %{verifier: "low"},
@@ -856,16 +848,20 @@ defmodule Tackle.Config.FileTest do
            }
 
     write_config(home, ~s({"review": {"profile": null, "default_rules": null}}))
-    assert {:ok, %{review: %Tackle.Review.Settings{profile: nil, default_rules: nil}}} = load.()
+    assert {:ok, config} = load.()
+
+    assert %Tackle.Review.Settings{profile: nil, default_rules: nil} =
+             config.context.review_settings
 
     for empty <- [~s({}), ~s({"thinking": {"detector": null}})] do
       write_config(home, ~s({"review": #{empty}}))
-      assert {:ok, %{review: %Tackle.Review.Settings{thinking: thinking}}} = load.()
-      assert thinking == %{}
+      assert {:ok, config} = load.()
+      assert config.context.review_settings.thinking == %{}
     end
 
     write_config(home, ~s({"review": null}))
-    assert {:ok, %{review: nil}} = load.()
+    assert {:ok, config} = load.()
+    refute Map.has_key?(config.context, :review_settings)
   end
 
   test "invalid review configuration returns errors", %{home: home, env: env} do

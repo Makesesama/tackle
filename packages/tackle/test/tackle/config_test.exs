@@ -449,8 +449,6 @@ defmodule Tackle.ConfigTest do
 
   test "pins tool execution to concurrent and rejects a tool policy option" do
     assert {:ok, config} = Config.new(providers: [Adapter], model: "test/small")
-    assert %Policy{execution_mode: :concurrent} = config.tool_policy
-
     state = Config.to_agent_state(config)
     assert %Policy{execution_mode: :concurrent} = state.tool_policy
 

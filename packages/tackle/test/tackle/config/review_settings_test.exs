@@ -26,8 +26,7 @@ defmodule Tackle.Config.ReviewSettingsTest do
                  review: [thinking: [verifier: "low"]]
                )
 
-      assert config.review == %Settings{thinking: %{verifier: "low"}}
-      assert config.context.review_settings == config.review
+      assert config.context.review_settings == %Settings{thinking: %{verifier: "low"}}
     end
 
     test "keeps settings the host already put in the context" do
