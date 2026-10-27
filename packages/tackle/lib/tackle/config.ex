@@ -154,6 +154,12 @@ defmodule Tackle.Config do
   Loads session configuration from defaults, `config.json`, the project's
   `.tackle/config.json`, environment, and explicit overrides, in that order.
 
+  Each setting takes its value from the last of those sources that sets it,
+  and only that value is checked, so an invalid `TACKLE_THINKING` is an error
+  only when no override sets the thinking level. Overrides set it with
+  `:thinking` or `llm_opts: [reasoning_effort: level]` (`:thinking` wins when
+  both are given). The files are validated as a whole.
+
   The project file is the nearest `.tackle/config.json` at or above the working
   directory, stopping at the Git root (`Tackle.ProjectFiles`). It is read
   through the session executor (the `:context` override's `:executor`, which
@@ -210,8 +216,9 @@ defmodule Tackle.Config do
          {declared, file_opts} = Keyword.pop(file_opts, :providers, %{}),
          {:ok, entries} <- Tackle.Plugins.merge_providers(adapters, accounts, declared),
          providers = Enum.map(entries, & &1.provider),
-         {:ok, env_opts} <- environment_options(env),
-         {:ok, session_opts} <- default_missing_model(file_opts, env_opts, overrides, providers),
+         {:ok, env_opts} <- environment_options(env, overrides),
+         session_opts = merge_sources(file_opts, env_opts, overrides),
+         {:ok, session_opts} <- default_missing_model(session_opts, providers),
          {:ok, session_opts} <- default_session_titles(session_opts),
          session_opts = default_compile_gate(session_opts, Path.dirname(config_path)),
          {:ok, config} <- session_opts |> Keyword.put(:providers, providers) |> new() do
@@ -471,12 +478,27 @@ defmodule Tackle.Config do
     end
   end
 
-  defp default_missing_model(file_opts, env_opts, overrides, providers) do
-    session_opts =
-      file_opts
-      |> Keyword.merge(env_opts)
-      |> Keyword.merge(overrides)
+  # Each setting takes the value of the first source that sets it: overrides,
+  # environment, then the files. Thinking is set by an override's `:thinking`
+  # or its `llm_opts[:reasoning_effort]`, which `new/1` would otherwise replace
+  # with a lower source's `:thinking`.
+  defp merge_sources(file_opts, env_opts, overrides) do
+    session_opts = file_opts |> Keyword.merge(env_opts) |> Keyword.merge(overrides)
 
+    if override_thinking?(overrides) and not Keyword.has_key?(overrides, :thinking),
+      do: Keyword.delete(session_opts, :thinking),
+      else: session_opts
+  end
+
+  defp override_thinking?(overrides) do
+    llm_opts = Keyword.get(overrides, :llm_opts, [])
+
+    Keyword.has_key?(overrides, :thinking) or
+      (is_list(llm_opts) and Keyword.keyword?(llm_opts) and
+         Keyword.has_key?(llm_opts, :reasoning_effort))
+  end
+
+  defp default_missing_model(session_opts, providers) do
     if Keyword.has_key?(session_opts, :model) do
       {:ok, session_opts}
     else
@@ -754,11 +776,25 @@ defmodule Tackle.Config do
     discovery.skills
   end
 
-  defp environment_options(env) do
-    with {:ok, model_opts} <- environment_model_options(env),
-         {:ok, thinking_opts} <- environment_thinking_options(env) do
+  # Only a variable whose setting no override replaces is read, so an invalid
+  # one fails the load only when it would be used.
+  defp environment_options(env, overrides) do
+    with {:ok, model_opts} <- environment_model_options(env, overrides),
+         {:ok, thinking_opts} <- environment_thinking_options(env, overrides) do
       {:ok, model_opts ++ thinking_opts}
     end
+  end
+
+  defp environment_model_options(env, overrides) do
+    if Keyword.has_key?(overrides, :model),
+      do: {:ok, []},
+      else: environment_model_options(env)
+  end
+
+  defp environment_thinking_options(env, overrides) do
+    if override_thinking?(overrides),
+      do: {:ok, []},
+      else: environment_thinking_options(env)
   end
 
   defp environment_model_options(env) do

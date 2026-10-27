@@ -184,6 +184,7 @@ The agent library (`packages/tackle_lib`) was reworked for a smaller, stricter c
 - `Tackle.Config.to_agent_state/2` raises `ArgumentError` for any option but `:session_id`. It ignored unknown options, so a caller still passing the removed `:credential_store` lost it silently.
 - `Tackle.Config.SessionTitles.new/2` returns `{:error, {:invalid_option, :session_titles, value}}` for a list that is not a keyword list, as `Tackle.Config.Watchdog` and `Narration` do; it raised `ArgumentError` out of `Tackle.Config.new/1`.
 - `Tackle.Config.Narration` (`interval_seconds`, `first_after_seconds`) and `Tackle.Config.Watchdog` (`after_seconds`) accept at most 4,294,967.295 seconds, the longest Erlang timer (`2^32 - 1` milliseconds). Any positive number passed, so `1e308` in `config.json` raised `ArithmeticError` when the narrator or watchdog converted it to milliseconds, and a larger integer made `Process.send_after/3` fail there, instead of the configuration being refused.
+- `Tackle.Config.load/1` applies one precedence to every setting, overrides over environment over the project file over the user file over defaults, and validates only the winning value of an environment variable. A `thinking` from a file or `TACKLE_THINKING` replaced an explicit `overrides: [llm_opts: [reasoning_effort: ...]]`, and an invalid `TACKLE_THINKING` failed the load even when the overrides set `:thinking`. An override's `:thinking` still wins over its own `reasoning_effort`.
 
 #### Credentials and accounts (`packages/tackle`)
 

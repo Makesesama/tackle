@@ -238,6 +238,51 @@ defmodule Tackle.Config.FileTest do
     assert config.llm_opts == [reasoning_effort: "medium"]
   end
 
+  test "an override's reasoning effort wins over the file's and environment's thinking", %{
+    home: home,
+    env: env
+  } do
+    write_config(home, ~s({"model":"test/file","thinking":"low"}))
+    load = &Config.load(available_adapters: [Adapter], env: &1, overrides: &2)
+    overrides = [llm_opts: [reasoning_effort: "max", request_tag: "keep"]]
+
+    assert {:ok, config} = load.(env, overrides)
+    assert config.llm_opts == [reasoning_effort: "max", request_tag: "keep"]
+
+    assert {:ok, config} = load.(Map.put(env, "TACKLE_THINKING", "minimal"), overrides)
+    assert config.llm_opts == [reasoning_effort: "max", request_tag: "keep"]
+
+    # An override's own thinking level still wins over its adapter options.
+    assert {:ok, config} = load.(env, [thinking: "high"] ++ overrides)
+    assert config.llm_opts == [request_tag: "keep", reasoning_effort: "high"]
+
+    # Other adapter options leave the lower sources' thinking in place.
+    assert {:ok, config} = load.(env, llm_opts: [request_tag: "keep"])
+    assert config.llm_opts == [request_tag: "keep", reasoning_effort: "low"]
+  end
+
+  test "only the environment settings that win are validated", %{home: home, env: env} do
+    write_config(home, ~s({"model":"test/file"}))
+    env = Map.put(env, "TACKLE_THINKING", "extreme")
+
+    assert {:ok, config} =
+             Config.load(available_adapters: [Adapter], env: env, overrides: [thinking: "low"])
+
+    assert config.llm_opts == [reasoning_effort: "low"]
+
+    assert {:ok, config} =
+             Config.load(
+               available_adapters: [Adapter],
+               env: env,
+               overrides: [llm_opts: [reasoning_effort: "low"]]
+             )
+
+    assert config.llm_opts == [reasoning_effort: "low"]
+
+    assert {:error, {:invalid_environment, "TACKLE_THINKING"}} =
+             Config.load(available_adapters: [Adapter], env: env, overrides: [model: "test/file"])
+  end
+
   test "invalid thinking configuration returns an explicit error", %{home: home, env: env} do
     path = write_config(home, ~s({"model":"test/file","thinking":"extreme"}))
 

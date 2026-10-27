@@ -674,6 +674,13 @@ guide to agents that have `run_workflow`.
 built-in defaults < ~/.tackle/config.json < .tackle/config.json < TACKLE_MODEL/TACKLE_THINKING < explicit overrides
 ```
 
+Each setting takes its value from the highest source that sets it, and only
+that value is checked: an invalid `TACKLE_THINKING` fails the load only when no
+override sets the thinking level. An override sets it with `thinking:` or with
+`llm_opts: [reasoning_effort: ...]`; both win over the files and the
+environment, and `thinking:` wins over `reasoning_effort`. Each file is still
+validated as a whole.
+
 `TACKLE_HOME` changes the directory containing `config.json` and `auth.json`.
 
 A project can carry its own `.tackle/config.json`. The harness uses the nearest
