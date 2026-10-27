@@ -458,6 +458,14 @@ defmodule Tackle.Auth.StoreTest do
       assert {:error, {:credential_lock_failed, :invalid_credential_namespace}} =
                Store.with_lock(store, "", fn -> flunk("ran unlocked") end)
     end
+
+    test "reports a store that is not running as a lock failure", %{path: path} do
+      store = start_store(path)
+      stop_supervised!(Store)
+
+      assert {:error, {:credential_lock_failed, {:store_unavailable, _reason}}} =
+               Store.with_lock(store, "openai-codex", fn -> flunk("ran unlocked") end)
+    end
   end
 
   # The temporary file was named after a counter that restarts with every VM,

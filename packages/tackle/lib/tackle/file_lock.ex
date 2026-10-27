@@ -15,7 +15,10 @@ defmodule Tackle.FileLock do
   Other systems fall back to an owner record created exclusively at the path
   and removed on release. A record is stale when its OS process is gone (or
   the PID now belongs to another process, where the system reports process
-  identities); unless `reclaim: false`, a stale record is replaced. The
+  identities), or when the file holds no record and is more than five seconds
+  old (its holder died between creating and writing it); unless
+  `reclaim: false`, a stale record is replaced. Release removes the record
+  only while it is still the holder's own. The
   fallback is only as strong as that record: two processes reclaiming the same
   stale record at once can both believe they hold the lock.
 
@@ -47,6 +50,7 @@ defmodule Tackle.FileLock do
   # How long `flock` may take to start and report, beyond the requested wait.
   @lock_start_margin 5_000
   @fallback_poll_interval 50
+  @abandoned_record_grace_seconds 5
   @file_mode 0o600
 
   @doc """
@@ -94,12 +98,11 @@ defmodule Tackle.FileLock do
     :ok
   end
 
-  def release(%__MODULE__{path: path}) do
-    case File.rm(path) do
-      :ok -> :ok
-      {:error, :enoent} -> :ok
-      {:error, _reason} -> :ok
-    end
+  # A record that is no longer this lock's (it was judged stale and
+  # reclaimed) belongs to its new holder and stays.
+  def release(%__MODULE__{path: path, owner: owner}) do
+    if read_owner(path) == owner, do: _ = File.rm(path)
+    :ok
   end
 
   @doc """
@@ -319,7 +322,7 @@ defmodule Tackle.FileLock do
   defp try_fallback(path, owner, reclaim?) do
     case read_owner(path) do
       nil ->
-        create(path, owner)
+        create_or_reclaim_abandoned(path, owner, reclaim?)
 
       existing ->
         cond do
@@ -348,6 +351,30 @@ defmodule Tackle.FileLock do
 
       {:error, reason} ->
         {:error, {:lock_create_failed, path, reason}}
+    end
+  end
+
+  # A file that exists but holds no owner record is being written by a new
+  # holder (`create/2` writes right after the exclusive open), or was left by
+  # one that died in between; past a grace period it counts as stale.
+  defp create_or_reclaim_abandoned(path, owner, reclaim?) do
+    case create(path, owner) do
+      {:error, {:locked, nil}} = locked ->
+        if reclaim? and abandoned?(path), do: reclaim(path, owner), else: locked
+
+      result ->
+        result
+    end
+  end
+
+  defp abandoned?(path) do
+    case File.stat(path, time: :posix) do
+      {:ok, %File.Stat{mtime: mtime}} ->
+        is_nil(read_owner(path)) and
+          System.os_time(:second) - mtime > @abandoned_record_grace_seconds
+
+      {:error, _reason} ->
+        false
     end
   end
 

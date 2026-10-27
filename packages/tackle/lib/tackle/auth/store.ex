@@ -107,7 +107,8 @@ defmodule Tackle.Auth.Store do
   end
 
   @impl Tackle.Lib.CredentialStore
-  def fetch(reference, namespace), do: GenServer.call(reference, {:fetch, namespace})
+  def fetch(reference, namespace),
+    do: GenServer.call(reference, {:fetch, namespace}, @change_call_timeout)
 
   @impl Tackle.Lib.CredentialStore
   def put(reference, namespace, credentials),
@@ -121,7 +122,7 @@ defmodule Tackle.Auth.Store do
   # to serve `fun`'s fetches and changes; it is released with the caller.
   @impl Tackle.Lib.CredentialStore
   def with_lock(reference, namespace, fun) when is_function(fun, 0) do
-    with {:ok, lock_path, timeout} <- GenServer.call(reference, {:lock_path, namespace}),
+    with {:ok, lock_path, timeout} <- lock_path(reference, namespace),
          {:ok, result} <- FileLock.with_lock(lock_path, [wait: timeout], fun) do
       result
     else
@@ -129,14 +130,21 @@ defmodule Tackle.Auth.Store do
     end
   end
 
+  defp lock_path(reference, namespace) do
+    GenServer.call(reference, {:lock_path, namespace}, @change_call_timeout)
+  catch
+    :exit, reason -> {:error, {:store_unavailable, reason}}
+  end
+
   @doc false
   @spec status(GenServer.server(), String.t()) :: :stored | :missing | {:error, term()}
-  def status(reference, namespace), do: GenServer.call(reference, {:status, namespace})
+  def status(reference, namespace),
+    do: GenServer.call(reference, {:status, namespace}, @change_call_timeout)
 
   @doc false
   @spec accounts(GenServer.server()) ::
           {:ok, %{optional(String.t()) => account()}} | {:error, term()}
-  def accounts(reference), do: GenServer.call(reference, :accounts)
+  def accounts(reference), do: GenServer.call(reference, :accounts, @change_call_timeout)
 
   @doc false
   @spec put_account(GenServer.server(), String.t(), account()) :: :ok | {:error, term()}

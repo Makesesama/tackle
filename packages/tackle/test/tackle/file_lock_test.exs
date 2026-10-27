@@ -127,6 +127,29 @@ defmodule Tackle.FileLockTest do
       assert lock.owner["pid"] == System.pid()
       FileLock.release(lock)
     end
+
+    test "a holder whose record was reclaimed does not remove its successor's", %{path: path} do
+      {:ok, stale} = FileLock.acquire(path, advisory: false)
+      # Another process judged the record stale and replaced it.
+      successor = Map.put(FileLock.current_owner(), "holder", "successor")
+      File.write!(path, JSON.encode!(successor))
+
+      assert :ok = FileLock.release(stale)
+      assert JSON.decode!(File.read!(path)) == successor
+    end
+
+    test "reclaims a record left empty by a holder that died while writing it", %{path: path} do
+      File.write!(path, "")
+      # Fresh: a new holder may be about to write it.
+      assert {:error, {:locked, nil}} = FileLock.acquire(path, advisory: false)
+
+      File.touch!(path, System.os_time(:second) - 60)
+      assert {:error, {:locked, nil}} = FileLock.acquire(path, advisory: false, reclaim: false)
+      assert {:ok, lock} = FileLock.acquire(path, advisory: false)
+      assert lock.owner["pid"] == System.pid()
+      FileLock.release(lock)
+      refute File.exists?(path)
+    end
   end
 
   defp acquire_waiting(path, opts, timeout),
