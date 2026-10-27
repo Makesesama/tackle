@@ -229,6 +229,10 @@ The agent library (`packages/tackle_lib`) was reworked for a smaller, stricter c
 - Agent profiles reject a whitespace-only `description` and a `timeoutMs` above `300000` (five minutes) at discovery, naming the agent and the limit; a larger timeout was silently capped.
 - `Tackle.ProjectFiles.walk/3` returns the files already listed when it stops at its directory limit; it dropped them.
 
+#### Local review, watchdog, and narrator (`packages/tackle`)
+
+- A review history line left incomplete by a crash or a full disk no longer swallows the next one. `Tackle.LocalReview.History` appended the next line of `findings.jsonl` or `runs.jsonl` to the fragment, so both were skipped when reading and, for example, a recorded `dismissed` outcome was lost; it now ends such a fragment with a newline before appending.
+
 #### Other changes
 
 - The CLI refreshes an MCP server's OAuth credentials while holding `Tackle.Auth.with_lock/2` on the server's `mcp:<name>` namespace, and fetches them again under it: when another process (another CLI, or `tackle sdk`) refreshed them meanwhile, it uses those instead of spending the refresh token again. The refresh took no lock, so two processes could refresh with the same refresh token.

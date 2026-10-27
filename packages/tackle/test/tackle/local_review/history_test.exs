@@ -301,6 +301,32 @@ defmodule Tackle.LocalReview.HistoryTest do
     assert fps == MapSet.new(["aaa", "bbb"])
   end
 
+  test "an append after a torn last line keeps the new lines", ctx do
+    :ok = History.record_outcome(ctx.history, "aaa", :useful)
+    # A crash or a full disk in the middle of a write leaves a fragment.
+    File.write!(History.findings_path(ctx.history), ~s({"event":"shown","fin), [:append])
+    File.write!(History.runs_path(ctx.history), ~s({"id":"torn","summ), [:append])
+
+    :ok = History.record_outcome(ctx.history, "bbb", :dismissed)
+    assert {:ok, run_id} = History.record_run(ctx.history, change(), result([], [], []))
+
+    assert {:ok, events} = History.finding_events(ctx.history)
+
+    assert Enum.map(events, &{&1["event"], &1["fingerprint"]}) == [
+             {"useful", "aaa"},
+             {"dismissed", "bbb"}
+           ]
+
+    assert {:ok, fps} = History.fingerprints(ctx.history, [:dismissed])
+    assert fps == MapSet.new(["bbb"])
+    assert {:ok, [%{"id" => ^run_id}]} = History.runs(ctx.history)
+
+    # Only a torn line gets a separator; intact logs stay one line per entry.
+    :ok = History.record_outcome(ctx.history, "ccc", :fixed)
+    lines = ctx.history |> History.findings_path() |> File.read!() |> String.split("\n")
+    assert [_useful, _fragment, _dismissed, _fixed, ""] = lines
+  end
+
   test "reports write and read failures", ctx do
     # The Tackle home is a regular file, so the review directory cannot exist.
     blocked = Path.join(ctx.home, "blocked")

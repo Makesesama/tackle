@@ -44,7 +44,8 @@ defmodule Tackle.LocalReview.History do
   `:known_fingerprints` to skip dismissed (or already shown) findings.
 
   Lines are appended with one write each. A line that cannot be decoded,
-  such as a partial line left by a crash, is skipped when reading.
+  such as a partial line left by a crash, is skipped when reading; the next
+  write first ends such a line, so the lines after it are kept.
   """
 
   alias Tackle.Lib.Usage
@@ -293,11 +294,33 @@ defmodule Tackle.LocalReview.History do
     with {:ok, data} <- encode(entries),
          :ok <- Storage.ensure_private_dir(Path.dirname(history.dir)),
          :ok <- Storage.ensure_private_dir(history.dir),
-         :ok <- create_private(path) do
-      case File.write(path, data, [:append, :binary]) do
+         :ok <- create_private(path),
+         {:ok, separator} <- separator(path) do
+      case File.write(path, [separator | data], [:append, :binary]) do
         :ok -> :ok
         {:error, reason} -> {:error, {:write_failed, path, reason}}
       end
+    end
+  end
+
+  # A crash or a full disk can leave the file ending in a partial line.
+  # Appending to it would glue the next good line onto the fragment, so
+  # both would be skipped when reading; a newline ends the fragment first.
+  defp separator(path) do
+    case File.open(path, [:read, :binary, :raw], &last_byte/1) do
+      {:ok, {:ok, "\n"}} -> {:ok, []}
+      {:ok, {:ok, _byte}} -> {:ok, "\n"}
+      {:ok, :empty} -> {:ok, []}
+      {:ok, {:error, reason}} -> {:error, {:read_failed, path, reason}}
+      {:error, reason} -> {:error, {:read_failed, path, reason}}
+    end
+  end
+
+  defp last_byte(io) do
+    case :file.position(io, :eof) do
+      {:ok, 0} -> :empty
+      {:ok, size} -> :file.pread(io, size - 1, 1)
+      {:error, reason} -> {:error, reason}
     end
   end
 

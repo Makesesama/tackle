@@ -303,7 +303,9 @@ the session's review settings, the user's and project's rules
 `$TACKLE_HOME/review/<project-key>/` (`runs.jsonl`, `findings.jsonl`, private
 to the current user), where the project key is the Git repository root encoded
 with `Tackle.Paths.project_key/1`, as session storage encodes project
-directories. Findings dismissed there are not reported again.
+directories. Findings dismissed there are not reported again. A line left
+incomplete by a crash or a full disk is skipped, and the next write starts on a
+new line, so the lines after it are kept.
 
 Reviews read the change with [`gix_ex`](../gix_ex/README.md) (gitoxide)
 in the host process rather than with `git` through the session executor;
