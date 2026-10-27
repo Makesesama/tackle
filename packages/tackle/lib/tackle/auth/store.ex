@@ -231,7 +231,7 @@ defmodule Tackle.Auth.Store do
         validate_envelope(path, envelope)
 
       {:ok, %{"version" => version}} when version not in @readable_versions ->
-        {:error, {:unsupported_auth_version, path, @version}}
+        {:error, {:unsupported_auth_version, path, version}}
 
       {:ok, _decoded} ->
         {:error, {:invalid_auth_file, path, :invalid_envelope}}

@@ -65,7 +65,7 @@ defmodule Tackle.Auth.StoreTest do
     File.mkdir_p!(home)
     File.write!(path, JSON.encode!(%{"version" => 3, "providers" => %{}}))
 
-    assert {:error, {:unsupported_auth_version, ^path, 2}} = start_store_error(path)
+    assert {:error, {:unsupported_auth_version, ^path, 3}} = start_store_error(path)
   end
 
   test "a version 1 file loads with no accounts and is rewritten as version 2", %{
