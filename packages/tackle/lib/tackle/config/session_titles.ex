@@ -58,9 +58,13 @@ defmodule Tackle.Config.SessionTitles do
   defp config_options(%__MODULE__{model_ref: model_ref}), do: [model: model_ref]
 
   defp validate_options(opts) do
-    case Keyword.keys(opts) -- @option_keys do
-      [] -> :ok
-      unknown -> {:error, {:invalid_option, :session_titles, Enum.uniq(unknown)}}
+    if Keyword.keyword?(opts) do
+      case Keyword.keys(opts) -- @option_keys do
+        [] -> :ok
+        unknown -> {:error, {:invalid_option, :session_titles, Enum.uniq(unknown)}}
+      end
+    else
+      {:error, {:invalid_option, :session_titles, opts}}
     end
   end
 

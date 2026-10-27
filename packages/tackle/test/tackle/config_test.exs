@@ -284,6 +284,9 @@ defmodule Tackle.ConfigTest do
 
     assert {:error, {:invalid_option, :session_titles, "yes"}} =
              Config.new(providers: [Adapter], model: "test/small", session_titles: "yes")
+
+    assert {:error, {:invalid_option, :session_titles, ["test/small"]}} =
+             Config.new(providers: [Adapter], model: "test/small", session_titles: ["test/small"])
   end
 
   test "updates model and thinking without changing other session options" do
