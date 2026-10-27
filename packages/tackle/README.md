@@ -11,8 +11,10 @@ is one frontend, not a requirement for embedding the harness.
 This package requires Elixir `~> 1.20` and, to build the `gix_ex` NIF that code
 review ([`tackle_review`](../tackle_review/README.md)) uses to read Git
 repositories, a Rust toolchain (`cargo`). Within this
-checkout it uses sibling path dependencies. Plugin/project discovery and loading from configuration are
-not supported: adapter modules must already be part of the running application.
+checkout it uses sibling path dependencies. Nothing discovers plugin projects:
+adapter, tool, and hook modules are either part of the running application or
+come from precompiled projects explicitly enabled in `$TACKLE_HOME/plugins.json`
+(see [Plugin projects](#plugin-projects)).
 
 ## Installation
 
@@ -82,10 +84,14 @@ data may only select a trusted profile name. `Tackle.Runtime.RootBackend` is
 supplied by this package as the backend for its durable root session. For the
 built-in coding profiles instead of an empty `profiles` map, use
 `Tackle.Coding.scope_spec/2`. A host that builds several configurations for
-one workspace reads their sources (`config.json`, the project file, accounts,
-skills, and prompt files) once with `Tackle.Config.Sources.read/1`, which takes
-`load/1`'s options, and builds each with `Tackle.Config.from_sources/2`, as
-`Tackle.Coding.scope_spec/2` does for the root and every profile.
+one workspace reads their sources (the environment, `$TACKLE_HOME/config.json`,
+the project's `.tackle/config.json`, the accounts, the skills, and the prompt
+files) once with `Tackle.Config.Sources.read/1`, which takes `load/1`'s
+options, and builds each with `Tackle.Config.from_sources/2`, as
+`Tackle.Coding.scope_spec/2` does for the root and every profile. A built
+configuration changes only through `Tackle.Config.update/2` (model, thinking
+level, step limit, context, and adapter options, checked as `new/1` checks
+them).
 
 Subscribers receive provider-neutral library events and turn results with
 session and turn correlation; `Tackle.Session.Events` documents each message:
@@ -683,7 +689,8 @@ override sets the thinking level. An override sets it with `thinking:` or with
 environment, and `thinking:` wins over `reasoning_effort`. Each file is still
 validated as a whole.
 
-`TACKLE_HOME` changes the directory containing `config.json` and `auth.json`.
+`TACKLE_HOME` (default `~/.tackle`) changes the directory containing
+`config.json`, `auth.json`, and `plugins.json`.
 
 A project can carry its own `.tackle/config.json`. The harness uses the nearest
 one at or above the working directory, stopping at the Git root (as for
@@ -725,7 +732,10 @@ discovered profile are ignored, but their models must still be available.
 The configuration file accepts `model` and `thinking` harness fields and the
 CLI-only boolean `show_subagent_sidebar` (default `true`), which does not affect
 agent sessions, and the CLI-only `jail` object, whose `env` list names host
-environment variables passed to commands in the CLI's jail (`Tackle.CLI.Jail`). It also accepts a `session_titles` object configuring automatic
+environment variables passed to commands in the CLI's jail (`Tackle.CLI.Jail`).
+Frontends read their own fields with `Tackle.Config.File.read/1`, which
+validates the whole user file as the harness does and returns its JSON object
+as written. It also accepts a `session_titles` object configuring automatic
 LLM-generated session titles: after an untitled durable session settles the
 first message the user wrote (or, for a resumed untitled session, the next
 one; messages from other agents, background notices, and hook feedback never
@@ -936,9 +946,10 @@ naming a different adapter than a default provider of that id fails with
 `{:provider_adapter_conflict, id}`; an entry without an `adapter` or with an
 invalid id is also an error. `config.json` and `auth.json` are shared by every
 host on the machine, so an entry naming an adapter type the running host does
-not include is skipped, and so is an account whose adapter is missing, whose
-id names a default provider of any adapter, or whose id names a `config.json`
-provider of another adapter. A model
+not include is skipped, and so is an account whose adapter the host does not
+include, whose id is the id of a default provider of any of the host's
+adapters, or whose id a `config.json` entry declares for another of the
+host's adapters. A model
 reference always names a provider, never an adapter type. The former
 `provider_options` field is removed; declare settings under `providers`
 instead.
@@ -966,7 +977,7 @@ default providers.
 
 ### Credentials
 
-`Tackle.Auth` stores one opaque map per provider id in `~/.tackle/auth.json` and
+`Tackle.Auth` stores one opaque map per provider id in `$TACKLE_HOME/auth.json` and
 injects only a non-secret `Tackle.Lib.CredentialStore` handle into adapter
 options. `Tackle.Auth.Provider` runs an adapter's login, logout, status, and
 usage flows for one provider, passing the provider's id and settings to the
@@ -984,16 +995,30 @@ in the credential store. The file is plaintext protected by filesystem
 permissions (`0700` for the directory and `0600` for the file), not encryption.
 Writes are atomic and serialized within one Tackle application. Several VMs
 (two CLIs, or a CLI and an SDK server) can share the file: every change
-re-reads it and applies only its own change to what it finds, and reads load
-the file again once it was replaced or modified since the last read. The
+re-reads it and applies only its own change to what it finds, and a read
+loads the file again when its device, inode, size, or modification time
+differs from the last read, or it was modified in the second that read began. The
 moment between a change's re-read and its rename is not locked across VMs, so
 two VMs changing the file at the same instant can still lose one change;
-cross-VM locking and OS keyrings are deferred. `Tackle.Auth.accounts/0`, the
+cross-VM locking and OS keyrings are not implemented. A file that becomes
+unreadable or invalid while the store runs makes reads and changes return
+`{:error, reason}` and is never overwritten. `Tackle.Auth.accounts/0`, the
 one way to read the accounts, returns `{:ok, accounts}`, or
 `{:error, {:accounts_unavailable, reason}}` when the file cannot be read or
 the store is not running. An account record is checked by
 `Tackle.Auth.validate_account/2` wherever it comes from: its id, `"adapter"`,
 and `"base"`, if any, must be valid provider ids (a `null` base is no base).
+
+### Plugin projects
+
+`Tackle.Plugins.Loader.load/1` loads the adapters, tools, and hooks of
+precompiled Mix projects listed in `$TACKLE_HOME/plugins.json` and returns
+them as a validated `Tackle.Plugins.Catalog`; it never discovers, fetches, or
+builds projects, and an absent file enables none. It is meant to run once,
+when the host starts: loaded code cannot be unloaded. The CLI calls it at
+startup and merges the result into its own catalog; embedding hosts need not
+use it. See [plugin loading](../../docs/PLUGINS.md) for the file's format and
+the checks the loader applies.
 
 ## Development
 

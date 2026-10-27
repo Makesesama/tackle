@@ -1,28 +1,29 @@
 defmodule Tackle.Plugins do
   @moduledoc """
-  Resolves harness-owned plugin contributions made available to frontends.
+  Merges the providers that a host's adapters back, and lists their models.
 
   Adapter modules are already available in the running BEAM and supplied by
   trusted host code: every function takes them explicitly, usually the
-  adapters of the host's `Tackle.Plugins.Catalog`. CLI arguments and user
-  configuration select model references; they do not name or load adapter
-  modules directly.
+  adapters of the host's `Tackle.Plugins.Catalog`, which validates the host's
+  contributions (`Tackle.Plugins.Loader` loads those of enabled plugin
+  projects). CLI arguments and user configuration select model references;
+  they do not name or load adapter modules directly.
 
   ## Providers
 
   An adapter module is an executable type; a provider (`Tackle.Lib.LLM.Provider`)
   is one configured instance of it, and its id is the model-reference prefix
   and credential namespace. The available providers are merged from three
-  sources:
+  sources, lowest precedence first:
 
     1. `:default` — each adapter's default providers
        (`Tackle.Lib.LLM.Provider.defaults/1`).
-    2. `:config` — the `"providers"` object of `config.json`, where each entry
-       names an adapter type id under `"adapter"` and every other key is an
-       opaque setting.
-    3. `:account` — accounts recorded by `tackle auth login ID --as NAME`
+    2. `:account` — accounts recorded by `tackle auth login ID --as NAME`
        (`Tackle.Auth.accounts/0`), checked as `auth.json` checks them
        (`Tackle.Auth.validate_account/2`).
+    3. `:config` — the `"providers"` object of `config.json`, where each entry
+       names an adapter type id under `"adapter"` and every other key is an
+       opaque setting.
 
   A `config.json` entry for a default provider id must name the same adapter
   type; its settings are merged over the defaults. Naming a different adapter
@@ -39,9 +40,9 @@ defmodule Tackle.Plugins do
   from. A `config.json` entry for the account's own id merges over that, and
   may name the account's own `"api_key_env"`. Like
   `auth.json` itself, accounts are shared by every host, so an account is
-  skipped when this host lacks its adapter, when its id names a default
-  provider of any adapter, or when its id names a `config.json` provider of
-  another adapter.
+  skipped when this host lacks its adapter, when its id is the id of a
+  default provider of any of the host's adapters, or when a `config.json`
+  entry declares its id for another of the host's adapters.
 
   Providers keep their first position; new providers follow the defaults,
   accounts before configured providers, each group sorted by id.

@@ -31,10 +31,14 @@ Tackle accepts trusted modules **already available to the running BEAM**:
   `Tackle.Lib.Tool.Registry` does, and rejects duplicate tool names. Hooks
   must implement at least one `Tackle.Lib.Hook` callback, as in the catalog.
   The defaults come from `Tackle.Tools.default/0`.
-- `$TACKLE_HOME/config.json` selects `model`, `thinking`, and feature settings
-  (session titles, watchdog, narration) and may declare `providers` of
-  available adapters; it never names executable modules. Environment settings
-  select model and thinking, not executable modules. Hosts can
+- `$TACKLE_HOME/config.json` selects `model`, `thinking`, the decision model
+  (`decision_model`), subagent profiles' models (`agents`), review defaults
+  (`review`), and the switchable features (`session_titles`, `watchdog`,
+  `narration`, `compile_gate`), carries the CLI's own `show_subagent_sidebar`
+  and `jail` fields, and may declare `providers` of available adapters; it
+  never names executable modules. A project's `.tackle/config.json` may set
+  the same fields except `providers`, `show_subagent_sidebar`, and `jail`.
+  Environment settings select model and thinking, not executable modules. Hosts can
   pass trusted `Config.load(overrides: ...)` for tools and hooks; there is no
   user-file schema for either. `Config.update/2` changes a built configuration's
   model, thinking, step limit, context, and adapter options with the checks of
@@ -51,10 +55,11 @@ Tackle accepts trusted modules **already available to the running BEAM**:
   modules for execution; it is not a global plugin registry.
 - The CLI bundles the Codex, DeepSeek, Anthropic, OpenRouter, and Ollama
   adapters as fixed dependencies. Its experimental
-  MCP client starts connections separately and passes discovered tool modules
-  as `:root_tools` into `Tackle.Coding.scope_spec/2`; children opt in by name.
-  MCP server failures are handled by that integration, not by a general plugin
-  loader.
+  MCP client starts connections separately; the CLI adds the discovered tool
+  modules to its catalog (source `:cli_mcp`) and grants them to the root by
+  name through `catalog_root_tools` in `Tackle.Coding.scope_spec/2`; children
+  opt in by name. MCP server failures are handled by that integration, not by
+  a general plugin loader.
 
 - `Tackle.Plugins.Catalog.new/1` (in `packages/tackle`) now validates explicit
   `%{module: ..., source: ...}` entries for adapters, tools, and hooks, keeps
@@ -71,9 +76,10 @@ Tackle accepts trusted modules **already available to the running BEAM**:
   the root while retaining its existing trusted profile-name selection. A
   catalog tool conflicting with a built-in coding tool is rejected. These are
   trusted host-code entry points, **not** user-file syntax.
-- The CLI now assembles a catalog of its configured adapters, built-in tools,
-  delegation tools, and connected MCP tools for new coding scopes. MCP modules
-  are granted explicitly to the root; subagent profiles still opt in by name.
+- The CLI assembles one catalog of its bundled adapters, built-in tools,
+  delegation tools, connected MCP tools, and the contributions of enabled
+  plugin projects for new coding scopes. MCP and plugin tools are granted
+  explicitly to the root; subagent profiles still opt in by name.
 
 Source entry points: `packages/tackle/lib/tackle/{plugins,config,coding,tools}.ex`,
 `packages/tackle/lib/tackle/config/file.ex`,
@@ -128,8 +134,9 @@ Catalog assembly for already-loaded modules is implemented and tested. Each
 selected entry carries its source and module. Adapter IDs and models, tool
 callback availability and names, and hook callback presence are checked.
 Declaration order is preserved; tools are only granted when selected for the
-root or a child. Future work should consolidate host-specific catalog builders,
-add a host-wide validation boundary for default tools and explicit grants, and
+root or a child. The CLI is the only host that builds a catalog, in one
+place (`Tackle.CLI.Distribution.catalog/1`). Future work should add a
+host-wide validation boundary for default tools and explicit grants, and
 refine errors that identify both sides of a conflict. In particular, the
 catalog does not independently know all tools provided by a host until that
 host includes them in validation; `Coding.scope_spec/2` also checks catalog

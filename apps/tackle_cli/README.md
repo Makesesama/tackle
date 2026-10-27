@@ -73,7 +73,12 @@ The jailed launchers run the CLI on the host, so these variables work there too.
 
 The wrapped binary is a **fixed distribution** with these default adapters
 compiled into it. Additional trusted, separately precompiled plugins can be
-explicitly enabled at startup; see [plugin loading](../../docs/PLUGINS.md).
+explicitly enabled in `$TACKLE_HOME/plugins.json`; see
+[plugin loading](../../docs/PLUGINS.md). The CLI loads them once, when it
+starts, and does not start when an enabled project is invalid or conflicts
+with a bundled adapter or tool. Their adapters join the bundled ones in every
+command (sessions, `tackle auth`, `tackle models`, and `tackle sdk`), and
+their tools are granted to the root agent; subagent profiles opt in by name.
 
 ### Ollama Cloud
 

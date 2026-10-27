@@ -50,9 +50,10 @@ The first-party [Codex adapter](packages/tackle_codex/README.md) uses the same
 contracts as third-party adapters. The optional
 [MCP client](packages/tackle_mcp/README.md) exposes discovered tools through the
 ordinary tool contract; the [Anubis server bridge](packages/tackle_anubis/README.md)
-is separate from the core. The CLI still bundles its default adapters. The harness now loads **explicitly
-enabled, separately precompiled Mix projects** at host startup through
-`$TACKLE_HOME/plugins.json`. See [`docs/PLUGINS.md`](docs/PLUGINS.md) for the
+is separate from the core. The CLI still bundles its default adapters. The harness's
+`Tackle.Plugins.Loader` loads **explicitly enabled, separately precompiled Mix
+projects** listed in `$TACKLE_HOME/plugins.json`, and the CLI calls it at
+startup. See [`docs/PLUGINS.md`](docs/PLUGINS.md) for the
 trusted enablement schema and limitations; there is no auto-discovery, implicit
 build, or sandbox.
 
@@ -86,8 +87,8 @@ and unfinished integrations:
   under `Tackle.Tools.*`. It composes a coding system prompt with global and
   project `AGENTS.md` guidance, and discovers Agent Skills from `.agents/skills`
   directories so the model can load them on demand. Configuration loads from
-  `~/.tackle/config.json`, environment, and explicit overrides without loading
-  modules from data.
+  `~/.tackle/config.json`, the project's `.tackle/config.json`, environment,
+  and explicit overrides without loading modules from data.
 - [`packages/tackle_lib`](packages/tackle_lib/README.md) contains the existing
   agent library and its API documentation (`Tackle.Lib.*`).
 - [`packages/tackle_runtime`](packages/tackle_runtime/README.md) contains the
@@ -137,7 +138,8 @@ and unfinished integrations:
   Anubis-based MCP client plugin. Trusted host startup can connect STDIO or
   Streamable HTTP servers, discover their tools, and add the returned proxy
   modules to a session's normal `:tools` list. The plugin currently bridges
-  tools only and is not bundled by the CLI.
+  tools only; the CLI bundles it for its experimental
+  [MCP connections](apps/tackle_cli/README.md#mcp-connections-experimental).
 - [`apps/tackle_cli`](apps/tackle_cli/README.md) contains the default
   Optimus/ex_ratatui CLI entrypoint. Its Burrito release produces a fixed
   distribution that bundles the first-party Codex, DeepSeek, Anthropic,

@@ -151,8 +151,9 @@ defmodule Tackle.Config do
   directory, stopping at the Git root (`Tackle.ProjectFiles`). It is read
   through the session executor (the `:context` override's `:executor`, which
   is validated before anything is read), layered over `$TACKLE_HOME/config.json` with
-  JSON objects merged recursively, and may not declare `providers`: it selects
-  models and settings among the providers the user configured.
+  JSON objects merged recursively, and may not set `providers`: it selects
+  models and settings among the providers the user configured. Nor may it set
+  the CLI's `show_subagent_sidebar` and `jail` fields (see `Tackle.Config.File`).
 
   The adapters are explicit: either `:available_adapters`, executable
   modules chosen by the host, or a trusted host's `:catalog`, which selects

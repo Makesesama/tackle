@@ -10,9 +10,10 @@
 >   provider id.
 > - An account created from a provider id records it as its `"base"` and
 >   inherits that provider's merged settings, minus `"api_key_env"` (see §5).
-> - `auth.json` accounts whose adapter a host does not include, whose id names
->   a default provider of any adapter, or whose id names a `config.json`
->   provider of another adapter are skipped instead of failing; so are
+> - `auth.json` accounts whose adapter a host does not include, whose id is
+>   the id of a default provider of any of the host's adapters, or whose id a
+>   `config.json` entry declares for another of the host's adapters are
+>   skipped instead of failing; so are
 >   `config.json` entries naming an adapter type the host does not include.
 >   `login --as` refuses such names up front: a default provider's id with
 >   `{:default_provider_name, NAME}`, the others with
@@ -20,6 +21,10 @@
 > - Selections carry `:provider_id`/`:provider_settings`
 >   (`Selection.provider/1` rebuilds the struct) instead of `:provider` plus a
 >   type-id `adapter_id`.
+> - Adapters are passed explicitly: `Tackle.Plugins.available_providers/2`
+>   and every `Tackle.Auth.Provider` function take the host's adapter modules
+>   first, and `Tackle.Config.load/1` takes `:available_adapters` or a
+>   `:catalog`. The `:tackle, :adapters` application environment is gone.
 
 ## Goal
 

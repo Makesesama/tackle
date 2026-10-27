@@ -53,7 +53,7 @@ Proposed component identities:
 | Existing Phoenix integration | `:tackle_phoenix` | `Tackle.Phoenix.*` (unchanged) |
 | Anubis MCP bridge | `:tackle_anubis` | `Tackle.Anubis.*` |
 | Codex plugin | `:tackle_codex` | `Tackle.Plugins.Codex.*` |
-| Developer tools | `:tackle_dev_tools` | `Tackle.Plugins.DevTools.*` |
+| Coding tools and executors | `:tackle_tools` | `Tackle.Tools.*`, `Tackle.Executor.*` |
 | CLI | `:tackle_cli` | `Tackle.CLI.*` |
 
 ## 3. Responsibility and dependency boundaries
@@ -119,16 +119,16 @@ Neither frontend calls provider APIs, duplicates the agent loop, or becomes the 
 ### Dependency direction and executable composition
 
 ```text
-CLI / future Web  ──>  Tackle harness  ──>  Tackle.Lib
-                                               ^
-Provider / tool plugins  ───────────────────────┘
+CLI  ──>  Tackle harness  ──>  Tackle.Lib
+                                  ^
+Provider / tool plugins  ─────────┘
 
 Harness configuration selects available plugin implementations.
 ```
 
-The harness package does not depend on CLI or Web. Each executable application depends on the harness and declares the bundled plugin dependencies needed for that distribution. This keeps the dependency graph acyclic while allowing the harness to load and configure those available plugins.
+The harness package does not depend on the CLI or any other app. The CLI depends on the harness and declares the bundled plugin dependencies of its distribution. `apps/tackle_hub` does not use the harness: it depends on the packages it needs (`tackle_lib`, `tackle_runtime`, `tackle_review`, `tackle_tools`, `tackle_exec`, and its adapters). This keeps the dependency graph acyclic.
 
-Distinguish distribution composition from runtime composition: the executable supplies available packages; `Tackle.Plugins` resolves and configures their contributions. Exact release/Burrito assembly remains undecided and is not part of this specification's implementation approval.
+Distinguish distribution composition from runtime composition: the executable supplies available packages and passes their modules to the harness explicitly, as a `Tackle.Plugins.Catalog`; `Tackle.Plugins` merges the providers of those adapters, and `Tackle.Plugins.Loader` adds the contributions of explicitly enabled, precompiled plugin projects at startup. The CLI's release is assembled with Burrito; third-party plugin installation remains undecided.
 
 ## 4. Shared frontend contract
 
@@ -162,9 +162,9 @@ Future approval prompts must use structured requests and correlated responses, n
 
 ## 5. Configuration and plugin loading
 
-The harness owns these concerns; the exact configuration file format, search locations, and plugin distribution mechanism are still open.
+The harness owns these concerns. Implemented: `Tackle.Config.load/1` merges built-in defaults, `$TACKLE_HOME/config.json`, the project's `.tackle/config.json`, `TACKLE_MODEL`/`TACKLE_THINKING`, and explicit overrides, in that order; credentials and provider accounts live in `$TACKLE_HOME/auth.json` (`Tackle.Auth`); and `$TACKLE_HOME/plugins.json` enables precompiled plugin projects (`Tackle.Plugins.Loader`, see [PLUGINS.md](PLUGINS.md)). The plugin distribution mechanism is still open.
 
-Proposed minimal approach:
+The approach it follows:
 
 1. Read explicitly supported configuration sources.
 2. Merge them with documented, deterministic precedence.
@@ -249,8 +249,6 @@ For the identity migration specifically, run the existing library suite at its n
 
 ## 9. Open decisions before their implementation
 
-- Configuration format, locations, precedence, and credential sourcing.
-- Exact plugin declaration/loading contract and bundled plugin enablement defaults.
 - Exact frontend API signatures, delivery ordering, and disconnect/session lifetime policy.
 - Minimal reuse strategy for existing Phoenix Runner lifecycle machinery.
 - Initial developer-tool set and its filesystem/process permission policy.

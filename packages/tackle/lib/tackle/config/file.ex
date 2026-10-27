@@ -3,8 +3,8 @@ defmodule Tackle.Config.File do
   Reads and validates the configuration files: the user's
   `$TACKLE_HOME/config.json` and a project's `.tackle/config.json`.
 
-  `Tackle.Config.load/1` builds sessions from their options (`load/1`,
-  `load/2`). Frontends that store their own settings in the user file read
+  `Tackle.Config.load/1` builds sessions from the session options that
+  `load/1` and `load/2` return. Frontends that store their own settings in the user file read
   it with `read/1`, which validates the whole file like the harness does and
   returns the JSON object as written. The harness knows the fields of its
   frontends so that every reader validates the same file: the CLI's

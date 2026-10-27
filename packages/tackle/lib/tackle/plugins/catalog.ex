@@ -2,6 +2,11 @@ defmodule Tackle.Plugins.Catalog do
   @moduledoc """
   Validated, provenance-preserving catalog of harness plugin contributions.
 
+  A host builds one from the modules it bundles and the contributions of
+  enabled plugin projects (`Tackle.Plugins.Loader.load/1` returns those as a
+  catalog), and passes it to `Tackle.Config.load/1` and
+  `Tackle.Coding.scope_spec/2`.
+
   Adapters are unique by type id, and their default providers by provider id:
   two adapters declaring a default provider with the same id are rejected with
   `{:invalid_plugin, :adapter, source, {:duplicate_provider_id, id,

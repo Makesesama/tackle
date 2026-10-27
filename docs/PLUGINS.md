@@ -1,10 +1,13 @@
 # Plugins and extensions
 
 **Status: startup loading of explicitly enabled, precompiled Mix projects is implemented.**
-The CLI and web host load selected contributions from a trusted user file at
-startup. No project-local automatic discovery, build, fetch, reload, or sandbox
-is provided. Future features in this document remain proposals. For what is implemented
-today, see [PLUGIN_SYSTEM.md](PLUGIN_SYSTEM.md). See the
+The harness provides the loader (`Tackle.Plugins.Loader`); the CLI is the one
+host that calls it, at startup, to load selected contributions from a trusted
+user file. `apps/tackle_hub` loads no plugins. No project-local automatic
+discovery, build, fetch, reload, or sandbox is provided. Sections marked
+*proposed* and the delivery order describe plans, not supported features. For
+the integration points implemented today, see
+[PLUGIN_SYSTEM.md](PLUGIN_SYSTEM.md). See the
 [architecture specification](architecture-spec.md) for package boundaries.
 
 ## What a plugin is
@@ -85,29 +88,31 @@ Do not store builds in Burrito's extraction cache. BEAM loading cannot be
 rolled back: fix a failure and restart the host; do not call the loader again
 in a running process.
 
-For the first slice, enablement is user-wide; session and subagent tool
+Enablement is user-wide; session and subagent tool
 allowlists remain independent. Installing a tool never automatically authorizes
 it for all agents. The harness composes a scope from the validated catalog:
 selected adapter/model, explicitly granted root tools, hooks in a defined order,
 and per-profile tool selections resolved only against trusted available tools.
 Being in the catalog does not grant a capability to every agent or subagent.
-The existing catalog API and tool grants remain separate from loading.
+The existing catalog API and tool grants remain separate from loading. The CLI
+grants the tools of enabled projects to its root agent; subagent profiles
+still opt in by name.
 
 Project-local `.tackle/plugins/` and per-repository approval are deferred:
 opening an arbitrary repository must not execute its code. Loaded extensions
 run with the full privileges of the Tackle process. Discovery is not
 sandboxing; never scan arbitrary working directories for executable code.
 
-## Initial Mix-project workflow
+## Mix-project workflow
 
-First support separately **precompiled** projects. The user builds a trusted
+Tackle supports separately **precompiled** projects. The user builds a trusted
 project and its dependencies with an installed, compatible Elixir/Mix toolchain
 (for example, `MIX_ENV=prod mix deps.get && MIX_ENV=prod mix compile`). They
 configure the *project path*, not a specific `ebin` path. At startup, the
-harness locates compiled applications, checks they match what is enabled, adds
+loader locates compiled applications, checks they match what is enabled, adds
 approved code paths, starts required OTP applications, validates the selected
 capability modules, and composes the resulting contributions for new scopes.
-The initial loading path is implemented; compatibility with arbitrary external
+This loading path is implemented; compatibility with arbitrary external
 projects, native libraries and mismatched Elixir/OTP versions is **not**
 guaranteed. Missing builds, dependency conflicts and invalid modules fail
 startup, not silently trigger a build.
@@ -119,11 +124,12 @@ concrete design before implementation. Do not assume Mix can run inside the
 Burrito release, and do not fetch or compile third-party code unexpectedly at
 startup. A managed toolchain and binary-only installation are deferred.
 
-The harness in `packages/tackle` owns discovery, validation, loading, and
-composition. `tackle_lib` retains the provider-neutral engine and capability
-contracts; applications embedding that library need not use this loader. CLI,
-web, and a future socket-facing frontend should all consume the same resolved
-harness configuration rather than implementing separate plugin registries.
+The harness in `packages/tackle` owns validation, loading, and composition;
+nothing discovers projects. `tackle_lib` retains the provider-neutral engine
+and capability contracts; applications embedding that library need not use
+this loader. A future web or socket-facing frontend on the harness should
+consume the same resolved harness configuration rather than implement a
+separate plugin registry.
 
 ## Composition and conflict policy (proposed)
 
