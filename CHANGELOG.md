@@ -219,6 +219,10 @@ The agent library (`packages/tackle_lib`) was reworked for a smaller, stricter c
 - The harness's `mix tackle` task no longer runs its own DeepSeek login for `mix tackle auth login deepseek` from `packages/tackle`. That branch bypassed `Tackle.Auth.Flows.login/3`, named accounts, and the adapter's secret prompt, and echoed the API key through `Mix.shell().prompt/1`. Outside `apps/tackle_cli` the task passes every command to the CLI project's `mix tackle`; interactive logins run from `apps/tackle_cli` (`cd apps/tackle_cli && mix tackle auth login ID`), where the task calls the CLI in-process.
 - `Tackle.Auth.Store` reports an unsupported `auth.json` version with the file's version, `{:unsupported_auth_version, path, file_version}`; it reported the supported version instead.
 
+#### Project files, skills, and agent profiles (`packages/tackle`)
+
+- `YamlFrontmatter.list/1` reads a front matter value as a list of strings: a flow list, a block list, or comma- or newline-separated items, with quoted items unquoted and commas inside quotes, braces, and brackets kept. Agent profiles read `tools` with it, so `tools: ["read", "bash"]` and `- "read"` no longer become names with quotes in them, and an empty `tools:` leaves the list unset (default tools) instead of selecting none; `tools: []` still selects none. Review rules read `applies_to` with it, so `applies_to: lib/**, test/**` is two globs and a flow list's unquoted items are globs (`[1, 2]` is no longer an error).
+
 #### Other changes
 
 - The CLI refreshes an MCP server's OAuth credentials while holding `Tackle.Auth.with_lock/2` on the server's `mcp:<name>` namespace, and fetches them again under it: when another process (another CLI, or `tackle sdk`) refreshed them meanwhile, it uses those instead of spending the refresh token again. The refresh took no lock, so two processes could refresh with the same refresh token.

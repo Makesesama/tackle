@@ -39,8 +39,8 @@ defmodule Tackle.Review.Rules do
   *Good* examples. Active rules need a category, a severity, and a body; a
   suppressed or retired rule only needs its `id` and `status`, so a project
   can turn off a built-in rule with a two-line file. `applies_to` accepts a
-  flow list, a block list (`- glob` lines), or a single glob; globs use
-  `Tackle.Review.Glob`. Comments start with `#` after whitespace. A value
+  flow list, a block list (`- glob` lines), or comma-separated globs, read
+  with `YamlFrontmatter.list/1`; globs use `Tackle.Review.Glob`. Comments start with `#` after whitespace. A value
   that starts with `[` or `{` must be a closed list or quoted, so quote a
   glob such as `"{lib,test}/**"`; a field whose value cannot be read is an
   error rather than a default.
@@ -498,87 +498,17 @@ defmodule Tackle.Review.Rules do
   defp applies_to(nil), do: {:ok, ["**/*"]}
 
   defp applies_to(value) when is_binary(value) do
-    value = String.trim(value)
-
-    patterns =
-      cond do
-        String.starts_with?(value, "[") and String.ends_with?(value, "]") -> flow_list(value)
-        String.starts_with?(value, "- ") -> block_list(value)
-        true -> [value]
-      end
-
-    cond do
-      not Enum.all?(patterns, &is_binary/1) ->
-        {:error, "applies_to must contain only globs"}
-
-      Enum.reject(patterns, &(&1 == "")) == [] ->
-        {:error, "applies_to must list at least one glob"}
-
-      true ->
-        {:ok, Enum.reject(patterns, &(&1 == ""))}
+    case Frontmatter.list(value) do
+      {:ok, []} -> {:error, "applies_to must list at least one glob"}
+      {:ok, patterns} -> {:ok, patterns}
+      {:error, :malformed_list} -> not_a_glob_list(value)
     end
   end
 
-  defp applies_to(value),
+  defp applies_to(value), do: not_a_glob_list(value)
+
+  defp not_a_glob_list(value),
     do: {:error, "applies_to must be a list of globs, got: #{inspect(value)}"}
-
-  # `["a", "b"]` is JSON; otherwise split at commas outside quotes and braces,
-  # since globs such as `*.{ex,exs}` contain commas.
-  defp flow_list(value) do
-    case JSON.decode(value) do
-      {:ok, list} when is_list(list) ->
-        Enum.map(list, &trim_item/1)
-
-      _other ->
-        value
-        |> String.slice(1..-2//1)
-        |> split_items(nil, 0, [], [])
-        |> Enum.map(&unquote_item/1)
-    end
-  end
-
-  defp trim_item(item) when is_binary(item), do: String.trim(item)
-  defp trim_item(item), do: item
-
-  defp split_items("", _quote, _depth, current, items),
-    do: Enum.reverse([current |> Enum.reverse() |> IO.iodata_to_binary() | items])
-
-  defp split_items("," <> rest, nil, 0, current, items),
-    do:
-      split_items(rest, nil, 0, [], [current |> Enum.reverse() |> IO.iodata_to_binary() | items])
-
-  defp split_items(<<char::utf8, rest::binary>>, quote, depth, current, items) do
-    {quote, depth} =
-      cond do
-        quote == nil and char in [?", ?'] -> {char, depth}
-        quote == char -> {nil, depth}
-        quote == nil and char == ?{ -> {nil, depth + 1}
-        quote == nil and char == ?} -> {nil, max(depth - 1, 0)}
-        true -> {quote, depth}
-      end
-
-    split_items(rest, quote, depth, [<<char::utf8>> | current], items)
-  end
-
-  defp block_list(value) do
-    value
-    |> String.split("\n")
-    |> Enum.map(&(&1 |> String.trim() |> String.trim_leading("-") |> unquote_item()))
-  end
-
-  defp unquote_item(item) do
-    item = String.trim(item)
-
-    case item do
-      <<quote, rest::binary>> when quote in [?", ?'] and byte_size(rest) > 0 ->
-        if :binary.last(rest) == quote,
-          do: binary_part(rest, 0, byte_size(rest) - 1),
-          else: item
-
-      _other ->
-        item
-    end
-  end
 
   defp compile_globs(patterns) do
     case Glob.compile_all(patterns) do

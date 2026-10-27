@@ -8,6 +8,9 @@ defmodule YamlFrontmatter do
   full YAML, so it has no dependencies. Unknown keys are preserved
   so callers can decide what to use. A document without a leading `---`
   fence has no front matter and parses to an empty map.
+
+  Lists are returned as the text the file has; `list/1` reads such a value
+  as a list of strings.
   """
 
   @type error_reason :: :unterminated_frontmatter | :malformed_frontmatter
@@ -34,6 +37,143 @@ defmodule YamlFrontmatter do
          {:ok, frontmatter} <- to_map({:ok, lines}) do
       {:ok, %{frontmatter: frontmatter, body: body}}
     end
+  end
+
+  @doc """
+  Reads a front matter value as a list of strings.
+
+  Accepts a flow list (`[a, "b", 'c']`), a block list (`- item` lines, as
+  `parse/1` returns them), or items separated by commas or newlines. Items
+  may be quoted like scalars. Commas inside quotes, braces, or brackets do
+  not separate items, so globs such as `lib/*.{ex,exs}` stay whole. Empty
+  items are dropped, so an empty value is an empty list.
+
+  An unterminated quote, text after a closing quote, a block list line
+  without `-`, or a value that is not a string returns
+  `{:error, :malformed_list}`.
+
+      iex> YamlFrontmatter.list(~s(["read", 'bash']))
+      {:ok, ["read", "bash"]}
+
+      iex> YamlFrontmatter.list("- read\\n- bash")
+      {:ok, ["read", "bash"]}
+
+      iex> YamlFrontmatter.list("lib/*.{ex,exs}, test/**")
+      {:ok, ["lib/*.{ex,exs}", "test/**"]}
+  """
+  @spec list(term()) :: {:ok, [String.t()]} | {:error, :malformed_list}
+  def list(value) when is_binary(value) do
+    value = String.trim(value)
+
+    cond do
+      String.starts_with?(value, "[") and String.ends_with?(value, "]") ->
+        value |> String.slice(1..-2//1) |> items([])
+
+      block_item?(value) ->
+        block_items(value)
+
+      true ->
+        items(value, [])
+    end
+  end
+
+  def list(_value), do: {:error, :malformed_list}
+
+  defp block_item?(line), do: line == "-" or String.starts_with?(line, ["- ", "-\t"])
+
+  defp block_items(value) do
+    value
+    |> String.split("\n")
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.reduce_while({:ok, []}, fn line, {:ok, acc} ->
+      with true <- block_item?(line),
+           {:ok, [item]} <- line |> String.slice(1..-1//1) |> items([]) do
+        {:cont, {:ok, [item | acc]}}
+      else
+        {:ok, []} -> {:cont, {:ok, acc}}
+        _other -> {:halt, {:error, :malformed_list}}
+      end
+    end)
+    |> case do
+      {:ok, items} -> {:ok, Enum.reverse(items)}
+      error -> error
+    end
+  end
+
+  # Items separated by commas or newlines; quoted items are unquoted.
+  defp items(text, acc) do
+    case String.trim_leading(text) do
+      "" ->
+        {:ok, acc |> Enum.reject(&(&1 == "")) |> Enum.reverse()}
+
+      <<quote, _rest::binary>> = text when quote in [?", ?'] ->
+        with {:ok, item, rest} <- quoted_item(text, quote),
+             {:ok, rest} <- after_quoted(rest) do
+          items(rest, [item | acc])
+        end
+
+      text ->
+        {item, rest} = plain_item(text, 0, [])
+        items(rest, [String.trim(item) | acc])
+    end
+  end
+
+  defp quoted_item(<<?", rest::binary>>, ?") do
+    with {:ok, length} <- closing_double_quote(rest, 0),
+         {:ok, item} when is_binary(item) <-
+           JSON.decode(~s(") <> binary_part(rest, 0, length + 1)) do
+      {:ok, item, binary_part(rest, length + 1, byte_size(rest) - length - 1)}
+    else
+      _other -> {:error, :malformed_list}
+    end
+  end
+
+  defp quoted_item(<<?', rest::binary>>, ?'), do: single_quoted(rest, [])
+
+  # The byte offset of the closing `"`, skipping escaped characters.
+  defp closing_double_quote(<<?\\, _escaped, rest::binary>>, offset),
+    do: closing_double_quote(rest, offset + 2)
+
+  defp closing_double_quote(<<?", _rest::binary>>, offset), do: {:ok, offset}
+
+  defp closing_double_quote(<<_char, rest::binary>>, offset),
+    do: closing_double_quote(rest, offset + 1)
+
+  defp closing_double_quote(_end, _offset), do: :error
+
+  defp single_quoted("''" <> rest, acc), do: single_quoted(rest, ["'" | acc])
+
+  defp single_quoted("'" <> rest, acc),
+    do: {:ok, acc |> Enum.reverse() |> IO.iodata_to_binary(), rest}
+
+  defp single_quoted(<<char, rest::binary>>, acc), do: single_quoted(rest, [char | acc])
+  defp single_quoted("", _acc), do: {:error, :malformed_list}
+
+  # After a quoted item comes the end or a separator.
+  defp after_quoted(rest) do
+    case String.trim_leading(rest, " ") |> String.trim_leading("\t") do
+      "" -> {:ok, ""}
+      <<separator, rest::binary>> when separator in [?,, ?\n] -> {:ok, rest}
+      _other -> {:error, :malformed_list}
+    end
+  end
+
+  # Plain text up to a separator outside braces and brackets.
+  defp plain_item("", _depth, acc), do: {acc |> Enum.reverse() |> IO.iodata_to_binary(), ""}
+
+  defp plain_item(<<separator, rest::binary>>, 0, acc) when separator in [?,, ?\n],
+    do: {acc |> Enum.reverse() |> IO.iodata_to_binary(), rest}
+
+  defp plain_item(<<char, rest::binary>>, depth, acc) do
+    depth =
+      cond do
+        char in [?{, ?[] -> depth + 1
+        char in [?}, ?]] -> max(depth - 1, 0)
+        true -> depth
+      end
+
+    plain_item(rest, depth, [char | acc])
   end
 
   defp extract(contents) do

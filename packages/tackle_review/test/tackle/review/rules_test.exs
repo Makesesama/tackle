@@ -187,7 +187,8 @@ defmodule Tackle.Review.RulesTest do
         {"\n  - \"lib/**\"\n  - test/**", ["lib/**", "test/**"]},
         {"lib/**/*.ex", ["lib/**/*.ex"]},
         {~s("{lib,test}/**/*.ex"), ["{lib,test}/**/*.ex"]},
-        {"[{lib,test}/**/*.ex]", ["{lib,test}/**/*.ex"]}
+        {"[{lib,test}/**/*.ex]", ["{lib,test}/**/*.ex"]},
+        {"lib/**, test/*.{ex,exs}", ["lib/**", "test/*.{ex,exs}"]}
       ]
 
       for {value, expected} <- cases do
@@ -226,7 +227,8 @@ defmodule Tackle.Review.RulesTest do
         {rule("x", extra: ["status: draft"]),
          ~s(status must be one of active, suppressed, retired, got: "draft")},
         {rule("x", extra: ["applies_to: []"]), "applies_to must list at least one glob"},
-        {rule("x", extra: ["applies_to: [1, 2]"]), "applies_to must contain only globs"},
+        {rule("x", extra: [~s(applies_to: ["lib/**" test/**])]),
+         ~s(applies_to must be a list of globs, got: "[\\"lib/**\\" test/**]")},
         {rule("x", extra: ["applies_to: [\"lib/{a\"]"]), ~s(invalid glob "lib/{a": unbalanced {)},
         {rule("x", extra: ["applies_to: true"]), "applies_to must be a list of globs, got: true"},
         {rule("x", extra: ["applies_to: {lib,test}/**/*.ex"]), unreadable("applies_to")},

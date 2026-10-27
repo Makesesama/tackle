@@ -10,7 +10,8 @@ defmodule Tackle.Agents do
 
   Files use a deliberately small YAML frontmatter subset followed by the child
   prompt. Configuration is inert: tool strings are resolved separately against
-  modules already trusted by the harness.
+  modules already trusted by the harness. `tools` is a list in the forms of
+  `YamlFrontmatter.list/1`; an empty value leaves it unset.
   """
 
   alias Tackle.Agents.Definition
@@ -252,26 +253,23 @@ defmodule Tackle.Agents do
   defp tools(nil), do: {:ok, nil}
 
   defp tools(value) when is_binary(value) do
-    value = String.trim(value)
+    if String.trim(value) == "",
+      do: {:ok, nil},
+      else: value |> Frontmatter.list() |> tool_names(value)
+  end
 
-    value =
-      if String.starts_with?(value, "[") and String.ends_with?(value, "]"),
-        do: String.slice(value, 1, byte_size(value) - 2),
-        else: value
+  defp tools(value), do: tools_error(value)
 
-    names =
-      value
-      |> String.split([",", "\n"], trim: true)
-      |> Enum.map(&(String.trim(&1) |> String.trim_leading("- ")))
-      |> Enum.reject(&(&1 == ""))
-
+  defp tool_names({:ok, names}, _value) do
     if length(names) == MapSet.size(MapSet.new(names)),
       do: {:ok, names},
       else: {:error, "tools contains duplicate names"}
   end
 
-  defp tools(value),
-    do: {:error, "tools must be a comma-separated or block list, got: #{inspect(value)}"}
+  defp tool_names({:error, _reason}, value), do: tools_error(value)
+
+  defp tools_error(value),
+    do: {:error, "tools must be a flow, block, or comma-separated list, got: #{inspect(value)}"}
 
   defp positive_integer(frontmatter, key, default) do
     case Map.get(frontmatter, key) do
