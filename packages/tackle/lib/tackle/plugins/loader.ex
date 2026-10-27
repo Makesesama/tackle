@@ -9,7 +9,26 @@ defmodule Tackle.Plugins.Loader do
   and intentionally has no rollback if activation fails.
 
   A missing configuration file means no user plugins are enabled.
+
+  ## Shared dependencies
+
+  A dependency the host already runs (for example `tackle_lib`) is shared:
+  the plugin runs against the host's copy, and its own build of that
+  application is not added to the code path. The plugin's build must have
+  the same application version, or loading fails with
+  `{:plugin_dependency_version_conflict, path, app, plugin_vsn, host_vsn}`,
+  and every module it lists must exist in the host, or loading fails with
+  `{:plugin_dependency_module_missing, path, app, module}`.
+
+  Modules whose code differs from the host's (compared by
+  `:beam_lib.md5/1`), typically because the plugin was built with another
+  Elixir or OTP compiler, are allowed but discouraged: the plugin loads
+  against the host's copy and one warning is logged per dependency after
+  loading succeeds. Building the plugin with the host's Elixir, OTP, and
+  dependency versions avoids subtle incompatibilities.
   """
+
+  require Logger
 
   alias Tackle.Plugins.Catalog
 
@@ -36,8 +55,10 @@ defmodule Tackle.Plugins.Loader do
          :ok <- check_all_plans(plans),
          :ok <- add_code_paths(plans),
          :ok <- start_apps(plans),
-         {:ok, contributions} <- load_modules(plans) do
-      Catalog.new(Map.to_list(contributions))
+         {:ok, contributions} <- load_modules(plans),
+         {:ok, catalog} <- Catalog.new(Map.to_list(contributions)) do
+      Enum.each(plans, &warn_differing_dependencies/1)
+      {:ok, catalog}
     end
   end
 
@@ -195,7 +216,7 @@ defmodule Tackle.Plugins.Loader do
          ownership = beam_ownership(beams),
          {:ok, app, ebin} <- project_app(apps, app_name, root),
          {:ok, app_specs} <- app_specs(apps, root),
-         {:ok, private_apps} <- private_apps(app_specs, app, root),
+         {:ok, private_apps, differing} <- private_apps(app_specs, app, root),
          :ok <- owned_modules(names, ownership),
          :ok <- selected_owned_by_app(names, ownership, ebin, root),
          :ok <- selected_listed_in_app(names, app_specs, app, root),
@@ -209,7 +230,8 @@ defmodule Tackle.Plugins.Loader do
          paths: Enum.map(private_apps, & &1.ebin),
          apps: private_apps,
          modules: requested,
-         ownership: ownership
+         ownership: ownership,
+         differing: differing
        }}
     end
   end
@@ -311,16 +333,19 @@ defmodule Tackle.Plugins.Loader do
     end
   end
 
+  # The applications the plugin brings itself, and the shared ones whose
+  # build differs from the host's copy, as `{app, vsn, modules}`.
   defp private_apps(specs, root_app, root) do
-    Enum.reduce_while(specs, {:ok, []}, fn spec, {:ok, acc} ->
+    Enum.reduce_while(specs, {:ok, [], []}, fn spec, {:ok, private, differing} ->
       case private_app(spec, root_app, root) do
-        :private -> {:cont, {:ok, [spec | acc]}}
-        :shared -> {:cont, {:ok, acc}}
+        :private -> {:cont, {:ok, [spec | private], differing}}
+        {:shared, []} -> {:cont, {:ok, private, differing}}
+        {:shared, modules} -> {:cont, {:ok, private, [{spec.app, spec.vsn, modules} | differing]}}
         error -> {:halt, error}
       end
     end)
     |> case do
-      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      {:ok, private, differing} -> {:ok, Enum.reverse(private), Enum.reverse(differing)}
       error -> error
     end
   end
@@ -343,30 +368,51 @@ defmodule Tackle.Plugins.Loader do
     end
   end
 
+  # `{:shared, differing_modules}`, or an error for a module the host lacks.
   defp check_shared_modules(spec, root) do
-    case Enum.find(spec.modules, &shared_module_conflict?(&1, spec.ebin)) do
-      nil -> :shared
-      module -> {:error, {:plugin_dependency_module_conflict, root, spec.app, module}}
+    spec.modules
+    |> Enum.reduce_while([], fn module, differing ->
+      case compare_code(module, Path.join(spec.ebin, Atom.to_string(module) <> ".beam")) do
+        :same -> {:cont, differing}
+        :different -> {:cont, [module | differing]}
+        :missing -> {:halt, {:error, {:plugin_dependency_module_missing, root, spec.app, module}}}
+      end
+    end)
+    |> case do
+      {:error, _reason} = error -> error
+      differing -> {:shared, Enum.reverse(differing)}
     end
-  end
-
-  defp shared_module_conflict?(module, ebin) do
-    not same_code?(module, Path.join(ebin, Atom.to_string(module) <> ".beam"))
   end
 
   @doc false
   # Whether the beam file at `built_path` holds the code of `module` as this
-  # VM runs it, loading the module first if needed. Compares MD5s of the code,
+  # VM runs it (`:same` or `:different`), loading the module first if needed,
+  # or `:missing` when the host has no such module. Compares MD5s of the code,
   # not files: in an escript the running beams live inside the archive, where
-  # `:code.which/1` names no readable file.
-  @spec same_code?(module(), Path.t()) :: boolean()
-  def same_code?(module, built_path) do
-    with {:ok, {^module, built_md5}} <- :beam_lib.md5(String.to_charlist(built_path)),
-         {:module, ^module} <- Code.ensure_loaded(module) do
-      module.module_info(:md5) == built_md5
-    else
-      _other -> false
+  # `:code.which/1` names no readable file. `check_beams/2` already read every
+  # built beam, so one whose MD5 cannot be read counts as different.
+  @spec compare_code(module(), Path.t()) :: :same | :different | :missing
+  def compare_code(module, built_path) do
+    case Code.ensure_loaded(module) do
+      {:module, ^module} -> compare_md5(module, :beam_lib.md5(String.to_charlist(built_path)))
+      {:error, _reason} -> :missing
     end
+  end
+
+  defp compare_md5(module, {:ok, {module, md5}}),
+    do: if(module.module_info(:md5) == md5, do: :same, else: :different)
+
+  defp compare_md5(_module, _result), do: :different
+
+  defp warn_differing_dependencies(%{differing: differing, root: root}) do
+    Enum.each(differing, fn {app, vsn, [example | _rest] = modules} ->
+      Logger.warning(
+        "Plugin project #{root} was built with a different build of #{app} #{vsn} " <>
+          "than Tackle runs (#{length(modules)} module(s) differ, such as #{inspect(example)}). " <>
+          "The plugin runs against Tackle's copy; rebuild it with the Elixir, OTP, and " <>
+          "dependency versions Tackle uses to avoid subtle incompatibilities."
+      )
+    end)
   end
 
   defp validate_app_beams(specs, root) do

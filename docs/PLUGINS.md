@@ -76,9 +76,15 @@ Put the following in `$TACKLE_HOME/plugins.json` (separate from the existing
 name); selected module names must belong to that application's `.app` metadata.
 An absent file enables no projects. Unknown keys, malformed entries, missing
 builds/dependencies, or conflicting application/module names fail startup. A
-dependency the host also runs, such as `tackle_lib`, must have the host's
-version and the same compiled code (compared by MD5, so it also works in an
-escript); a build without the named application's `.app` file fails with
+dependency the host also runs, such as `tackle_lib`, is shared: the plugin
+runs against the host's copy. Its build must have the host's version, and
+every module it lists must exist in the host
+(`{:plugin_dependency_module_missing, path, app, module}` otherwise). Modules
+whose compiled code differs from the host's (compared by MD5, so it also works
+in an escript), usually because the plugin was built with another Elixir or
+OTP compiler, are allowed but discouraged: startup logs a warning per such
+dependency. Build plugins with the Elixir, OTP, and dependency versions of the
+Tackle you run. A build without the named application's `.app` file fails with
 `{:plugin_project_app_not_found, path, app}`.
 Project paths must be absolute. The loader reads `_build/prod/lib` directly;
 it never runs Mix, evaluates `mix.exs`, or copies source or credentials. Its

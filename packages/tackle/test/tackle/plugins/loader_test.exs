@@ -1,6 +1,9 @@
 defmodule Tackle.Plugins.LoaderTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
+  alias Tackle.Lib.Message
   alias Tackle.Plugins.Catalog
   alias Tackle.Plugins.Loader
 
@@ -119,6 +122,46 @@ defmodule Tackle.Plugins.LoaderTest do
              ^host_vsn}} = Loader.load(path: Path.join(root, "plugins.json"))
   end
 
+  test "a shared dependency built differently loads against the host's copy, with a warning" do
+    root = temp_dir()
+    id = System.unique_integer([:positive])
+
+    project =
+      project!(root, "plugin", %{"demo_#{id}" => [], "tackle_lib" => [Message]},
+        host_versions: true
+      )
+
+    write_config(root, [entry(project, "demo_#{id}", [])])
+    host_md5 = Message.module_info(:md5)
+    shared_ebin = String.to_charlist(Path.join(project, "_build/prod/lib/tackle_lib/ebin"))
+
+    log =
+      capture_log(fn ->
+        assert {:ok, %Catalog{}} = Loader.load(path: Path.join(root, "plugins.json"))
+      end)
+
+    assert log =~ "Plugin project #{project} was built with a different build of tackle_lib"
+    assert log =~ "1 module(s) differ, such as Tackle.Lib.Message"
+    assert Message.module_info(:md5) == host_md5
+    refute shared_ebin in :code.get_path()
+  end
+
+  test "rejects a shared dependency's module that the host does not have" do
+    root = temp_dir()
+    id = System.unique_integer([:positive])
+    absent = :"Elixir.Tackle.Lib.LoaderAbsent#{id}"
+
+    project =
+      project!(root, "plugin", %{"demo_#{id}" => [], "tackle_lib" => [absent]},
+        host_versions: true
+      )
+
+    write_config(root, [entry(project, "demo_#{id}", [])])
+
+    assert {:error, {:plugin_dependency_module_missing, ^project, :tackle_lib, ^absent}} =
+             Loader.load(path: Path.join(root, "plugins.json"))
+  end
+
   test "preflight rejects absent selected modules without adding paths" do
     root = temp_dir()
     project = Path.join(root, "plugin")
@@ -156,14 +199,17 @@ defmodule Tackle.Plugins.LoaderTest do
 
     same = Path.join(root, "same.beam")
     File.write!(same, running)
-    assert Loader.same_code?(module, same)
+    assert Loader.compare_code(module, same) == :same
 
     other = Path.join(root, "other.beam")
     File.write!(other, rebuilt)
-    refute Loader.same_code?(module, other)
+    assert Loader.compare_code(module, other) == :different
 
-    refute Loader.same_code?(module, Path.join(root, "missing.beam"))
-    refute Loader.same_code?(Catalog, same)
+    assert Loader.compare_code(module, Path.join(root, "missing.beam")) == :different
+    assert Loader.compare_code(Catalog, same) == :different
+
+    assert Loader.compare_code(:"loader_absent_#{System.unique_integer([:positive])}", same) ==
+             :missing
 
     # A module on the code path that is not loaded yet is loaded first.
     unloaded = :"loader_unloaded_#{System.unique_integer([:positive])}"
@@ -180,7 +226,7 @@ defmodule Tackle.Plugins.LoaderTest do
     end)
 
     refute :code.is_loaded(unloaded)
-    assert Loader.same_code?(unloaded, unloaded_beam)
+    assert Loader.compare_code(unloaded, unloaded_beam) == :same
     assert {:file, _path} = :code.is_loaded(unloaded)
   end
 
@@ -270,7 +316,8 @@ defmodule Tackle.Plugins.LoaderTest do
 
   # A Mix project with a production build of `apps`, each app name mapped to
   # the modules it builds (beams compiled but not loaded). An app named like
-  # one the host runs gets another version.
+  # one the host runs gets another version, or the host's with
+  # `host_versions: true`.
   defp project!(root, name, apps, opts \\ []) do
     project = Path.join(root, name)
     File.mkdir_p!(project)
@@ -280,9 +327,9 @@ defmodule Tackle.Plugins.LoaderTest do
       ebin = Path.join(project, "_build/prod/lib/#{app}/ebin")
       File.mkdir_p!(ebin)
       Enum.each(modules, &File.write!(Path.join(ebin, "#{&1}.beam"), beam!(&1, 1)))
-      vsn = if Application.spec(String.to_atom(app), :vsn), do: "0.0.0-other", else: "0.1.0"
+      vsn = app_vsn(app, Keyword.get(opts, :host_versions, false))
       deps = Enum.map_join([:kernel | Keyword.get(opts, :deps, [])], ", ", &Atom.to_string/1)
-      module_list = Enum.map_join(modules, ", ", &Atom.to_string/1)
+      module_list = Enum.map_join(modules, ", ", &"'#{&1}'")
 
       File.write!(
         Path.join(ebin, "#{app}.app"),
@@ -292,6 +339,14 @@ defmodule Tackle.Plugins.LoaderTest do
     end
 
     project
+  end
+
+  defp app_vsn(app, host_versions?) do
+    case Application.spec(String.to_atom(app), :vsn) do
+      nil -> "0.1.0"
+      host_vsn when host_versions? -> List.to_string(host_vsn)
+      _host_vsn -> "0.0.0-other"
+    end
   end
 
   defp entry(path, app, opts) do
