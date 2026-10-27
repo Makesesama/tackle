@@ -646,8 +646,8 @@ the journal catches up; already-running external effects cannot be rolled
 back. Submissions that would start a turn and configuration changes are
 rejected while storage is delayed.
 
-The watchdog still stops the scope for unknown append outcomes, actual storage
-errors, and bounded startup/cleanup failures. Its threshold is not a turn or
+The journal's deadline process still stops the scope for unknown append
+outcomes, actual storage errors, and bounded startup/cleanup failures. Its threshold is not a turn or
 idle-session timeout. A
 `disk_log_sup` `shutdown_error` printed as OTP exits describes teardown; by
 itself it does not identify what originally stopped the agent. Do not blindly
@@ -682,8 +682,9 @@ the same project directories; a session open in any Tackle process cannot be
 archived. `--resume` of an archived session fails with a hint to unarchive it.
 
 Journals idle for a week are compressed with zstd (`session.dlog.zst`, usually
-about 3× smaller) by a background pass the TUI starts at most every six hours;
-recovery copies are compressed too. Compressed sessions list, preview, search,
+about 3× smaller) by a background pass the TUI starts when it opens, at most
+once every six hours (`config :tackle_cli, compress_idle_sessions: false`
+turns it off); recovery copies are compressed too. Compressed sessions list, preview, search,
 and resume like any other: resuming restores the plain journal first.
 
 Provider prompt caches expire after minutes of inactivity (at most about an

@@ -522,8 +522,11 @@ Session inspection and management never expose a PID or the journal process:
   timestamped settled assistant-message usage for one or every durable session;
   the global scan replays independent journals with bounded concurrency;
 - `Tackle.list_sessions/1` and `Tackle.search_sessions/2` use the rebuildable
-  derived catalog with stable cursor pagination; while the catalog rebuilds
-  (at startup), they wait for it, so they never list a partial index;
+  derived catalog with stable cursor pagination (filters include `:cwd`,
+  `:status`, given as an atom or its name, `:model`, `:tags`, and `:archived`);
+  while the catalog rebuilds at startup, from each session's `summary.etf`
+  sidecar while its journal is unchanged and otherwise by replaying it, they
+  wait for it, so they never list a partial index;
 - `Tackle.fork_session/2` materializes a self-contained session from validated
   parent history, so the child survives deletion of the parent;
 - `Tackle.session_summary/2` returns a session's catalog summary;
@@ -532,9 +535,12 @@ Session inspection and management never expose a PID or the journal process:
 - `Tackle.delete_session/2` moves an inactive session into `sessions/trash/` and
   refuses to delete an active one (`:session_active`, or
   `{:session_in_use, owner}` when another process holds its writer lock);
-  nothing purges the trash; and
+  nothing purges the trash;
 - `Tackle.flush_session/1` syncs a live session's journal, an explicit
-  durability barrier.
+  durability barrier; and
+- `Tackle.compress_idle_sessions/1` replaces journals idle for a week with a
+  verified zstd copy, `session.dlog.zst`, which reads, lists, and resumes like
+  the plain journal (resuming restores it first).
 
 Internal `.dlog` files are trusted local state, never a portable interchange
 format, and are not accepted as imports. Search indexes the title, user and
@@ -545,9 +551,15 @@ migration are deliberately not implemented yet. See
 architecture and its remaining deferrals.
 
 The [CLI guide](../../apps/tackle_cli/README.md) documents `run --resume`,
-`--abandon`, session search, and the terminal usage chart. Journal repair
-preserves the original under the session's `recovery/` directory; it does not
-silently resolve an interrupted turn. Hosts must decide whether to abandon it.
+`--abandon`, session search, and the terminal usage chart. A journal that was
+not closed cleanly is repaired only when the spec allows it
+(`Tackle.Session.Spec.new(session_id: id, repair: true)`, which the CLI uses
+to resume); otherwise its journal refuses to open with
+`{:journal_open_failed, session_id, {:repair_required, path}}` and the scope
+does not start. Repair
+preserves the original under the session's `recovery/` directory, marks the
+session recovered, and does not silently resolve an interrupted turn. Hosts
+must decide whether to abandon it.
 
 ## Conversation trees
 

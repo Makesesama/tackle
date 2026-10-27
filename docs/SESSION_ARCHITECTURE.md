@@ -4,12 +4,14 @@ Status: accepted architecture; core implemented. The root harness now stores one
 append-only internal `:disk_log` journal per session with a single supervised
 writer, explicit `sync/1` barriers, validated replay with visible repair, fresh
 runtime reconstruction on resume with an explicit interruption-recovery gate, a
-rebuildable ETS/search catalog, self-contained forks, and trash-first deletion.
-Replay checkpoints, in-place schema migration, cross-BEAM writer fencing,
-durable scripted-workflow state, encryption, compressed commits, retention policy, and
-protocol export/import remain unimplemented; this document is the accepted
-target for them. The `Tackle.*` operations listed in section 11 are the
-implemented subset unless a passage explicitly labels them as deferred.
+rebuildable ETS/search catalog, self-contained forks, archiving, trash-first
+deletion, and zstd compression of idle journals. Replay checkpoints, schema
+migration, cross-host writer fencing, durable scripted-workflow state,
+encryption, compressed commits, retention policy, and protocol export/import
+remain unimplemented; this document is the accepted target for them, and
+passages describing them are labelled as planned. The `Tackle.*` operations
+listed in section 11 are the implemented subset unless a passage explicitly
+labels them as deferred.
 
 Scope: saving and loading agent conversations, crash recovery after process or BEAM shutdown, local session discovery and search, schema evolution, and session forks. Durable scripted-workflow state, distributed storage, and transparent reconstruction of the in-memory runtime process tree remain out of scope.
 
@@ -116,7 +118,7 @@ A durable session does not encode fleet membership or runtime parentage. A resum
 - **Journal:** the authoritative append-only `:disk_log` file.
 - **Projection:** state obtained by folding validated journal commits.
 - **Runtime state:** fresh `%Tackle.Lib.State{}` and trusted executable configuration built from a projection.
-- **Checkpoint:** a disposable projection snapshot used to accelerate replay.
+- **Checkpoint (planned):** a disposable projection snapshot used to accelerate replay (section 13).
 - **Catalog:** a rebuildable index used to list and search sessions.
 
 The word “WAL” can describe the write-before-effect discipline, but “session journal” is more precise. The journal is itself the durable history; there is no second durable conversation file updated in place.
@@ -137,15 +139,20 @@ Tackle.Runtime.Supervisor
         └── Runtime.AgentSupervisor
             ├── Task.Supervisor             root tool execution
             └── Session.RuntimeRootSupervisor
-                ├── Root SessionJournal     one writable owner
+                ├── Tackle.Session.Journal  one writable owner
                 └── Root Tackle.Session
 
 Tackle.Supervisor
 ├── Tackle.Auth.Store
-└── SessionCatalog                         derived search/list projection
+├── Tackle.Session.JournalRegistry
+└── Tackle.Session.Catalog                 derived search/list projection
 ```
 
-The exact child ordering and module names may change, but these behaviors are required:
+Each journal owner starts its own deadline process (`Tackle.Session.Journal.Deadline`)
+outside the supervision tree; the two monitor each other, so neither outlives the
+other (section 9).
+
+The exact child ordering may change, but these behaviors are required:
 
 - the journal owner is available before the root session accepts work, and a new session is materialized before its first turn Task starts;
 - the root session and its internal persistence hook can make synchronous journal calls;
@@ -159,30 +166,42 @@ A dedicated journal owner is justified even though `:disk_log` has its own proce
 
 ## 5. Storage layout
 
-The initial local layout is rooted under `TACKLE_HOME`:
+The local layout is rooted under `TACKLE_HOME` (`Tackle.Session.Storage`):
 
 ```text
 $TACKLE_HOME/
 └── sessions/
-    ├── catalog/                           derived global data
-    ├── trash/                             recoverable deletions
+    ├── catalog/                         compression.marker: the last compression pass
+    ├── trash/                           recoverable deletions, <session-id>-<ms>
+    ├── archive/                         archived sessions, same layout as below
     ├── <session-id>/                    legacy flat session (no project)
     └── --home-user-project--/           path-derived project directory
         └── <session-id>/
             ├── session.dlog             canonical journal
-            ├── summary.etf              optional derived summary
-            ├── checkpoint.etf           planned: derived replay checkpoint (section 13)
-            └── recovery/                pre-repair or migration artifacts
+            ├── session.dlog.zst         the journal, compressed once idle
+            ├── session.dlog.read-*      temporary decompressed copies for readers
+            ├── summary.etf              optional derived summary sidecar
+            ├── writer.lock              one-writer lock (section 6.1)
+            ├── journal-failure.json     payload-free report of a failed owner
+            ├── checkpoint.etf           planned, not written: replay checkpoint (section 13)
+            └── recovery/                copies preserved before repair (*.bak, *.bak.zst)
 ```
+
+The catalog's index is held in memory and rebuilt at startup; `catalog/` holds
+no index. A journal idle for a week is replaced by a verified zstd copy of its
+exact bytes, `session.dlog.zst` (`Tackle.compress_idle_sessions/1`). Readers
+replay it from a private temporary copy beside it, a writable owner restores
+the plain journal under the writer lock before opening it, and when both forms
+exist the plain journal is authoritative.
 
 Session IDs are used as opaque path components after validation. Project paths are expanded to absolute paths and encoded by escaping literal
 `-` as `-2D`, replacing `/` with `-`, then wrapping in `--`. The catalog scans project directories and legacy flat sessions;
 read/write operations address a project session with the same `:cwd` used at
 creation. Existing flat sessions are not migrated automatically. If directory fan-out becomes a measured problem, the implementation may add deterministic sharding without changing session identity or the journal schema.
 
-The journal is the only required durable file. `summary.etf`, a future `checkpoint.etf`, and catalog data can always be removed and recreated.
+The journal is the only required durable file. `summary.etf`, a future `checkpoint.etf`, and the catalog can always be removed and recreated.
 
-The directories under `sessions/`, `sessions/` itself and the project directories included, are private to the current user (`0700`), and the journal, its sidecars, the writer lock, and failure reports are `0600`. Directories and journals an earlier version created with default modes are tightened when the session is next opened for writing. Filesystem permissions are part of the security boundary because the journal holds whole conversations and internal repair and ordinary `:disk_log.chunk/2` can decode ETF terms.
+The directories under `sessions/`, `sessions/` itself and the project directories included, are private to the current user (`0700`), and the journal, its compressed and temporary copies, its sidecars, the writer lock, failure reports, and recovery copies are `0600`. Directories and journals an earlier version created with default modes are tightened when the session is next opened for writing. Filesystem permissions are part of the security boundary because the journal holds whole conversations and internal repair and ordinary `:disk_log.chunk/2` can decode ETF terms.
 
 ## 6. Journal ownership and opening
 
@@ -203,7 +222,7 @@ A journal owner opens the log with values equivalent to:
 
 The name is a tuple containing the binary session ID. Tackle must not create one atom per session.
 
-`Tackle.Session.Reader` makes every `:disk_log` call on a journal with these options and names every log (`Reader.name/1` is the writable one). Only the journal-owner process opens a session's log for writing and calls `log/2`, `sync/1`, or `close/1` on it; other runtime processes use the owner's API, read-only replay opens the file under a name of its own, and a fork writes its unpublished child with `Reader.write_journal/2`. Notifications including `error_status`, `full`, `truncated`, and unexpected wrap events are handled explicitly.
+`Tackle.Session.Reader` opens every `:disk_log` handle of a journal with these options (read-only replay with `mode: :read_only`, `repair: false`, and no notifications) and names every log (`Reader.name/1` is the writable one). Only the journal-owner process opens a session's log for writing and calls `log/2`, `sync/1`, or `close/1` on it; other runtime processes use the owner's API, read-only replay opens the file under a name of its own, and a fork writes its unpublished child with `Reader.write_journal/2`. Notifications including `error_status`, `full`, `truncated`, and unexpected wrap events are handled explicitly.
 
 ### 6.1 One-writer invariant
 
@@ -218,9 +237,9 @@ one TACKLE_HOME
   → one :disk_log process
 ```
 
-A deterministic log name protects against duplicate opens within one connected node. A storage ownership guard must reject concurrently active writers when detectable. Cross-BEAM failover and distributed leases are not promised. If ownership is uncertain, Tackle fails with `:session_in_use` or a recovery-required error rather than opening with automatic repair.
+A deterministic log name protects against duplicate opens within one connected node. A storage ownership guard rejects concurrently active writers when detectable. Cross-host failover and distributed leases are not promised. If ownership is uncertain, Tackle fails with `{:session_in_use, owner}` or `{:repair_required, path}` rather than opening with automatic repair; repair happens only when the session's spec allows it (`repair: true`, which the CLI sets when it resumes a session).
 
-On systems with `flock`, the guard is an operating-system advisory lock on `writer.lock`, held by a small linked lock process. A conflict with another process of the same OS process (background compression, or moving a session to the archive or trash) is waited out briefly; a lock attempt that fails leaves nothing behind for its caller, so the waiting journal owner keeps running.
+The guard is `writer.lock` in the session directory (`Tackle.Session.Storage.Lock`). On systems with `flock`, it is an operating-system advisory lock, so it holds across BEAMs and PID namespaces on one host: a port running `flock`, linked to the journal owner, holds it until it is released or the owner dies. Elsewhere the file's owner record is the lock, and a record whose process is gone is reclaimed. Either way the file records its owner (OS pid, node, start time, and process identity where available) as JSON, which a conflict reports as `{:session_in_use, owner}`. A conflict with this same OS process (background compression, or moving a session to the archive or trash) is retried for up to two seconds; a lock attempt that fails leaves nothing behind for its caller, so the waiting journal owner keeps running.
 
 Losing the lock is fatal: the owner then only closes its log, and neither syncs, writes the summary sidecar, nor releases a lock in a directory another process may own now.
 
@@ -233,8 +252,9 @@ The journal owner process starts with its durable scope, so scope supervision an
 - no session directory, ownership lock, `session.dlog`, or `session.created` commit exists;
 - the catalog has no entry, so opening and quitting the CLI creates no visible session;
 - an idle reconfiguration or metadata change only updates the metadata that the eventual `session.created` commit will record;
-- `Tackle.Session.Journal.projection/1` reports a provisional, empty projection so the frontend can resolve configuration exactly as it would for a materialized session; and
-- closing or flushing an unmaterialized journal is a no-op.
+- `Tackle.Session.Journal.projection/1` reports a provisional, empty projection so the frontend can resolve configuration exactly as it would for a materialized session;
+- enabling branching only sets the `tree` flag the eventual `session.created` records; and
+- flushing, awaiting, or stopping an unmaterialized journal is a no-op.
 
 The first `turn.started` commit materializes the session: the owner acquires the lock, opens the internal halt log, writes the header and `session.created`, and then appends `turn.started` before the turn Task starts. This preserves the rule that the journal is available before the session accepts durable work while avoiding empty sessions. An *existing* journal is still opened, validated, and — when repair is requested — repaired eagerly at scope start, so resume never fabricates history.
 
@@ -287,7 +307,7 @@ A forked session uses a parent value such as:
 }
 ```
 
-The header can be supplied through the internal log's `head` option or written as the first validated item. Replay treats it as sequence zero either way. It is immutable after creation; changes such as title, tags, or current working directory are later events.
+The journal writes the header as the log's first item (not through `:disk_log`'s `head` option), and the synced `session.created` commit makes it durable. Replay treats it as sequence zero. It is immutable after creation; changes such as title, tags, or current working directory are later events.
 
 ### 7.3 Commit envelope
 
@@ -319,7 +339,8 @@ Required envelope rules include:
 
 - `session_id` matches the header;
 - `seq` is exactly the previous sequence plus one;
-- `commit_id` is unique;
+- `commit_id` is a binary (each commit gets a freshly generated id; replay
+  does not check that ids are unique) and `written_at` a timestamp string;
 - `events` is a non-empty list;
 - each event has an independently versioned schema, and its `data` is a map;
 - every value passes the durable-data validator;
@@ -329,7 +350,7 @@ Required envelope rules include:
 
 The journal owner builds envelopes and events itself (`Tackle.Session.Log`'s builders), so their identity, sequence, and versions hold by construction; before appending it checks once that each event's data passes the durable-data validator and that the commit folds. Replay checks every rule.
 
-Unknown required events stop replay with an unsupported-schema error. Unknown optional extension events can be retained while the core projection ignores them.
+Unknown required events stop replay with `{:unsupported_required_event, type, version}`. Unknown optional extension events are retained in the replayed commits while the core projection ignores them.
 
 The live owner checks these rules, folding the commit into its projection, before it appends anything, so a commit replay would reject never reaches the file. A refused write (invalid data, a commit that would not fold, a branch in a session without branching, a write without an active turn, a settlement of another turn) returns `{:error, reason}` and leaves the journal usable. A failure once bytes may have been written (append, sync, lost lock, a `:disk_log` error notification) stops the owner and its durable scope.
 
@@ -343,17 +364,22 @@ session.metadata_changed
 session.configuration_changed
 session.recovered
 session.closed               legacy: replayed for its closed_at, no longer written
+session.forked
 turn.started
 message.appended
 context.compacted
+tree.enabled                 a linear session may branch from now on
+tree.navigated               a committed change of the active position
 tool.execution_started
 turn.completed
 turn.errored
 turn.cancelled
 turn.crashed
 turn.abandoned
-session.forked
 ```
+
+Every event is at version 1. `Tackle.Session.Log` builds each one the journal
+writes (`Log.turn_started/4`, `Log.message_appended/2`, and so on).
 
 Events record semantic facts, not internal function calls. Provider-specific continuation state remains inside the serialized message only when it satisfies the existing non-secret provider-state contract and the durable-data validator.
 
@@ -493,7 +519,7 @@ without a journal, once the turn's Task runs.
 
 ### 8.5 Reconfiguration
 
-An idle model or thinking-level change is persisted before it becomes the accepted session configuration. The event stores only durable selections and audit hashes, not executable adapter modules or credentials.
+An idle model or thinking-level change is persisted before it becomes the accepted session configuration. `session.configuration_changed` stores only the durable selection, `model_ref` and `thinking`, with `changed_at`; never executable adapter modules, adapter options, or credentials.
 
 It records the normalized thinking level (`"off"` when none is set, or for a
 provider-specific value a host set directly), the same value `session.created`
@@ -526,7 +552,7 @@ semantic commit
   → acknowledge success
 ```
 
-There is no user-configurable buffered durability mode. Compaction, navigation, configuration, metadata, and recovery commits follow the policy above. `turn.started`, terminal events, and loop-written messages and tool intents are write-behind, as described next.
+There is no user-configurable buffered durability mode. `session.created`, compaction, navigation, `tree.enabled`, configuration, metadata, and recovery commits follow the policy above. `turn.started`, terminal events, and loop-written messages and tool intents are write-behind, as described next.
 
 ### Write-behind loop commits
 
@@ -633,21 +659,14 @@ inspectable, searchable, and forkable.
 
 A reader folds records in sequence order:
 
-1. validate the header and supported physical format;
-2. read internal items in bounded chunks;
-3. decode and validate one durable commit envelope at a time;
-4. require contiguous sequence numbers and unique commit IDs;
-5. upcast known older event versions in memory, then validate each event against its current version;
-6. apply events to a plain durable projection; and
-7. classify the final session as clean, interrupted, or recovered; a journal that fails validation (corrupt) or uses a newer version (unsupported) is an error rather than a status.
+1. read the internal items in chunks of 100 with `:disk_log.bchunk/3`, which returns encoded item binaries, and decode each with `:erlang.binary_to_term(binary, [:safe])` (the whole history is then folded in memory);
+2. validate the header and its supported format version;
+3. validate one durable commit envelope at a time, requiring contiguous sequence numbers;
+4. upcast known older event versions in memory, then validate each event against its current version (`Tackle.Session.Log.read_commit/4`);
+5. apply events to a plain durable projection, which rejects a commit it cannot fold consistently; and
+6. report the status the projection keeps current: clean, interrupted, or recovered. A journal that fails validation (corrupt) or uses a newer version (unsupported) is an error rather than a status.
 
-Normal replay should prefer `:disk_log.bchunk/2,3`, which returns encoded item binaries, followed by controlled decoding with:
-
-```elixir
-:erlang.binary_to_term(binary, [:safe])
-```
-
-This prevents creation of new atoms and new external function references during ordinary replay. Durable validation is still required after decoding; `:safe` protects the VM from specific ETF hazards, not the application from malicious or nonsensical values.
+`:safe` decoding prevents creation of new atoms and new external function references during ordinary replay. Durable validation is still required after decoding; `:safe` protects the VM from specific ETF hazards, not the application from malicious or nonsensical values.
 
 ### 10.2 Repair
 
@@ -655,15 +674,17 @@ Internal `:disk_log` can repair an uncleanly closed log, but repair is not treat
 
 The recovery path is:
 
-1. establish exclusive application ownership;
-2. first open or inspect without destructive repair when practical;
+1. establish exclusive application ownership (the writer lock);
+2. open the log with `repair: false`; when `:disk_log` reports that it was not closed cleanly, fail with `{:repair_required, path}` unless the session's spec allows repair;
 3. preserve the original unclean file under `recovery/` before repair;
-4. invoke internal repair;
+4. reopen the log with internal repair;
 5. record the returned recovered-item and bad-byte counts;
 6. replay every recovered commit through normal schema and sequence validation; and
 7. append and sync `session.recovered` only after validation succeeds.
 
-If repair reports bad bytes, the session is visibly marked as recovered. If replay finds a gap, duplicate, invalid envelope, unsupported required event, or inconsistent terminal state, the session is quarantined from writable resume. Tackle does not silently skip a complete invalid commit.
+A repaired session is visibly marked as recovered (status `:recovered` once no turn is interrupted), whether or not bytes were lost. If replay of the repaired log finds a gap, an invalid envelope or event, an unsupported version or required event, or a commit that does not fold into the projection, the owner refuses to open it (`{:repaired_history_invalid, reason}`) and the original stays under `recovery/`. Tackle does not silently skip a complete invalid commit. A log that was closed cleanly but has damaged bytes is not a crash's torn tail and is not repaired.
+
+Read-only replay never repairs. It reads a journal that was not closed cleanly as it is: an intact one replays normally, and one with a torn tail or damaged bytes returns `{:journal_bad_bytes, count}` until a writable owner repairs it.
 
 `:disk_log` internal repair uses ETF decoding internally. Therefore repair is allowed only for the private trusted storage root. Imported or attacker-controlled files must never enter this path.
 
@@ -671,13 +692,12 @@ If repair reports bad bytes, the session is visibly marked as recovered. If repl
 
 A `turn.started` event without a matching terminal event makes the session interrupted. Replay also identifies tool starts without durable results: a tool result resolves the start with its tool call id in whichever turn it arrives, so the results a repair turn writes for an earlier turn's calls resolve them. `Tackle.Session.Projection.uncertain_tools/1` is the one definition; inspection and the recovery a resumed session reports both use it.
 
-The durable projection reports at least:
+`Tackle.inspect_session/2` reports the projection's `status` (`:interrupted`), `last_seq`, and `uncertain_tools`; a resumed session reports the recovery its frontend must decide in its snapshot (`Tackle.Session.Snapshot.recovery`):
 
 ```elixir
 %{
-  status: :interrupted,
   turn_id: turn_id,
-  last_seq: seq,
+  operation: "run",
   uncertain_tools: [...]
 }
 ```
@@ -736,6 +756,8 @@ The implemented operations are:
 
 ```elixir
 Tackle.inspect_session(session_id, opts)
+Tackle.session_usage_timeline(session_id, opts)
+Tackle.all_usage_timeline(opts)
 Tackle.list_sessions(filters)
 Tackle.search_sessions(query, filters)
 Tackle.session_summary(session_id, opts)
@@ -744,6 +766,7 @@ Tackle.archive_session(session_id, opts)
 Tackle.unarchive_session(session_id, opts)
 Tackle.delete_session(session_id, opts)
 Tackle.flush_session(session_id)
+Tackle.compress_idle_sessions(opts)
 ```
 
 Creating and resuming have no functions of their own: a host starts a scope (`Tackle.start_scope/1`) with a `Tackle.Session.Spec`. A spec without a `session_id`, or with an id no journal has, creates a session; one with an existing session's id resumes it. **load** (replaying history to an attaching frontend) is deferred; a frontend reads the resumed snapshot's `agent_state` instead.
@@ -754,7 +777,7 @@ These operations return stable session metadata and PID-free runtime references.
 
 Search is a projection over journals, not a second source of truth.
 
-A global `SessionCatalog` may own ETS tables containing session summaries and searchable terms. It receives updates only after journal commits have succeeded. Each indexed record carries `last_indexed_seq` so startup and repair can detect stale projections.
+The global `Tackle.Session.Catalog` owns one in-memory ETS table of session entries (`Tackle.Session.Catalog.Entry`), rebuilt at every start (section 12.3). A journal owner records its session's entry when it opens an existing journal, when a sync makes new commits durable, when a turn starts or settles (whose commits are then appended but not yet synced), and when it stops; the store records forks, archive moves, and deletions. While the owner runs a turn the entry's status is `:active`; otherwise it is the status replay reports. Each entry carries `last_indexed_seq`, the commit it describes, which also keeps search text built for an older commit from being cached on a newer entry.
 
 ### 12.1 Searchable summary
 
@@ -766,30 +789,35 @@ title
 cwd
 created_at
 updated_at
-status
+status              clean | interrupted | recovered | active
 model
 tags
 message_count
 preview
 last_indexed_seq
 parent_session_id
+archived            the session lives under sessions/archive/
+context_tokens      estimated model context (Projection.context_tokens/1), nil in old sidecars
+stale               taken from a sidecar because replaying the changed journal timed out
 ```
 
-List and search filters initially include:
+List and search filters include:
 
 ```text
 text
 cwd
-status
+session_ids
+status              an atom or its name ("active")
 model
 tags
-created range
-updated range
-limit
+archived            false by default, true for archived only, or :all
+limit               50 by default
 cursor
 ```
 
-List ordering is stable by `(updated_at, session_id)`. Pagination uses opaque cursors rather than mutable numeric offsets.
+Created and updated range filters are planned, not implemented.
+
+Lists are ordered newest first by `updated_at`, ties by `session_id`, which is stable. Pagination uses opaque cursors rather than mutable numeric offsets.
 
 ### 12.2 Indexed content
 
@@ -834,9 +862,9 @@ A failed catalog update does not roll back an already durable session commit. Th
 
 The initial implementation should remain OTP-native and dependency-free. If measured scale later requires SQLite FTS5 or another specialized index, it can replace the derived search implementation without changing journals, session APIs, or durable semantics. A custom persistent full-text database is not part of the core design.
 
-## 13. Checkpoints
+## 13. Checkpoints (planned)
 
-Replay checkpoints are optional and should not be introduced before measurements show a need.
+Replay checkpoints are not implemented: nothing writes or reads `checkpoint.etf`, and every open replays the whole journal. This section is the plan. Checkpoints are optional and should not be introduced before measurements show a need.
 
 A checkpoint may store a versioned plain projection in `checkpoint.etf` with:
 
@@ -868,9 +896,9 @@ Schema evolution occurs at three independent levels:
 2. commit-envelope `schema_version`; and
 3. per-event `version`.
 
-Readers use pure upcasters from old plain maps to the current in-memory schema. Reading an old journal does not rewrite it automatically. `Tackle.Session.Log` registers one upcaster per `{event_type, from_version}`, each producing the next version's event data; `Log.read_commit/4` applies them one version at a time before it validates the event, so the checks always describe the current version. A reader accepts every version from 1 up to the current one and rejects a newer version as unsupported. Bumping an event's version therefore requires an upcaster from every older version, which a test enforces.
+Readers use pure upcasters from old plain maps to the current in-memory schema. Every event is still at version 1, so no upcaster is registered yet; the mechanism is tested with a schema that has one. Reading an old journal does not rewrite it automatically. `Tackle.Session.Log` registers one upcaster per `{event_type, from_version}`, each producing the next version's event data; `Log.read_commit/4` applies them one version at a time before it validates the event, so the checks always describe the current version. A reader accepts every version from 1 up to the current one and rejects a newer version as unsupported. Bumping an event's version therefore requires an upcaster from every older version, which a test enforces.
 
-An explicit migration:
+An explicit migration (planned; no migration exists yet):
 
 1. acquires exclusive session ownership;
 2. replays and validates the source;
@@ -881,16 +909,16 @@ An explicit migration:
 
 In-place truncation, partial rewriting, and migration during ordinary load are prohibited.
 
-Fixtures from every previously supported journal version should remain in tests. OTP upgrades must verify that current `:disk_log` can replay and repair representative older files before release support is claimed.
+Fixtures from every previously supported journal version remain in tests. `Tackle.Test.LegacyJournals` (`packages/tackle/test/support/legacy_journals.ex`) writes, with `:disk_log` as earlier versions did, a pre-tree linear journal, journals with a `session.closed`, a fork, the flat pre-project layout, an old summary sidecar, and a lock file without a process identity, and the tests read, resume, index, or reclaim each; the CLI has its own helper for resuming a closed legacy session. Tests also repair torn, corrupt, header-only, and compressed journals. OTP upgrades must verify that current `:disk_log` can replay and repair representative older files before release support is claimed.
 
 ## 15. Forking and lineage
 
 A fork creates a new independent session at a validated commit sequence:
 
-1. replay the parent through the requested sequence;
+1. flush a live parent, then replay it (the requested sequence must be one of its commits);
 2. create a new session ID and journal in a temporary directory;
-3. write a header with parent session ID and sequence;
-4. write a self-contained imported-history commit or equivalent versioned commits;
+3. write a header with parent session ID and sequence, and a `session.forked` commit;
+4. copy the parent's validated commits up to that sequence, renumbered from 2 and without the parent's `session.recovered` and legacy `session.closed` events (`Tackle.Session.Reader.write_journal/2`);
 5. sync, close, and replay the new journal;
 6. atomically publish the new session directory; and
 7. update the catalog.
@@ -978,6 +1006,10 @@ Encryption at rest, cryptographic tamper evidence, and cross-machine trust are d
 
 ## 20. Implementation plan
 
+Status: tasks 1 to 6 are implemented, as are forks and deletion from task 7
+and task 8 apart from the ACP mapping. Checkpoints are not (section 13), and
+no import exists, so none can accept an internal log.
+
 ### Task 1: durable contracts and codecs
 
 Define plain-data structures and codecs for:
@@ -997,7 +1029,7 @@ Acceptance criteria:
 - public durable contracts have documentation and specs; and
 - round-trip tests cover every initial event type.
 
-### Task 2: `SessionJournal` owner
+### Task 2: journal owner (`Tackle.Session.Journal`)
 
 Implement the supervised owner around one internal halt `:disk_log`.
 
@@ -1061,7 +1093,8 @@ Acceptance criteria:
 
 - list and search do not mutate journals;
 - results have stable cursor pagination;
-- stale projections catch up by sequence;
+- stale projections catch up (journal updates replace entries; startup trusts a
+  sidecar only while its journal keeps the recorded size and modification time);
 - corrupt or incompatible summaries rebuild from journals;
 - search-index failure does not lose history; and
 - sensitive fields are excluded from default indexing.
@@ -1169,8 +1202,7 @@ The session architecture is correctly shaped when all of the following remain tr
 
 The following remain deferred until implementation evidence or a real consumer requires them:
 
-- the exact public module and function names;
-- cross-BEAM advisory locking and distributed writer fencing;
+- cross-host writer fencing and distributed leases (one host's BEAMs are fenced by `flock`);
 - distributed or replicated session storage;
 - durable scripted-workflow and fleet reconstruction;
 - retained long-lived subagent sessions;
