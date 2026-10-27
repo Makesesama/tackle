@@ -293,7 +293,8 @@ defmodule Tackle.Config do
   `:tools` (default `Tackle.Tools.default/0`) are checked as
   `Tackle.Lib.Tool.Registry.new/1` would check them when the session starts:
   `{:error, {:invalid_tool, tool, reason}}` for a value that is not a tool
-  module, missing callbacks, or an invalid schema, and
+  module, missing callbacks, an invalid schema, or a callback that raises or
+  throws (`{:callback_failed, callback, detail}`), and
   `{:invalid_tool_name, name}` or `{:duplicate_tool_name, name}`. `:hooks`
   must implement a hook callback (`Tackle.Lib.Hook.hook?/1`), or
   `{:error, {:invalid_hook, hook, :no_hook_callbacks}}`. Without a
@@ -677,10 +678,24 @@ defmodule Tackle.Config do
 
   defp validate_tool(tool, names) do
     with :ok <- validate_tool_callbacks(tool),
-         :ok <- validate_tool_schema(tool, :parameters, tool.parameters_schema()),
-         :ok <- validate_tool_schema(tool, :output, Tool.output_schema(tool)) do
-      validate_tool_name(tool.name(), names)
+         {:ok, parameters} <- call_tool(tool, :parameters_schema, &tool.parameters_schema/0),
+         :ok <- validate_tool_schema(tool, :parameters, parameters),
+         {:ok, output} <- call_tool(tool, :output_schema, fn -> Tool.output_schema(tool) end),
+         :ok <- validate_tool_schema(tool, :output, output),
+         {:ok, name} <- call_tool(tool, :name, &tool.name/0) do
+      validate_tool_name(name, names)
     end
+  end
+
+  # Tool modules may come from plugins: a callback that raises or throws is
+  # an invalid tool, not a crash of the caller.
+  defp call_tool(tool, callback, fun) do
+    {:ok, fun.()}
+  rescue
+    error ->
+      {:error, {:invalid_tool, tool, {:callback_failed, callback, Exception.message(error)}}}
+  catch
+    kind, reason -> {:error, {:invalid_tool, tool, {:callback_failed, callback, {kind, reason}}}}
   end
 
   defp validate_tool_name(name, _names) when not is_binary(name) or name == "",

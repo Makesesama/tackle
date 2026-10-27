@@ -82,6 +82,38 @@ defmodule Tackle.ConfigTest do
     def execute(_input, _context), do: {:ok, nil}
   end
 
+  defmodule RaisingSchemaTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: "raising_schema"
+
+    @impl true
+    def description, do: "A tool whose schema callback raises."
+
+    @impl true
+    def parameters_schema, do: raise("schema unavailable")
+
+    @impl true
+    def execute(_input, _context), do: {:ok, nil}
+  end
+
+  defmodule ThrowingNameTool do
+    @behaviour Tackle.Lib.Tool
+
+    @impl true
+    def name, do: throw(:no_name)
+
+    @impl true
+    def description, do: "A tool whose name callback throws."
+
+    @impl true
+    def parameters_schema, do: []
+
+    @impl true
+    def execute(_input, _context), do: {:ok, nil}
+  end
+
   defmodule CatalogHook do
     @behaviour Tackle.Lib.Hook
 
@@ -621,6 +653,15 @@ defmodule Tackle.ConfigTest do
 
     assert message =~ "unknown type :nonsense"
     assert {:error, {:invalid_option, :tools, :none}} = new.(:none)
+
+    assert {:error,
+            {:invalid_tool, RaisingSchemaTool,
+             {:callback_failed, :parameters_schema, "schema unavailable"}}} =
+             new.([RaisingSchemaTool])
+
+    assert {:error,
+            {:invalid_tool, ThrowingNameTool, {:callback_failed, :name, {:throw, :no_name}}}} =
+             new.([ThrowingNameTool])
   end
 
   test "accepts only hook modules as hooks" do
