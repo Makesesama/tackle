@@ -88,7 +88,7 @@ An agent is one stateful conversation capable of running turns. Its GenServer ow
 - its parent agent and fleet identity;
 - a bounded request queue if queuing is introduced.
 
-Each agent process is dedicated to exactly one agent. When an ephemeral delegated agent returns its result and no further work belongs to it, the runtime stops that agent process. A message the agent acknowledged after its loop last took queued messages (for example while `before_turn_end` hooks ran) is still work that belongs to it: after a successful turn, `Tackle.Session` continues with such messages before it returns the last turn's result. An error or cancellation returns at once and drops them. A later subagent request receives a new agent process and new state rather than recycling the old process.
+Each agent process is dedicated to exactly one agent. When an ephemeral delegated agent returns its result and no further work belongs to it, the runtime stops that agent process. A message the agent acknowledged after its loop last took queued messages (for example while `before_turn_end` hooks ran) is still work that belongs to it: after a successful turn, `Tackle.Session` continues with such messages before it returns the last turn's result. An error or cancellation returns at once and drops them (after a cancellation, the user's own queued messages are handed back to subscribers first). A later subagent request receives a new agent process and new state rather than recycling the old process.
 
 The actual LLM loop must continue to run in a supervised Task. It must not run directly inside the agent GenServer because that would block cancellation, status inspection, message delivery, and lifecycle operations.
 
@@ -556,7 +556,9 @@ outlive the tool task and the root turn that launched it, allowing the same root
 session to accept new direction while the child continues. It retains its logical
 parent for authorization, result collection, and terminal completion delivery.
 Every terminal outcome queues a bounded inbox notice and automatically continues
-an idle parent; a busy parent is continued after its current turn settles. The
+an idle parent; a busy parent is continued after its current turn settles,
+unless that turn was cancelled: a cancel stops the parent, and the notices stay
+queued until new input wakes it or the user's next turn takes them. The
 request helper registers the launch with that parent before the child starts;
 if cancellation prevents the launch tool result from being committed, the run ID
 remains queued for the parent's next turn. Stopping the root scope still

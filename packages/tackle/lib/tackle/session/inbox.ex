@@ -23,6 +23,11 @@ defmodule Tackle.Session.Inbox do
   `commit_reserved/2` drops the entries that reached the conversation and
   keeps the rest queued.
 
+  A cancelled turn stops the agent, so `hand_back/1` takes the user's queued
+  messages out, to be returned to the frontend unsent, and quiets the rest:
+  they stay queued for the agent's next turn, but the inbox is not
+  `pending?/1` until a deliverable entry is pushed or a turn reserves it.
+
   The inbox is a plain value without a process; the session owns it.
   """
 
@@ -32,7 +37,7 @@ defmodule Tackle.Session.Inbox do
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.Envelope
 
-  defstruct entries: :queue.new(), bytes: 0, reserved: nil
+  defstruct entries: :queue.new(), bytes: 0, reserved: nil, quiet?: false
 
   @typedoc "One queued entry: an envelope, or the user's input as one with `from: :user`."
   @type entry :: Envelope.t()
@@ -40,7 +45,8 @@ defmodule Tackle.Session.Inbox do
   @type t :: %__MODULE__{
           entries: :queue.queue(entry()),
           bytes: non_neg_integer(),
-          reserved: non_neg_integer() | nil
+          reserved: non_neg_integer() | nil,
+          quiet?: boolean()
         }
 
   @doc "Returns an empty inbox."
@@ -96,8 +102,12 @@ defmodule Tackle.Session.Inbox do
 
   def withdraw(%__MODULE__{}, _message), do: {:error, :reserved}
 
-  @doc "Returns true when an entry can be delivered now (anything but a held launch)."
+  @doc """
+  Returns true when an entry can be delivered now (anything but a held
+  launch) and the inbox is not quiet (see `hand_back/1`).
+  """
   @spec pending?(t()) :: boolean()
+  def pending?(%__MODULE__{quiet?: true}), do: false
   def pending?(%__MODULE__{entries: entries}), do: :queue.any(&deliverable?/1, entries)
 
   @doc """
@@ -131,7 +141,7 @@ defmodule Tackle.Session.Inbox do
   """
   @spec reserve(t()) :: {[entry()], t()}
   def reserve(%__MODULE__{reserved: nil} = inbox),
-    do: {entries(inbox), %{inbox | reserved: :queue.len(inbox.entries)}}
+    do: {entries(inbox), %{inbox | reserved: :queue.len(inbox.entries), quiet?: false}}
 
   @doc """
   Closes the reservation: drops the first `count` reserved entries (`:all` by
@@ -153,6 +163,20 @@ defmodule Tackle.Session.Inbox do
   @doc "Closes the reservation and keeps every entry queued."
   @spec release(t()) :: t()
   def release(%__MODULE__{} = inbox), do: %{inbox | reserved: nil}
+
+  @doc """
+  Takes the user's queued messages out after a cancelled turn and returns
+  them, oldest first, with the inbox quieted.
+
+  Every other entry stays queued for the agent's next turn, but a quiet inbox
+  is not `pending?/1`, so it does not start that turn by itself: pushing a
+  deliverable entry or reserving the inbox for a turn ends the quiet.
+  """
+  @spec hand_back(t()) :: {[String.t()], t()}
+  def hand_back(%__MODULE__{reserved: nil} = inbox) do
+    {user, retained} = inbox |> entries() |> Enum.split_with(&match?(%Envelope{from: :user}, &1))
+    {user_messages(user), %{put_entries(inbox, retained) | quiet?: true}}
+  end
 
   @doc """
   Drops the launches of turn `turn_id` whose tool calls reported a result:
@@ -218,7 +242,16 @@ defmodule Tackle.Session.Inbox do
 
     if count(inbox, class) >= limit(class) or inbox.bytes + size > @max_bytes,
       do: {:error, full_error(class)},
-      else: {:ok, %{inbox | entries: :queue.in(entry, inbox.entries), bytes: inbox.bytes + size}}
+      else: {:ok, queue(inbox, entry, size)}
+  end
+
+  defp queue(inbox, entry, size) do
+    %{
+      inbox
+      | entries: :queue.in(entry, inbox.entries),
+        bytes: inbox.bytes + size,
+        quiet?: inbox.quiet? and not deliverable?(entry)
+    }
   end
 
   defp class(%Envelope{kind: :message}), do: :ordinary

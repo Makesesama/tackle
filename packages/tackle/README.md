@@ -92,6 +92,7 @@ session and turn correlation; `Tackle.Session.Events` documents each message:
 {:tackle_event, session_id, turn_id, %Tackle.Lib.Event{}}
 {:tackle_event, session_id, nil, %Tackle.Lib.Event{}}  # outside any turn
 {:tackle_turn_started, session_id, turn_id, reason}    # a turn the session started
+{:tackle_input_returned, session_id, turn_id, messages} # queued input a cancel hands back
 {:tackle_turn_finished, session_id, turn_id, result}
 {:tackle_turn_failed, session_id, turn_id, reason}
 {:tackle_session_reconfigured, session_id, %Tackle.Session.Snapshot{}}
@@ -118,7 +119,10 @@ removes a matching queued message before it starts. `Tackle.continue/1`
 retries the settled conversation without adding another user message.
 `Tackle.cancel/1` requests cooperative cancellation of the active turn or, while
 the agent is idle, of a running `Tackle.compact/2`, and `Tackle.stop_scope/1`
-stops the whole scope.
+stops the whole scope. A cancelled turn stops the agent: the user's messages
+still queued come back unsent in `{:tackle_input_returned, ...}` for the
+frontend to restore, and other agents' messages and background notices stay
+queued for the next turn without starting one.
 `Tackle.reconfigure/2` can change the selected model and thinking level while an
 agent is idle without discarding its conversation. `Tackle.monitor_agent/1`
 returns a monitor reference for crash detection without exposing a runtime PID.

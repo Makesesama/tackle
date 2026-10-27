@@ -26,6 +26,10 @@ defmodule Tackle.Session.Events do
       started a turn itself, for queued input (`:queued_messages`) or for
       background completions only (`:background_notice`). A turn a caller
       starts is not announced: the caller gets its id.
+    * `{:tackle_input_returned, session_id, turn_id, messages}` - the turn
+      `turn_id` was cancelled while the user's `messages` (strings, oldest
+      first) were still queued; they are handed back unsent, for the
+      frontend to restore, just before the turn's `:tackle_turn_finished`.
     * `{:tackle_turn_finished, session_id, turn_id, {status, agent_state}}` -
       the turn ended with `:ok`, `:error`, or `:cancelled`; the state is the
       session's settled state.
@@ -105,6 +109,11 @@ defmodule Tackle.Session.Events do
   @spec turn_started(t(), String.t(), :queued_messages | :background_notice) :: :ok
   def turn_started(events, turn_id, reason),
     do: broadcast(events, {:tackle_turn_started, events.session_id, turn_id, reason})
+
+  @doc "Hands the user's queued messages back unsent when the turn `turn_id` was cancelled."
+  @spec input_returned(t(), String.t(), [String.t(), ...]) :: :ok
+  def input_returned(events, turn_id, [_ | _] = messages),
+    do: broadcast(events, {:tackle_input_returned, events.session_id, turn_id, messages})
 
   @doc "Reports how a turn ended."
   @spec turn_finished(t(), String.t(), {:ok | :error | :cancelled, AgentState.t()}) :: :ok

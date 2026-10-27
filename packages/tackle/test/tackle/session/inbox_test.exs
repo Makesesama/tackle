@@ -151,6 +151,44 @@ defmodule Tackle.Session.InboxTest do
     end
   end
 
+  describe "hand_back" do
+    test "returns the user's messages and keeps the rest queued but quiet" do
+      held = launch("turn", "call")
+      note = message("note")
+      done = completion("done")
+      inbox = inbox(["first", held, note, "second", done])
+
+      assert {["first", "second"], quiet} = Inbox.hand_back(inbox)
+      assert Inbox.entries(quiet) == [held, note, done]
+      assert quiet.bytes == inbox([held, note, done]).bytes
+      refute Inbox.pending?(quiet)
+    end
+
+    test "an inbox without user messages returns none and is quiet" do
+      assert {[], quiet} = Inbox.hand_back(inbox([message("note")]))
+      refute Inbox.pending?(quiet)
+      assert {[], %Inbox{quiet?: true}} = Inbox.hand_back(Inbox.new())
+    end
+
+    test "a deliverable entry ends the quiet, a held launch does not" do
+      {[], quiet} = Inbox.hand_back(inbox([message("note")]))
+
+      refute quiet |> push!(launch("turn", "call")) |> Inbox.pending?()
+      assert quiet |> push!(completion("done")) |> Inbox.pending?()
+      assert quiet |> push!(message("later")) |> Inbox.pending?()
+      assert quiet |> push!("typed") |> Inbox.pending?()
+    end
+
+    test "a turn takes the quiet entries and ends the quiet" do
+      note = message("note")
+      {["typed"], quiet} = Inbox.hand_back(inbox(["typed", note]))
+
+      assert {[^note], reserved} = Inbox.reserve(quiet)
+      released = Inbox.release(reserved)
+      assert Inbox.pending?(released)
+    end
+  end
+
   describe "reservation" do
     test "commits the reserved prefix and keeps entries pushed since" do
       {reserved, inbox} = inbox(["one", "two"]) |> Inbox.reserve()

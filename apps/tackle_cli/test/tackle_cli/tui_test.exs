@@ -1603,6 +1603,79 @@ defmodule Tackle.CLI.TUITest do
     assert resubmitted == submitted
   end
 
+  test "a cancelled turn hands its queued prompts back to the composer, labels and all", %{
+    tui: tui
+  } do
+    inject_paste(tui, "first")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "first"}
+    await_state(tui, &(&1.active_turn != nil))
+
+    inject_paste(tui, "second draft")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "second draft"}
+    await_state(tui, &(&1.queued_prompts == ["second draft"]))
+
+    long = String.duplicate("x", 1_100)
+    label = "[Pasted Content 1100 chars]"
+    inject_paste(tui, "queued: ")
+    inject_paste(tui, long)
+    inject_key(tui, "enter")
+    assert_receive {:submitted, pasted}
+    await_state(tui, &(&1.queued_prompts == ["second draft", pasted]))
+    inject_paste(tui, "still typing")
+
+    session_id = state(tui).session_id
+    send(tui, {:tackle_input_returned, session_id, "turn-1", ["second draft", pasted]})
+    restored = await_state(tui, &(&1.queued_prompts == []))
+
+    assert draft(tui) == "second draft\nqueued: #{label}\nstill typing"
+    assert restored.queued_drafts == %{}
+
+    settled = finish_turn(tui, [Message.user("first")], :cancelled)
+    assert settled.active_turn == nil
+    assert settled.outcome == :cancelled
+    assert draft(tui) == "second draft\nqueued: #{label}\nstill typing"
+
+    # The label stands for its content again, so sending the draft sends the
+    # pasted text, not the label.
+    inject_key(tui, "enter")
+    assert_receive {:submitted, resubmitted}
+    assert resubmitted == "second draft\n#{pasted}\nstill typing"
+  end
+
+  test "a prompt handed back before its submit result arrives is not left queued", %{
+    tui: tui,
+    agent_ref: agent_ref
+  } do
+    inject_paste(tui, "first")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "first"}
+    await_state(tui, &(&1.active_turn != nil))
+
+    # The runtime holds this submit's result back, as if the session queued
+    # and handed it back before the result reached the shell.
+    inject_paste(tui, "storage pending")
+    inject_key(tui, "enter")
+    assert_receive {:submitted, "storage pending"}
+    await_state(tui, &match?(%{kind: :submit}, &1.pending_operation))
+
+    session_id = state(tui).session_id
+    send(tui, {:tackle_input_returned, session_id, "turn-1", ["storage pending"]})
+    restored = await_state(tui, &is_nil(&1.pending_operation))
+    assert draft(tui) == "storage pending"
+    assert restored.queued_prompts == []
+
+    # The late result belongs to a submit the shell already took over.
+    {:ok, session} = Tackle.Runtime.session_pid(agent_ref)
+    send(session, :storage_ready)
+    await_state(tui, &(&1.storage == :ready))
+    settled = finish_turn(tui, [Message.user("first")], :cancelled)
+    assert settled.queued_prompts == []
+    assert settled.queued_drafts == %{}
+    assert draft(tui) == "storage pending"
+  end
+
   test "recalling a prompt that pasted text expands its label again", %{tui: tui} do
     long = String.duplicate("y", 1_200)
     label = "[Pasted Content 1200 chars]"

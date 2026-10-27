@@ -5,11 +5,14 @@ defmodule TackleTest do
   alias Tackle.Lib.Event
   alias Tackle.Lib.Message
   alias Tackle.Lib.State
+  alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.AgentSpec
+  alias Tackle.Runtime.Envelope
   alias Tackle.Runtime.Scope
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.ScopeSpec
+  alias Tackle.Session
   alias Tackle.Session.Snapshot
   alias Tackle.Test.Adapter, as: TestAdapter
 
@@ -405,6 +408,54 @@ defmodule TackleTest do
     assert cancelled_state.status == :cancelled
     assert Enum.any?(events, &match?(%Event{type: :turn_cancelled}, &1))
     assert Cancellation.reason(signal) == nil
+    refute_received {:tackle_input_returned, _session_id, _turn_id, _messages}
+  end
+
+  test "a cancel hands queued user messages back and starts no turn" do
+    scope = start_controlled_scope()
+    agent_ref = scope.root_agent_ref
+    {:ok, session} = Runtime.session_pid(agent_ref)
+    {:ok, %Snapshot{session_id: session_id}} = Tackle.subscribe(agent_ref)
+
+    assert {:ok, turn_id} = Tackle.submit(agent_ref, "first")
+    assert_receive {:adapter_called, task_pid, "test", _signal}
+    assert {:ok, :queued} = Tackle.submit(agent_ref, "second")
+    {:ok, note} = Envelope.new(:message, agent_ref, "note")
+    assert :ok = Session.deliver(session, note)
+    assert {:ok, :queued} = Tackle.submit(agent_ref, "third")
+
+    assert :ok = Tackle.cancel(agent_ref)
+    send(task_pid, {:respond, "too late"})
+
+    # The messages come back unsent, before the turn's terminal message.
+    assert {:tackle_input_returned, ^session_id, ^turn_id, ["second", "third"]} =
+             next_session_message(session_id)
+
+    assert {:tackle_turn_finished, ^session_id, ^turn_id, {:cancelled, cancelled_state}} =
+             next_session_message(session_id)
+
+    assert Enum.map(cancelled_state.messages, & &1.content) == ["first"]
+
+    # The agent message stays queued without waking the agent.
+    refute_receive {:adapter_called, _task_pid, _model, _signal}, 100
+    refute_received {:tackle_turn_started, _session_id, _turn_id, _reason}
+    assert Session.inbox(session) == [note]
+
+    # New input wakes it, and its turn takes the queued message too.
+    {:ok, later} = Envelope.new(:message, agent_ref, "later")
+    assert :ok = Session.deliver(session, later)
+    assert_receive {:tackle_turn_started, ^session_id, next_turn, :queued_messages}
+    assert_receive {:adapter_called, next_task, "test", _signal}
+    send(next_task, {:respond, "done"})
+
+    assert {:finished, {:ok, state}, _events} = await_terminal(session_id, next_turn)
+
+    assert Enum.map(state.messages, & &1.content) == [
+             "first",
+             "Message from agent #{agent_ref.agent_id}:\n\nnote",
+             "Message from agent #{agent_ref.agent_id}:\n\nlater",
+             "done"
+           ]
   end
 
   test "reports a task crash separately from an expected turn error" do
@@ -510,6 +561,16 @@ defmodule TackleTest do
         {:failed, reason, Enum.reverse(events)}
     after
       1_000 -> flunk("timed out waiting for turn #{turn_id}")
+    end
+  end
+
+  # The next session message other than a turn's library events.
+  defp next_session_message(session_id) do
+    receive do
+      {:tackle_event, ^session_id, _turn_id, %Event{}} -> next_session_message(session_id)
+      {tag, ^session_id, _, _} = message when tag != :tackle_event -> message
+    after
+      1_000 -> flunk("timed out waiting for a session message")
     end
   end
 

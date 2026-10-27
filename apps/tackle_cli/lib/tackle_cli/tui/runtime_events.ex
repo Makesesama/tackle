@@ -167,28 +167,15 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
 
     case result do
       :ok ->
-        # The queued message rejoins the composer as the draft it was written
-        # as — labels and all — above whatever the user kept typing.
-        draft = Pastes.merge(queued_draft(state, prompt), Pastes.draft(state))
-        state = Pastes.restore(state, draft)
-
         queued_prompts =
           state.queued_prompts
           |> Enum.reverse()
           |> List.delete(prompt)
           |> Enum.reverse()
 
-        state = %{
-          state
-          | queued_prompts: queued_prompts,
-            queued_drafts: Map.delete(state.queued_drafts, prompt),
-            notice: "Queued message restored to composer",
-            queue_notice_at: nil
-        }
-
-        {state, commands} = state |> Viewport.update_draft() |> FileSearch.sync()
-
-        {:noreply, state |> Viewport.relayout() |> Viewport.refresh([:turn]), commands: commands}
+        state = %{state | notice: "Queued message restored to composer"}
+        {state, commands} = restore_queued(state, [prompt], queued_prompts)
+        {:noreply, state, commands: commands}
 
       {:error, :not_queued} ->
         {:noreply, %{state | notice: "Message already delivered; cannot take it back"}}
@@ -814,6 +801,17 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
          %State{session_id: session_id, active_turn: %{id: turn_id}} = state
        ) do
     {:noreply, state, render?: false}
+  end
+
+  # A cancelled turn hands back the queued messages it did not take, so the
+  # user decides what to send next; the turn's terminal message follows.
+  defp route(
+         {:tackle_input_returned, session_id, turn_id, prompts},
+         %State{session_id: session_id, active_turn: %{id: turn_id}} = state
+       ) do
+    state = adopt_returned_submit(state, prompts)
+    {state, commands} = restore_queued(state, prompts, state.queued_prompts -- prompts)
+    {:noreply, state, commands: commands}
   end
 
   defp route(
@@ -1799,6 +1797,42 @@ defmodule Tackle.CLI.TUI.RuntimeEvents do
   end
 
   defp expire_queue_notice(state), do: state
+
+  # A prompt submitted while the cancelled turn settled can be queued and
+  # handed back before its submit result arrives: the session returns it once
+  # more than the shell has queued. The shell takes the submit over, keeping
+  # its draft, and the late `{:ok, :queued}` result no longer matches.
+  defp adopt_returned_submit(
+         %State{pending_operation: %{kind: :submit, prompt: prompt, draft: draft}} = state,
+         prompts
+       ) do
+    if Enum.count(prompts, &(&1 == prompt)) > Enum.count(state.queued_prompts, &(&1 == prompt)),
+      do: %{
+        state
+        | pending_operation: nil,
+          queued_drafts: Map.put(state.queued_drafts, prompt, draft)
+      },
+      else: state
+  end
+
+  defp adopt_returned_submit(state, _prompts), do: state
+
+  # Queued messages rejoin the composer as the drafts they were written as —
+  # labels and all — oldest first, above whatever the user kept typing.
+  defp restore_queued(state, prompts, queued_prompts) do
+    [oldest | newer] = Enum.map(prompts, &queued_draft(state, &1)) ++ [Pastes.draft(state)]
+    draft = Enum.reduce(newer, oldest, &Pastes.merge(&2, &1))
+
+    state = %{
+      Pastes.restore(state, draft)
+      | queued_prompts: queued_prompts,
+        queued_drafts: Map.drop(state.queued_drafts, prompts),
+        queue_notice_at: nil
+    }
+
+    {state, commands} = state |> Viewport.update_draft() |> FileSearch.sync()
+    {state |> Viewport.relayout() |> Viewport.refresh([:turn]), commands}
+  end
 
   defp pop_queued_prompt([content | rest], content), do: rest
   defp pop_queued_prompt(prompts, _content), do: prompts

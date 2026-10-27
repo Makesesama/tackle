@@ -55,8 +55,16 @@ defmodule Tackle.Session do
   the loop last took queued messages (while `before_turn_end` hooks ran, or
   while the terminal event was written) is not dropped: a successful turn is
   continued with it, and the last turn's outcome is delivered. An error or
-  cancelled outcome is delivered at once, and input still queued is dropped.
+  cancelled outcome is delivered at once, and input still queued is dropped
+  (after a cancel, the user's messages are handed back first; see below).
   A session process is never reset for another agent identity.
+
+  A cancelled turn stops the agent whatever its lifetime. The user's messages
+  still queued are handed back to subscribers unsent
+  (`{:tackle_input_returned, ...}`, before the turn's
+  `:tackle_turn_finished`), and the rest of the inbox stays queued for the
+  next turn without starting one (`Tackle.Session.Inbox.hand_back/1`): an
+  `:explicit` session wakes again only for new input.
 
   Subscription during an active turn is deliberately rejected because events
   are not replayed. Subscribe before submitting a turn to avoid a
@@ -1062,7 +1070,10 @@ defmodule Tackle.Session do
         settle(state, pending.result)
 
       result ->
-        state = discard_reported_background_launches(state, turn, pending.agent_state)
+        state =
+          state
+          |> discard_reported_background_launches(turn, pending.agent_state)
+          |> hand_back_queued_input(turn, result)
 
         Events.turn_finished(state.events, turn.id, result)
 
@@ -1201,6 +1212,16 @@ defmodule Tackle.Session do
     reported = Turn.reported_tool_calls(turn, agent_state)
     %{state | inbox: Inbox.discard_reported_launches(state.inbox, turn.id, reported)}
   end
+
+  # A cancelled turn stops the agent: the user's queued messages go back to
+  # the frontend unsent, and the quieted inbox starts no turn by itself.
+  defp hand_back_queued_input(state, %Turn{} = turn, {:cancelled, %AgentState{}}) do
+    {messages, inbox} = Inbox.hand_back(state.inbox)
+    if messages != [], do: Events.input_returned(state.events, turn.id, messages)
+    %{state | inbox: inbox}
+  end
+
+  defp hand_back_queued_input(state, %Turn{}, _result), do: state
 
   defp broadcast_inbox_drained(state, entries) do
     entries
