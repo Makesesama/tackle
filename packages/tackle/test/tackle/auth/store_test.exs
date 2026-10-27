@@ -236,6 +236,24 @@ defmodule Tackle.Auth.StoreTest do
     assert envelope["providers"]["provider-17"] == %{"generation" => 17}
   end
 
+  # The temporary file was named after a counter that restarts with every VM,
+  # so a file a killed VM left behind made a later VM's saves fail.
+  test "a leftover temporary file from another VM does not break saving", %{
+    home: home,
+    path: path
+  } do
+    File.mkdir_p!(home)
+    next = System.unique_integer([:positive, :monotonic])
+
+    for number <- next..(next + 5_000) do
+      File.write!(Path.join(home, ".auth.json.tmp-#{number}"), "")
+    end
+
+    store = start_store(path)
+    assert :ok = Store.put(store, "openai-codex", %{"token" => "fresh"})
+    assert {:ok, %{"token" => "fresh"}} = Store.fetch(store, "openai-codex")
+  end
+
   test "credential validation errors do not expose values", %{path: path} do
     store = start_store(path)
     token = "highly-sensitive-token"

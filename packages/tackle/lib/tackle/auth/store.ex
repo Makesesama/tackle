@@ -33,6 +33,7 @@ defmodule Tackle.Auth.Store do
   @readable_versions [1, 2]
   @directory_mode 0o700
   @file_mode 0o600
+  @temporary_attempts 3
 
   @type state :: %{
           path: Path.t(),
@@ -374,17 +375,26 @@ defmodule Tackle.Auth.Store do
     end
   end
 
-  defp open_temporary(path) do
-    temporary_path =
-      Path.join(
-        Path.dirname(path),
-        ".#{Path.basename(path)}.tmp-#{System.unique_integer([:positive, :monotonic])}"
-      )
+  # The name must be unique across VMs sharing the directory, and must not
+  # repeat the name of a file a killed VM left behind; a collision is retried.
+  defp open_temporary(path, attempts \\ @temporary_attempts) do
+    temporary_path = Path.join(Path.dirname(path), temporary_name(path))
 
     case File.open(temporary_path, [:write, :binary, :exclusive]) do
-      {:ok, io} -> {:ok, temporary_path, io}
-      {:error, reason} -> {:error, {:auth_temporary_file_failed, path, reason}}
+      {:ok, io} ->
+        {:ok, temporary_path, io}
+
+      {:error, :eexist} when attempts > 1 ->
+        open_temporary(path, attempts - 1)
+
+      {:error, reason} ->
+        {:error, {:auth_temporary_file_failed, path, reason}}
     end
+  end
+
+  defp temporary_name(path) do
+    random = 12 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+    ".#{Path.basename(path)}.tmp-#{System.pid()}-#{random}"
   end
 
   defp write_replace(io, temporary_path, path, encoded) do
