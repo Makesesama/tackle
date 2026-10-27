@@ -37,15 +37,10 @@ defmodule Tackle.CLI.TUI.Preferences do
     end
   end
 
+  # The whole file is validated, and its object is returned as written, so
+  # `put_sidebar/2` keeps the other fields unchanged.
   defp read(path) do
-    with :ok <- safe_target(path),
-         {:ok, _opts} <- ConfigFile.load(path) do
-      case File.read(path) do
-        {:ok, json} -> JSON.decode(json)
-        {:error, :enoent} -> {:ok, %{}}
-        {:error, reason} -> {:error, {:config_file, path, {:unreadable, reason}}}
-      end
-    end
+    with :ok <- safe_target(path), do: ConfigFile.read(path)
   end
 
   defp safe_target(path) do

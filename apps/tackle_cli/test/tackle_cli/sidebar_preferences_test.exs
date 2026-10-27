@@ -47,6 +47,20 @@ defmodule Tackle.CLI.SidebarPreferencesTest do
     assert {:ok, true} = Preferences.sidebar()
   end
 
+  test "a toggle writes the other fields back as the file holds them", %{path: path} do
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, ~s({"watchdog":true,"narration":null,"jail":{"env":["GH_TOKEN"]}}))
+
+    assert :ok = Preferences.put_sidebar(false)
+
+    assert path |> File.read!() |> JSON.decode!() == %{
+             "watchdog" => true,
+             "narration" => nil,
+             "jail" => %{"env" => ["GH_TOKEN"]},
+             "show_subagent_sidebar" => false
+           }
+  end
+
   test "invalid configuration is not overwritten", %{path: path} do
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, ~s({"show_subagent_sidebar":"false"}))

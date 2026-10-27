@@ -313,7 +313,9 @@ defmodule Tackle.Config.FileTest do
     path = write_config(home, ~s({"model":"test/file","jail":{"env":["GH_TOKEN","_X1"]}}))
     assert {:ok, config} = Config.load(available_adapters: [Adapter], env: env)
     assert config.model_ref == "test/file"
-    assert ConfigFile.jail_env(path) == {:ok, ["GH_TOKEN", "_X1"]}
+
+    assert ConfigFile.read(path) ==
+             {:ok, %{"model" => "test/file", "jail" => %{"env" => ["GH_TOKEN", "_X1"]}}}
 
     for invalid <- [
           ~s({"jail":["GH_TOKEN"]}),
@@ -330,25 +332,28 @@ defmodule Tackle.Config.FileTest do
       assert {:error, {:config_file, ^path, {:invalid_field, "jail"}}} =
                Config.load(available_adapters: [Adapter], env: env)
 
-      assert {:error, {:config_file, ^path, {:invalid_field, "jail"}}} = ConfigFile.jail_env(path)
+      assert {:error, {:config_file, ^path, {:invalid_field, "jail"}}} = ConfigFile.read(path)
     end
   end
 
-  test "jail_env is empty without the setting or the file", %{home: home} do
+  test "read returns the user file's object as written", %{home: home} do
     path = Path.join(home, "config.json")
-    assert ConfigFile.jail_env(path) == {:ok, []}
+    assert ConfigFile.read(path) == {:ok, %{}}
     File.mkdir_p!(home)
 
-    for empty <- [
-          ~s({}),
-          ~s({"jail":null}),
-          ~s({"jail":{}}),
-          ~s({"jail":{"env":null}}),
-          ~s({"jail":{"env":[]}})
-        ] do
-      File.write!(path, empty)
-      assert ConfigFile.jail_env(path) == {:ok, []}
-    end
+    contents =
+      ~s({"model":null,"watchdog":true,"jail":{"env":null},"show_subagent_sidebar":false})
+
+    File.write!(path, contents)
+    assert ConfigFile.read(path) == {:ok, JSON.decode!(contents)}
+
+    File.write!(path, ~s({"model":"test/file","unknown":1}))
+
+    assert {:error, {:config_file, ^path, {:unknown_fields, ["unknown"]}}} =
+             ConfigFile.read(path)
+
+    File.write!(path, ~s({"watchdog":{"enabled":"yes"},"thinking":"loud"}))
+    assert {:error, {:config_file, ^path, {:invalid_field, "thinking"}}} = ConfigFile.read(path)
   end
 
   test "config.json providers merge over adapter defaults and accounts", %{

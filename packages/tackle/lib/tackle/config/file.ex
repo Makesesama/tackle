@@ -1,5 +1,19 @@
 defmodule Tackle.Config.File do
-  @moduledoc false
+  @moduledoc """
+  Reads and validates the configuration files: the user's
+  `$TACKLE_HOME/config.json` and a project's `.tackle/config.json`.
+
+  `Tackle.Config.load/1` builds sessions from their options (`load/1`,
+  `load/2`). Frontends that store their own settings in the user file read
+  it with `read/1`, which validates the whole file like the harness does and
+  returns the JSON object as written. The harness knows the fields of its
+  frontends so that every reader validates the same file: the CLI's
+  `show_subagent_sidebar` preference and its `jail` settings (`{"env":
+  [name, ...]}`, host environment variables passed into the jail) are
+  checked here but are not session options. A project file may set neither.
+
+  Every error is `{:config_file, path, reason}`.
+  """
 
   alias Tackle.Lib.Thinking
   alias Tackle.Review.Settings, as: ReviewSettings
@@ -28,18 +42,35 @@ defmodule Tackle.Config.File do
   # jail (`jail`), which would hand a cloned repository the user's secrets.
   @project_fields @known_fields -- ["providers", "show_subagent_sidebar", "jail"]
 
-  @doc "Loads the user configuration file; a missing file is empty."
+  @doc "Loads the session options of the user configuration file; a missing file is empty."
   @spec load(Path.t()) :: {:ok, keyword()} | {:error, term()}
   def load(path) when is_binary(path) do
     with {:ok, config} <- read_user(path), do: to_options(path, config)
   end
 
   @doc """
+  Reads the user configuration file and returns its JSON object as written,
+  after validating the whole file as `load/1` does; a missing file is `%{}`.
+
+  The object is not normalized: `null` members and `true`/`false` feature
+  switches are returned as the file holds them, so a frontend that updates
+  its own field can write the rest back unchanged.
+  """
+  @spec read(Path.t()) :: {:ok, map()} | {:error, term()}
+  def read(path) when is_binary(path) do
+    with {:ok, object} <- read_object(path),
+         {:ok, config} <- user_config(path, object),
+         {:ok, _opts} <- to_options(path, config) do
+      {:ok, object}
+    end
+  end
+
+  @doc """
   Loads the user configuration file layered under a project file's contents.
 
   The project file may use every field except `providers`,
-  `show_subagent_sidebar`, and `jail`. Each file is validated on its own; then JSON objects
-  merge recursively, with project values replacing user values, except that a
+  `show_subagent_sidebar`, and `jail`. Each file is validated on its own;
+  then JSON objects merge recursively, with project values replacing user values, except that a
   project cannot turn on a compile gate the user did not turn on. In either
   file, `null` leaves a field or object member unset: a project's `null`
   removes the user's value.
@@ -77,21 +108,30 @@ defmodule Tackle.Config.File do
   defp compile_gate_on?(_off), do: false
 
   defp read_user(path) do
+    with {:ok, object} <- read_object(path), do: user_config(path, object)
+  end
+
+  defp read_object(path) do
     case File.read(path) do
-      {:ok, contents} ->
-        with {:ok, config} <- decode(path, contents, @known_fields), do: {:ok, drop_nulls(config)}
-
-      {:error, :enoent} ->
-        {:ok, %{}}
-
-      {:error, reason} ->
-        {:error, {:config_file, path, {:unreadable, reason}}}
+      {:ok, contents} -> decode_object(path, contents)
+      {:error, :enoent} -> {:ok, %{}}
+      {:error, reason} -> {:error, {:config_file, path, {:unreadable, reason}}}
     end
   end
 
+  defp user_config(path, object) do
+    with {:ok, config} <- validate_fields(path, normalize_switches(object), @known_fields),
+         do: {:ok, drop_nulls(config)}
+  end
+
   defp decode(path, contents, known_fields) do
+    with {:ok, object} <- decode_object(path, contents),
+         do: validate_fields(path, normalize_switches(object), known_fields)
+  end
+
+  defp decode_object(path, contents) do
     case JSON.decode(contents) do
-      {:ok, %{} = config} -> validate_fields(path, normalize_switches(config), known_fields)
+      {:ok, %{} = object} -> {:ok, object}
       {:ok, _other} -> {:error, {:config_file, path, :expected_object}}
       {:error, _reason} -> {:error, {:config_file, path, :malformed}}
     end
@@ -282,25 +322,9 @@ defmodule Tackle.Config.File do
     end
   end
 
-  @doc """
-  Returns the host environment variables the user file passes into a jail:
-  the names in `jail.env`, or `[]`. The whole file is validated; a missing
-  file is empty. Only the user file can set them.
-  """
-  @spec jail_env(Path.t()) :: {:ok, [String.t()]} | {:error, term()}
-  def jail_env(path) when is_binary(path) do
-    with {:ok, config} <- read_user(path),
-         {:ok, _opts} <- to_options(path, config) do
-      case config do
-        %{"jail" => %{"env" => names}} -> {:ok, names}
-        _other -> {:ok, []}
-      end
-    end
-  end
-
   # The CLI's jail settings. Like the sidebar preference, they are validated
   # here but are not session options: `Tackle.CLI.Jail` reads them with
-  # `jail_env/1`.
+  # `read/1`.
   defp jail_option(path, config) do
     case Map.fetch(config, "jail") do
       {:ok, %{} = jail} -> jail_fields(path, jail)

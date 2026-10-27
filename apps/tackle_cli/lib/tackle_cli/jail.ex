@@ -203,13 +203,19 @@ defmodule Tackle.CLI.Jail do
   # values from the CLI's environment; unset ones are skipped, so a variable
   # that only a project's direnv sets reaches only that project's jail.
   defp forwarded_env(tackle_home, env) do
-    with {:ok, names} <- ConfigFile.jail_env(Path.join(tackle_home, "config.json")) do
+    with {:ok, config} <- ConfigFile.read(Path.join(tackle_home, "config.json")) do
       {:ok,
-       for name <- Enum.uniq(names), value = Map.get(env, name), is_binary(value) do
+       for name <- Enum.uniq(jail_env_names(config)),
+           value = Map.get(env, name),
+           is_binary(value) do
          {name, value}
        end}
     end
   end
+
+  # `Tackle.Config.File.read/1` validated the names; `null` leaves them unset.
+  defp jail_env_names(%{"jail" => %{"env" => names}}) when is_list(names), do: names
+  defp jail_env_names(_config), do: []
 
   defp log_path(tackle_home) do
     dir = Path.join(tackle_home, "logs")
