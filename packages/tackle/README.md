@@ -423,6 +423,10 @@ existing session still opens and validates its journal immediately.
 {:ok, scope} = Tackle.start_scope(spec)
 ```
 
+The spec's `storage` options are limited to `:home` (the `TACKLE_HOME`
+directory), `:env` (the environment `TACKLE_HOME` is read from), and
+`:journal_timeout` (below); `Tackle.Session.Spec.new/1` refuses any other.
+
 Durability is fail-closed and write-behind. A turn's `turn.started` commit is
 appended before its Task starts, and its settled messages, tool intents, and
 terminal event are appended in order, all without waiting for the disk:

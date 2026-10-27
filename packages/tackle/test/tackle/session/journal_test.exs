@@ -1131,6 +1131,16 @@ defmodule Tackle.Session.JournalTest do
   end
 
   describe "storage ownership" do
+    test "writes the journal of the directory whose lock it holds, whatever :path says", ctx do
+      elsewhere = Path.join(ctx.home, "elsewhere.dlog")
+      {:ok, journal} = start_journal(ctx, path: elsewhere)
+      {:ok, _turn_id} = Journal.begin_turn(journal, :run, "hello", ID.generate())
+      stop_journal(journal)
+
+      refute File.exists?(elsewhere)
+      assert {:ok, %{last_seq: 2}} = Reader.read(ctx.session_id, home: ctx.home)
+    end
+
     test "a lock this OS process holds briefly is waited out without stopping the owner", ctx do
       create_session!(ctx)
       holder = hold_lock(ctx)

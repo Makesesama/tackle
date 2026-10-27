@@ -50,6 +50,9 @@ defmodule Tackle.Session.Reader do
   A compressed journal is replayed from a temporary decompressed copy.
   Callers receive a classified projection or an explicit error describing the
   first invalid commit.
+
+  Besides the location options of `Tackle.Session.Storage`, `:path` names the
+  journal file directly (a session's known file, or a temporary copy).
   """
   @spec read(String.t(), keyword()) :: {:ok, replay()} | {:error, term()}
   def read(session_id, opts \\ []) do
@@ -91,10 +94,14 @@ defmodule Tackle.Session.Reader do
   Repair first preserves the original file under `recovery/`, then reports the
   recovered-item and bad-byte counts. A repaired journal is replayed and
   validated before it is returned, so a corrupt history is never resumed.
+
+  The journal is always the one at the session's location: unlike `read/2`,
+  no `:path` selects another file, so the writer opens the journal of the
+  directory whose lock it holds.
   """
   @spec open_writable(String.t(), keyword()) :: {:ok, open_result()} | {:error, term()}
   def open_writable(session_id, opts \\ []) do
-    with {:ok, path} <- journal_path(session_id, opts) do
+    with {:ok, path} <- Storage.journal_path(session_id, opts) do
       new? = not File.exists?(path)
 
       case open(session_id, path, :read_write) do

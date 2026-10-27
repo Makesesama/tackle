@@ -3,13 +3,25 @@ defmodule Tackle.Session.Spec do
   Trusted description of one durable session attached to a runtime scope.
 
   A durable root scope owns exactly one journal. The spec carries the durable
-  session identity, the storage options (location and journal timeout),
+  session identity, the storage options,
   optional parent lineage for a fork, the explicit repair policy, the metadata
   recorded in `session.created`, whether the scope's configuration overrides
   the selection the journal recorded (`override_config`), and whether the
   session may branch (`tree`, true by default). A `session_id` whose journal
   exists is resumed; any other starts a new session, with a minted id when
   none is given.
+
+  `storage` accepts only these options:
+
+    * `:home` — the `TACKLE_HOME` directory sessions are stored under;
+    * `:env` — the environment map `TACKLE_HOME` is read from instead of the
+      process environment (`Tackle.Paths.home/1`);
+    * `:journal_timeout` — the deadline in milliseconds of each durable journal
+      request and of the journal's cleanup (15 seconds by default).
+
+  Any other option is refused with `{:unknown_storage_options, keys}`. The
+  session's project directory follows `cwd`; nothing selects another journal
+  file, directory, or lock.
 
   This value is produced by trusted host code. Model- or file-generated data may
   choose a session id to resume but can never construct storage paths outside
@@ -18,6 +30,8 @@ defmodule Tackle.Session.Spec do
 
   alias Tackle.Runtime.ID
   alias Tackle.Session.Storage
+
+  @storage_options [:home, :env, :journal_timeout]
 
   defstruct session_id: nil,
             cwd: nil,
@@ -139,11 +153,24 @@ defmodule Tackle.Session.Spec do
 
   defp validate_storage(storage) when is_list(storage) do
     if Keyword.keyword?(storage) do
-      :ok
+      case Keyword.keys(storage) -- @storage_options do
+        [] -> Enum.reduce_while(storage, :ok, &validate_storage_option/2)
+        unknown -> {:error, {:unknown_storage_options, Enum.uniq(unknown)}}
+      end
     else
       {:error, {:invalid_storage, storage}}
     end
   end
 
   defp validate_storage(storage), do: {:error, {:invalid_storage, storage}}
+
+  defp validate_storage_option({:home, home}, :ok) when is_binary(home), do: {:cont, :ok}
+  defp validate_storage_option({:env, env}, :ok) when is_map(env), do: {:cont, :ok}
+
+  defp validate_storage_option({:journal_timeout, timeout}, :ok)
+       when is_integer(timeout) and timeout > 0,
+       do: {:cont, :ok}
+
+  defp validate_storage_option({key, value}, :ok),
+    do: {:halt, {:error, {:invalid_storage_option, key, value}}}
 end
