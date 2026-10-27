@@ -83,7 +83,11 @@ into an `AgentSpec` and `ScopeSpec` before starting the runtime; model-generated
 data may only select a trusted profile name. `Tackle.Runtime.RootBackend` is
 supplied by this package as the backend for its durable root session. For the
 built-in coding profiles instead of an empty `profiles` map, use
-`Tackle.Coding.scope_spec/2`.
+`Tackle.Coding.scope_spec/2`. A host that builds several configurations for
+one workspace reads their sources (`config.json`, the project file, accounts,
+skills, and prompt files) once with `Tackle.Config.Sources.read/1`, which takes
+`load/1`'s options, and builds each with `Tackle.Config.from_sources/2`, as
+`Tackle.Coding.scope_spec/2` does for the root and every profile.
 
 Subscribers receive provider-neutral library events and turn results with
 session and turn correlation; `Tackle.Session.Events` documents each message:

@@ -31,18 +31,87 @@ defmodule Tackle.SystemPrompt do
           | {:executor, Executor.t()}
           | {:instructions, boolean()}
 
+  @typedoc """
+  The prompt files `read/1` read, each as the result of reading it, so that a
+  file only fails a prompt that uses it: `$TACKLE_HOME/SYSTEM.md` (`nil` when
+  missing), `APPEND_SYSTEM.md` (`nil` when missing or not read), and the
+  `AGENTS.md` files in prompt order (`[]` when not read).
+  """
+  @type files :: %{
+          system: {:ok, String.t() | nil} | {:error, term()},
+          append: {:ok, String.t() | nil} | {:error, term()},
+          context_files: {:ok, [%{path: Path.t(), content: String.t()}]} | {:error, term()}
+        }
+
   @doc "Builds the effective system prompt for one configured session."
   @spec build([build_option()]) :: {:ok, String.t()} | {:error, term()}
   def build(opts) when is_list(opts) do
     with true <- Keyword.keyword?(opts),
+         {:ok, files} <-
+           opts
+           |> Keyword.take([:cwd, :home, :executor, :instructions])
+           |> Keyword.put(:system, not is_binary(Keyword.get(opts, :base)))
+           |> read() do
+      compose(files, opts)
+    else
+      false -> {:error, {:invalid_system_prompt_options, opts}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def build(opts), do: {:error, {:invalid_system_prompt_options, opts}}
+
+  @doc """
+  Reads the prompt files for `:cwd` and `:home` through `:executor`.
+
+  `instructions: false` (default `true`) leaves `APPEND_SYSTEM.md` and the
+  `AGENTS.md` files unread, and `system: false` (default `true`) `SYSTEM.md`.
+  A file that cannot be read is kept as its error (see `t:files/0`).
+  """
+  @spec read(keyword()) :: {:ok, files()} | {:error, term()}
+  def read(opts) when is_list(opts) do
+    with true <- Keyword.keyword?(opts),
          {:ok, cwd} <- fetch_path(opts, :cwd),
          {:ok, home} <- fetch_path(opts, :home),
+         {:ok, instructions} <- fetch_boolean(opts, :instructions),
+         {:ok, system} <- fetch_boolean(opts, :system) do
+      files = ProjectFiles.new(executor: Keyword.get(opts, :executor))
+
+      {:ok,
+       %{
+         system:
+           if(system, do: read_optional(files, Path.join(home, "SYSTEM.md")), else: {:ok, nil}),
+         append:
+           if(instructions,
+             do: read_optional(files, Path.join(home, "APPEND_SYSTEM.md")),
+             else: {:ok, nil}
+           ),
+         context_files:
+           if(instructions, do: load_context_files(files, cwd, home), else: {:ok, []})
+       }}
+    else
+      false -> {:error, {:invalid_system_prompt_options, opts}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def read(opts), do: {:error, {:invalid_system_prompt_options, opts}}
+
+  @doc """
+  Composes the prompt from files `read/1` read, without reading anything.
+
+  Takes `build/1`'s options except `:home` and `:executor`. With
+  `instructions: true`, the files must have been read with instructions.
+  """
+  @spec compose(files(), [build_option()]) :: {:ok, String.t()} | {:error, term()}
+  def compose(files, opts) when is_list(opts) do
+    with true <- Keyword.keyword?(opts),
+         {:ok, cwd} <- fetch_path(opts, :cwd),
          {:ok, tools} <- fetch_tools(opts),
-         files = ProjectFiles.new(executor: Keyword.get(opts, :executor)),
-         {:ok, instructions} <- fetch_instructions(opts),
-         {:ok, base} <- resolve_base(files, Keyword.get(opts, :base), home, tools),
+         {:ok, instructions} <- fetch_boolean(opts, :instructions),
+         {:ok, base} <- resolve_base(files, Keyword.get(opts, :base), tools),
          {:ok, skills} <- fetch_skills(opts),
-         {:ok, append, context_files} <- load_instructions(instructions, files, cwd, home) do
+         {:ok, append, context_files} <- instructions(files, instructions) do
       prompt =
         PromptBuilder.new()
         |> PromptBuilder.add_raw(base)
@@ -59,7 +128,7 @@ defmodule Tackle.SystemPrompt do
     end
   end
 
-  def build(opts), do: {:error, {:invalid_system_prompt_options, opts}}
+  def compose(_files, opts), do: {:error, {:invalid_system_prompt_options, opts}}
 
   defp fetch_path(opts, name) do
     case Keyword.fetch(opts, name) do
@@ -76,18 +145,18 @@ defmodule Tackle.SystemPrompt do
     end
   end
 
-  defp fetch_instructions(opts) do
-    case Keyword.get(opts, :instructions, true) do
-      instructions when is_boolean(instructions) -> {:ok, instructions}
-      other -> {:error, {:invalid_system_prompt_option, :instructions, other}}
+  defp fetch_boolean(opts, name) do
+    case Keyword.get(opts, name, true) do
+      value when is_boolean(value) -> {:ok, value}
+      other -> {:error, {:invalid_system_prompt_option, name, other}}
     end
   end
 
-  defp load_instructions(false, _files, _cwd, _home), do: {:ok, nil, []}
+  defp instructions(_files, false), do: {:ok, nil, []}
 
-  defp load_instructions(true, files, cwd, home) do
-    with {:ok, append} <- read_optional(files, Path.join(home, "APPEND_SYSTEM.md")),
-         {:ok, context_files} <- load_context_files(files, cwd, home) do
+  defp instructions(%{append: append, context_files: context_files}, true) do
+    with {:ok, append} <- append,
+         {:ok, context_files} <- context_files do
       {:ok, append, context_files}
     end
   end
@@ -99,17 +168,17 @@ defmodule Tackle.SystemPrompt do
     end
   end
 
-  defp resolve_base(_files, base, _home, _tools) when is_binary(base), do: {:ok, base}
+  defp resolve_base(_files, base, _tools) when is_binary(base), do: {:ok, base}
 
-  defp resolve_base(files, nil, home, tools) do
-    case read_optional(files, Path.join(home, "SYSTEM.md")) do
+  defp resolve_base(%{system: system}, nil, tools) do
+    case system do
       {:ok, nil} -> {:ok, default(tools)}
       {:ok, prompt} -> {:ok, prompt}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp resolve_base(_files, base, _home, _tools),
+  defp resolve_base(_files, base, _tools),
     do: {:error, {:invalid_system_prompt_option, :base, base}}
 
   @doc "Returns the built-in coding prompt for a validated tool set."

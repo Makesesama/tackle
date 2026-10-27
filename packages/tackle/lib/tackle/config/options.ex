@@ -1,11 +1,14 @@
 defmodule Tackle.Config.Options do
   @moduledoc false
 
-  # The shared skeleton of the switchable sub-configurations
+  # Checks shared by `Tackle.Config` and its parts, and the shared skeleton of
+  # the switchable sub-configurations
   # (`Tackle.Config.SessionTitles`, `Watchdog`, `Narration`): `nil`, `false`,
   # and `enabled: false` turn the feature off; otherwise a keyword list with
   # known keys is built by the module's own function. Every error is
   # `{:invalid_option, name, detail}`.
+
+  alias Tackle.Executor
 
   # The longest Erlang timer, `2^32 - 1` milliseconds, in seconds.
   @max_seconds 4_294_967_295 / 1_000
@@ -56,6 +59,53 @@ defmodule Tackle.Config.Options do
   @doc "Converts seconds to timer milliseconds, at least one."
   @spec to_ms(number()) :: pos_integer()
   def to_ms(seconds), do: max(round(seconds * 1_000), 1)
+
+  @doc """
+  Checks a session context: a map whose `:executor`, if any, is an executor
+  module and its config. Tools fall back to the local executor when
+  `context.executor` is absent, so a malformed value must fail here rather
+  than silently run unjailed.
+  """
+  @spec validate_context(term()) :: :ok | {:error, term()}
+  def validate_context(context) when is_map(context), do: validate_executor(context)
+  def validate_context(context), do: {:error, {:invalid_option, :context, context}}
+
+  defp validate_executor(%{executor: {module, _config} = executor}) when is_atom(module) do
+    if executor_module?(module), do: :ok, else: {:error, {:invalid_option, :executor, executor}}
+  end
+
+  defp validate_executor(%{executor: executor}),
+    do: {:error, {:invalid_option, :executor, executor}}
+
+  defp validate_executor(_context), do: :ok
+
+  # Optional callbacks, such as `input/3`, are not required.
+  defp executor_module?(module) do
+    required =
+      Executor.behaviour_info(:callbacks) -- Executor.behaviour_info(:optional_callbacks)
+
+    Code.ensure_loaded?(module) and
+      Enum.all?(required, fn {name, arity} -> function_exported?(module, name, arity) end)
+  end
+
+  @doc """
+  Checks an option list: a keyword list without repeated or unknown keys.
+  `errors` names the error tags for each of those failures.
+  """
+  @spec validate_list(term(), [atom()], {atom(), atom(), atom()}) :: :ok | {:error, term()}
+  def validate_list(opts, known_keys, {invalid, duplicate, unknown}) do
+    if is_list(opts) and Keyword.keyword?(opts) do
+      keys = Keyword.keys(opts)
+
+      case {keys -- Enum.uniq(keys), Enum.uniq(keys -- known_keys)} do
+        {[key | _rest], _unknown} -> {:error, {duplicate, key}}
+        {[], []} -> :ok
+        {[], unknown_keys} -> {:error, {unknown, unknown_keys}}
+      end
+    else
+      {:error, {invalid, opts}}
+    end
+  end
 
   @doc "The error for an invalid sub-configuration."
   @spec invalid(atom(), term()) :: {:error, {:invalid_option, atom(), term()}}

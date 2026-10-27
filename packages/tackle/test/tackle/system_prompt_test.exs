@@ -39,6 +39,32 @@ defmodule Tackle.SystemPromptTest do
     assert prompt =~ "Current working directory: #{cwd}"
   end
 
+  test "read/1 keeps an unreadable file's error for the prompts that use it", %{
+    cwd: cwd,
+    home: home,
+    project: project
+  } do
+    agents = Path.join(project, "AGENTS.md")
+    File.write!(agents, "Project guidance.")
+    File.chmod!(agents, 0o000)
+    on_exit(fn -> File.chmod(agents, 0o600) end)
+
+    assert {:ok, files} = SystemPrompt.read(cwd: cwd, home: home)
+    assert {:error, {:system_prompt_file_unreadable, ^agents, :eacces}} = files.context_files
+
+    assert {:error, {:system_prompt_file_unreadable, ^agents, :eacces}} =
+             SystemPrompt.compose(files, cwd: cwd, tools: [])
+
+    assert {:ok, prompt} =
+             SystemPrompt.compose(files, base: "Lean.", cwd: cwd, instructions: false)
+
+    assert prompt == "Lean.\n\nCurrent working directory: #{cwd}\n"
+
+    # Not reading instructions leaves the file alone.
+    assert {:ok, %{context_files: {:ok, []}, append: {:ok, nil}}} =
+             SystemPrompt.read(cwd: cwd, home: home, instructions: false)
+  end
+
   test "does not recommend tools that are unavailable", %{cwd: cwd, home: home} do
     assert {:ok, prompt} = SystemPrompt.build(cwd: cwd, home: home, tools: [])
 

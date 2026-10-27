@@ -3,8 +3,12 @@ defmodule Tackle.Config do
   Validated, frontend-independent configuration for one Tackle session.
 
   `new/1` is the pure validation boundary for already-resolved options. `load/1`
-  applies the harness configuration precedence before passing those options to
-  `new/1`; it never resolves module names from file or environment data.
+  reads its sources (`Tackle.Config.Sources.read/1`) and builds the
+  configuration from them with `from_sources/2`, which applies the harness
+  configuration precedence and validates like `new/1`; neither resolves
+  module names from file or environment data. A host that builds several
+  configurations for one workspace reads the sources once and calls
+  `from_sources/2` for each, as `Tackle.Coding.scope_spec/2` does.
   A trusted host may supply a `Tackle.Plugins.Catalog` to `load/1` for
   prevalidated adapter and hook selection. Catalog tools require a separate
   explicit grant by the host. Adapter modules are executable types; a session
@@ -19,15 +23,14 @@ defmodule Tackle.Config do
   for the difference between the two modes.
   """
 
-  require Logger
-
-  alias Tackle.Config.File, as: ConfigFile
   alias Tackle.Config.Narration
+  alias Tackle.Config.Options
+  alias Tackle.Config.Prompt
   alias Tackle.Config.SessionTitles
+  alias Tackle.Config.Sources
   alias Tackle.Config.Watchdog
   alias Tackle.Elixir.CompileGate
   alias Tackle.Elixir.CompileGate.Settings, as: CompileGateSettings
-  alias Tackle.Executor
   alias Tackle.Lib.Compaction.Config, as: CompactionConfig
   alias Tackle.Lib.Decision
   alias Tackle.Lib.Hook
@@ -40,24 +43,13 @@ defmodule Tackle.Config do
   alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Schema
-  alias Tackle.Plugins.Catalog
-  alias Tackle.ProjectFiles
   alias Tackle.Review.Settings, as: ReviewSettings
-  alias Tackle.Skills
-  alias Tackle.Skills.Skill
   alias Tackle.SystemPrompt
-  alias Tackle.Tools.LoadSkill
 
-  @loader_option_keys [
-    :accounts,
-    :available_adapters,
-    :builtin_skills,
-    :catalog,
-    :cwd,
-    :env,
-    :instructions,
-    :overrides
-  ]
+  # Each entry point reports a malformed option list with its own tags.
+  @new_option_errors {:invalid_options, :duplicate_option, :unknown_options}
+  @update_option_errors {:invalid_update_options, :duplicate_update_option,
+                         :unknown_update_options}
   @update_option_keys [:model, :thinking, :max_iterations, :context, :llm_opts]
 
   @reserved_llm_option_names MapSet.new([
@@ -96,7 +88,6 @@ defmodule Tackle.Config do
     :compile_gate
   ]
 
-  @project_config_file ".tackle/config.json"
   @agent_setting_keys [:model, :thinking]
   @enforce_keys [:providers, :model_ref, :llm]
   defstruct providers: [],
@@ -202,47 +193,59 @@ defmodule Tackle.Config do
   """
   @spec load(keyword()) :: {:ok, t()} | {:error, term()}
   def load(opts) do
-    with :ok <- validate_option_list(opts, @loader_option_keys, :load),
-         {:ok, overrides} <- fetch_overrides(opts),
-         :ok <- validate_override_context(overrides),
-         {:ok, adapters} <- fetch_available_adapters(opts),
-         {:ok, accounts} <- fetch_accounts(opts),
-         {:ok, builtin_skills} <- fetch_builtin_skills(opts),
-         {:ok, instructions} <- fetch_instructions(opts),
-         {:ok, overrides} <- catalog_hooks(opts, overrides),
-         {:ok, env} <- fetch_environment(opts),
-         {:ok, cwd} <- fetch_cwd(opts, Keyword.get(overrides, :context, %{})),
-         {:ok, config_path} <- Tackle.Paths.config_file(env: env),
-         {:ok, project_file} <- read_project_config(cwd, overrides, config_path),
-         {:ok, file_opts, layers} <- ConfigFile.load(config_path, project_file),
-         {declared, file_opts} = Keyword.pop(file_opts, :providers, %{}),
-         {:ok, entries} <-
-           Tackle.Plugins.provider_entries(
-             adapters: adapters,
-             accounts: accounts,
-             config_providers: declared
-           ),
-         providers = Enum.map(entries, & &1.provider),
-         {:ok, env_opts} <- environment_options(env, overrides),
-         session_opts = merge_sources(file_opts, env_opts, overrides),
-         {:ok, session_opts} <- default_missing_model(session_opts, providers),
-         {:ok, session_opts} <- default_session_titles(session_opts),
-         session_opts = default_compile_gate(session_opts, Path.dirname(config_path)),
+    with {:ok, sources} <- Sources.read(opts), do: from_sources(sources)
+  end
+
+  @doc """
+  Builds a configuration from sources `Tackle.Config.Sources.read/1` read,
+  as `load/1` does, without reading anything.
+
+  Options:
+
+    * `:overrides` - overrides merged over those the sources were read with.
+      They may not set `:providers` or `:context`, whose executor the sources
+      were read through (`{:reserved_override, key}`), nor `:hooks` when a
+      catalog selected them.
+    * `:instructions` - whether the configuration gets the instruction files
+      and skills (default: as the sources were read). Sources read with
+      `instructions: false` hold neither, so `true` is then an error.
+  """
+  @spec from_sources(Sources.t(), keyword()) :: {:ok, t()} | {:error, term()}
+  def from_sources(%Sources{} = sources, opts \\ []) do
+    with :ok <- Options.validate_list(opts, [:overrides, :instructions], @new_option_errors),
+         extra = Keyword.get(opts, :overrides, []),
+         :ok <- Sources.validate_overrides(sources, extra),
+         {:ok, instructions} <- fetch_instructions(sources, opts),
+         overrides = merge_overrides(sources, extra),
+         {:ok, env_opts} <- environment_options(sources.env, overrides),
+         session_opts = merge_sources(sources.file_options, env_opts, overrides),
+         {:ok, session_opts} <- default_missing_model(session_opts, sources.providers),
+         session_opts = default_session_titles(session_opts),
+         session_opts = default_compile_gate(session_opts, sources.home),
          {:ok, config} <-
            session_opts
-           |> Keyword.put(:providers, providers)
-           |> build_from_files(file_options(file_opts, env_opts, overrides), layers) do
-      load_system_prompt(
-        config,
-        Keyword.get(session_opts, :system_prompt),
-        cwd,
-        Path.dirname(config_path),
-        env,
-        builtin_skills,
-        instructions
-      )
+           |> Keyword.put(:providers, sources.providers)
+           |> build_from_files(
+             file_options(sources.file_options, env_opts, overrides),
+             sources.layers
+           ) do
+      Prompt.assemble(config, sources, Keyword.get(session_opts, :system_prompt), instructions)
     end
   end
+
+  defp fetch_instructions(sources, opts) do
+    case Keyword.get(opts, :instructions, sources.instructions) do
+      false -> {:ok, false}
+      true when sources.instructions -> {:ok, true}
+      other -> {:error, {:invalid_option, :instructions, other}}
+    end
+  end
+
+  defp merge_overrides(%Sources{overrides: overrides, catalog_hooks: nil}, extra),
+    do: Keyword.merge(overrides, extra)
+
+  defp merge_overrides(%Sources{overrides: overrides, catalog_hooks: hooks}, extra),
+    do: overrides |> Keyword.merge(extra) |> Keyword.put(:hooks, hooks)
 
   @doc """
   Resolves and validates explicit session configuration.
@@ -311,10 +314,10 @@ defmodule Tackle.Config do
   end
 
   # `new/1`, except that the system prompt stays `nil` unless given, since
-  # `load/1` builds its own, and that an error of an option a configuration
-  # file can set is `{:error, option, reason}`, so `load/1` can name the file.
+  # `from_sources/2` builds its own, and that an error of an option a configuration
+  # file can set is `{:error, option, reason}`, so `from_sources/2` can name the file.
   defp build(opts) do
-    with :ok <- validate_option_list(opts, @option_keys, :new),
+    with :ok <- Options.validate_list(opts, @option_keys, @new_option_errors),
          {:ok, opts} <- normalize_thinking_option(opts),
          {:ok, providers} <- fetch_providers(opts),
          {:ok, model_ref} <- tag(fetch_model_ref(opts), :model),
@@ -336,8 +339,7 @@ defmodule Tackle.Config do
          {:ok, tools} <- validate_tools(Keyword.get(opts, :tools, Tackle.Tools.default())),
          {:ok, hooks} <- validate_hooks(Keyword.get(opts, :hooks, [])),
          :ok <- validate_optional_string(:system_prompt, Keyword.get(opts, :system_prompt)),
-         :ok <- validate_map(:context, Keyword.get(opts, :context, %{})),
-         :ok <- validate_executor(Keyword.get(opts, :context, %{})),
+         :ok <- Options.validate_context(Keyword.get(opts, :context, %{})),
          :ok <- validate_iteration_limit(Keyword.get(opts, :max_iterations, :infinity)),
          :ok <- validate_keyword_option(:llm_opts, Keyword.get(opts, :llm_opts, [])),
          :ok <- validate_reserved_llm_options(Keyword.get(opts, :llm_opts, [])),
@@ -398,7 +400,7 @@ defmodule Tackle.Config do
   """
   @spec update(t(), keyword()) :: {:ok, t()} | {:error, term()}
   def update(%__MODULE__{} = config, opts) do
-    with :ok <- validate_option_list(opts, @update_option_keys, :update),
+    with :ok <- Options.validate_list(opts, @update_option_keys, @update_option_errors),
          {:ok, model_ref} <- fetch_model_ref(model: Keyword.get(opts, :model, config.model_ref)),
          {:ok, llm} <- LLM.select(config.providers, model_ref),
          {:ok, context} <- updated_context(config.context, opts),
@@ -487,36 +489,11 @@ defmodule Tackle.Config do
     end
   end
 
-  # Each entry point reports a malformed option list with its own tags.
-  @option_list_errors %{
-    load: {:invalid_loader_options, :duplicate_loader_option, :unknown_loader_options},
-    new: {:invalid_options, :duplicate_option, :unknown_options},
-    update: {:invalid_update_options, :duplicate_update_option, :unknown_update_options}
-  }
-
-  defp validate_option_list(opts, known_keys, entry_point) do
-    {invalid, duplicate, unknown} = Map.fetch!(@option_list_errors, entry_point)
-
-    cond do
-      not (is_list(opts) and Keyword.keyword?(opts)) ->
-        {:error, {invalid, opts}}
-
-      duplicate_key = duplicate(Keyword.keys(opts)) ->
-        {:error, {duplicate, duplicate_key}}
-
-      (unknown_keys = Keyword.keys(opts) -- known_keys) != [] ->
-        {:error, {unknown, Enum.uniq(unknown_keys)}}
-
-      true ->
-        :ok
-    end
-  end
-
   defp updated_context(context, opts) do
     case Keyword.fetch(opts, :context) do
       {:ok, entries} when is_map(entries) ->
         context = Map.merge(context, entries)
-        with :ok <- validate_executor(context), do: {:ok, context}
+        with :ok <- Options.validate_context(context), do: {:ok, context}
 
       {:ok, entries} ->
         {:error, {:invalid_option, :context, entries}}
@@ -595,13 +572,8 @@ defmodule Tackle.Config do
   # explicit `session_titles` entry (including `false`) in `config.json`, the
   # environment, or the overrides wins. `new/1` alone treats the option as
   # absent, so embedding hosts opt into the extra LLM call.
-  defp default_session_titles(session_opts) do
-    if Keyword.has_key?(session_opts, :session_titles) do
-      {:ok, session_opts}
-    else
-      {:ok, Keyword.put(session_opts, :session_titles, [])}
-    end
-  end
+  defp default_session_titles(session_opts),
+    do: Keyword.put_new(session_opts, :session_titles, [])
 
   # The compile gate is off by default. When the configuration turns it on, the
   # harness loader logs its decisions under the Tackle home unless a log path
@@ -616,247 +588,6 @@ defmodule Tackle.Config do
       _absent_false_or_settings ->
         session_opts
     end
-  end
-
-  defp fetch_available_adapters(opts) do
-    case {Keyword.fetch(opts, :catalog), Keyword.fetch(opts, :available_adapters)} do
-      {{:ok, %Catalog{adapters: []}}, :error} -> {:error, :no_adapters_configured}
-      {{:ok, %Catalog{} = catalog}, :error} -> {:ok, Catalog.adapter_modules(catalog)}
-      {{:ok, %Catalog{}}, {:ok, _}} -> {:error, :conflicting_adapter_sources}
-      {{:ok, value}, _} -> {:error, {:invalid_option, :catalog, value}}
-      {:error, {:ok, adapters}} when is_list(adapters) and adapters != [] -> {:ok, adapters}
-      {:error, {:ok, adapters}} -> {:error, {:invalid_option, :available_adapters, adapters}}
-      {:error, :error} -> Tackle.Plugins.available_adapters()
-    end
-  end
-
-  defp fetch_accounts(opts) do
-    case Keyword.fetch(opts, :accounts) do
-      {:ok, %{} = accounts} ->
-        {:ok, accounts}
-
-      {:ok, accounts} ->
-        {:error, {:invalid_option, :accounts, accounts}}
-
-      :error ->
-        stored_accounts()
-    end
-  end
-
-  defp stored_accounts do
-    case Tackle.Auth.accounts() do
-      {:ok, accounts} -> {:ok, accounts}
-      {:error, reason} -> {:error, {:accounts_unavailable, reason}}
-    end
-  catch
-    :exit, reason -> {:error, {:accounts_unavailable, reason}}
-  end
-
-  defp catalog_hooks(opts, overrides) do
-    case Keyword.fetch(opts, :catalog) do
-      {:ok, %Catalog{} = catalog} ->
-        if Keyword.has_key?(overrides, :hooks),
-          do: {:error, :conflicting_hook_sources},
-          else: {:ok, Keyword.put(overrides, :hooks, Catalog.hook_modules(catalog))}
-
-      {:ok, value} ->
-        {:error, {:invalid_option, :catalog, value}}
-
-      :error ->
-        {:ok, overrides}
-    end
-  end
-
-  defp fetch_overrides(opts) do
-    overrides = Keyword.get(opts, :overrides, [])
-
-    cond do
-      not Keyword.keyword?(overrides) ->
-        {:error, {:invalid_option, :overrides, overrides}}
-
-      Keyword.has_key?(overrides, :providers) ->
-        {:error, {:reserved_override, :providers}}
-
-      true ->
-        {:ok, overrides}
-    end
-  end
-
-  # The project file and instruction files are read through the context's
-  # executor, so it is validated before anything is read: a malformed one must
-  # not fall back to reading the workspace unjailed.
-  defp validate_override_context(overrides) do
-    case Keyword.fetch(overrides, :context) do
-      {:ok, context} ->
-        with :ok <- validate_map(:context, context), do: validate_executor(context)
-
-      :error ->
-        :ok
-    end
-  end
-
-  defp fetch_environment(opts) do
-    case Keyword.get_lazy(opts, :env, &System.get_env/0) do
-      %{} = env -> {:ok, env}
-      env -> {:error, {:invalid_option, :env, env}}
-    end
-  end
-
-  defp fetch_cwd(opts, context) do
-    case Keyword.fetch(opts, :cwd) do
-      {:ok, cwd} -> normalize_cwd(cwd)
-      :error -> context |> context_cwd() |> normalize_cwd()
-    end
-  end
-
-  defp context_cwd(%{cwd: cwd}), do: cwd
-  defp context_cwd(%{"cwd" => cwd}), do: cwd
-  defp context_cwd(_context), do: File.cwd()
-
-  defp normalize_cwd({:ok, cwd}), do: normalize_cwd(cwd)
-  defp normalize_cwd({:error, reason}), do: {:error, {:cwd_unavailable, reason}}
-  defp normalize_cwd(cwd) when is_binary(cwd), do: validate_cwd(Path.expand(cwd))
-  defp normalize_cwd(cwd), do: {:error, {:invalid_option, :cwd, cwd}}
-
-  defp validate_cwd(cwd) do
-    if File.dir?(cwd), do: {:ok, cwd}, else: {:error, {:invalid_option, :cwd, cwd}}
-  end
-
-  # The project file lives in the workspace, so it is read through the session
-  # executor like `AGENTS.md`. Outside any Git repository the search can reach
-  # `$TACKLE_HOME` itself, whose config.json is the user file, not a project.
-  defp read_project_config(cwd, overrides, user_path) do
-    files =
-      ProjectFiles.new(executor: overrides |> Keyword.get(:context) |> Executor.from_context())
-
-    case ProjectFiles.nearest_project_file(files, cwd, @project_config_file) do
-      nil ->
-        {:ok, nil}
-
-      path ->
-        if ProjectFiles.same_dir?(Path.dirname(path), Path.dirname(user_path)),
-          do: {:ok, nil},
-          else: read_project_file(files, path)
-    end
-  end
-
-  defp read_project_file(files, path) do
-    case ProjectFiles.read(files, path) do
-      {:ok, contents} -> {:ok, {path, contents}}
-      {:error, reason} -> {:error, {:config_file, path, {:unreadable, reason}}}
-    end
-  end
-
-  defp load_system_prompt(config, base, cwd, home, env, builtin_skills, instructions) do
-    context = Map.put(config.context, :cwd, cwd)
-    executor = Executor.from_context(context)
-
-    skills =
-      if instructions,
-        do:
-          cwd |> discover_skills(env, executor, builtin_skills) |> Skills.available(config.tools),
-        else: []
-
-    with {:ok, tools, context} <- grant_skills(config.tools, context, skills),
-         {:ok, prompt} <-
-           SystemPrompt.build(
-             base: base,
-             cwd: cwd,
-             home: home,
-             tools: tools,
-             skills: skills,
-             executor: executor,
-             instructions: instructions
-           ) do
-      {:ok, %{config | tools: tools, context: context, system_prompt: prompt}}
-    end
-  end
-
-  # Offering a skill also grants the tool that loads it, for file and built-in
-  # skills alike.
-  defp grant_skills(tools, context, skills) do
-    case Enum.reject(skills, & &1.disable_model_invocation) do
-      [] ->
-        {:ok, tools, context}
-
-      offered ->
-        with :ok <- ensure_load_skill_name_free(tools) do
-          {:ok, append_load_skill(tools), Map.put(context, :skills, offered)}
-        end
-    end
-  end
-
-  defp append_load_skill(tools) do
-    if LoadSkill in tools, do: tools, else: Enum.reverse([LoadSkill | Enum.reverse(tools)])
-  end
-
-  # The tool is granted after `validate_tools/1`, so a different tool with the
-  # same name must be reported here rather than when the session starts.
-  defp ensure_load_skill_name_free(tools) do
-    name = LoadSkill.name()
-
-    if Enum.any?(tools, &(&1 != LoadSkill and &1.name() == name)),
-      do: {:error, {:tool_name_conflict, name}},
-      else: :ok
-  end
-
-  defp fetch_instructions(opts) do
-    case Keyword.get(opts, :instructions, true) do
-      instructions when is_boolean(instructions) -> {:ok, instructions}
-      other -> {:error, {:invalid_option, :instructions, other}}
-    end
-  end
-
-  defp fetch_builtin_skills(opts) do
-    skills = Keyword.get(opts, :builtin_skills, [])
-
-    cond do
-      not is_list(skills) or not Enum.all?(skills, &valid_builtin_skill?/1) ->
-        {:error, {:invalid_option, :builtin_skills, skills}}
-
-      length(Enum.uniq_by(skills, & &1.name)) != length(skills) ->
-        {:error, {:duplicate_builtin_skills, skills |> Enum.map(& &1.name) |> duplicates()}}
-
-      true ->
-        {:ok, skills}
-    end
-  end
-
-  # Built-in skills normally come from `Tackle.Skills.builtin/2`; this guards
-  # hand-built structs that would otherwise fail later, inside the session.
-  defp valid_builtin_skill?(%Skill{
-         source: :builtin,
-         name: name,
-         description: description,
-         content: content,
-         requires_tools: requires_tools
-       }) do
-    Enum.all?([name, description, content], &(is_binary(&1) and &1 != "")) and
-      is_list(requires_tools) and Enum.all?(requires_tools, &(is_binary(&1) and &1 != ""))
-  end
-
-  defp valid_builtin_skill?(_skill), do: false
-
-  defp duplicates(names) do
-    names |> Enum.frequencies() |> Enum.filter(&(elem(&1, 1) > 1)) |> Enum.map(&elem(&1, 0))
-  end
-
-  defp discover_skills(cwd, env, executor, builtins) do
-    user_home = Map.get(env, "HOME") || Map.get(env, "USERPROFILE")
-
-    discovery =
-      Skills.discover(
-        cwd: cwd,
-        user_home: user_home,
-        executor: executor,
-        builtins: builtins
-      )
-
-    Enum.each(discovery.warnings, fn %{path: path, message: message} ->
-      Logger.warning("skipping or adjusting skill #{path}: #{message}")
-    end)
-
-    discovery.skills
   end
 
   # Only a variable whose setting no override replaces is read, so an invalid
@@ -1089,31 +820,6 @@ defmodule Tackle.Config do
   defp validate_optional_string(_name, value) when is_binary(value), do: :ok
   defp validate_optional_string(name, value), do: {:error, {:invalid_option, name, value}}
 
-  defp validate_map(_name, value) when is_map(value), do: :ok
-  defp validate_map(name, value), do: {:error, {:invalid_option, name, value}}
-
-  # Tools fall back to the local executor when `context.executor` is absent, so a
-  # malformed value must fail here rather than silently run unjailed.
-  defp validate_executor(%{executor: {module, _config}} = context) when is_atom(module) do
-    if executor_module?(module),
-      do: :ok,
-      else: {:error, {:invalid_option, :executor, context.executor}}
-  end
-
-  defp validate_executor(%{executor: executor}),
-    do: {:error, {:invalid_option, :executor, executor}}
-
-  defp validate_executor(_context), do: :ok
-
-  # Optional callbacks, such as `input/3`, are not required.
-  defp executor_module?(module) do
-    required =
-      Executor.behaviour_info(:callbacks) -- Executor.behaviour_info(:optional_callbacks)
-
-    Code.ensure_loaded?(module) and
-      Enum.all?(required, fn {name, arity} -> function_exported?(module, name, arity) end)
-  end
-
   defp validate_iteration_limit(:infinity), do: :ok
   defp validate_iteration_limit(value) when is_integer(value) and value > 0, do: :ok
   defp validate_iteration_limit(value), do: {:error, {:invalid_option, :max_iterations, value}}
@@ -1164,18 +870,4 @@ defmodule Tackle.Config do
 
   defp validate_boolean(_name, value) when is_boolean(value), do: :ok
   defp validate_boolean(name, value), do: {:error, {:invalid_option, name, value}}
-
-  defp duplicate(values) do
-    Enum.reduce_while(values, MapSet.new(), fn value, seen ->
-      if MapSet.member?(seen, value) do
-        {:halt, value}
-      else
-        {:cont, MapSet.put(seen, value)}
-      end
-    end)
-    |> case do
-      %MapSet{} -> nil
-      value -> value
-    end
-  end
 end

@@ -2,6 +2,7 @@ defmodule Tackle.ConfigTest do
   use ExUnit.Case, async: true
 
   alias Tackle.Config
+  alias Tackle.Config.Sources
   alias Tackle.Lib.LLM.Provider
   alias Tackle.Lib.LLM.Selection
   alias Tackle.Lib.Retry
@@ -184,6 +185,92 @@ defmodule Tackle.ConfigTest do
 
       assert {:error, {:duplicate_builtin_skills, ["guide"]}} =
                Config.load(Keyword.put(opts, :builtin_skills, [skill, skill]))
+    end
+  end
+
+  describe "from_sources/2" do
+    setup do
+      home = Path.join(System.tmp_dir!(), "tackle-sources-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(home) end)
+
+      opts = [
+        available_adapters: [Adapter],
+        env: %{"TACKLE_HOME" => home},
+        overrides: [model: "test/small", tools: [Tool]]
+      ]
+
+      %{opts: opts}
+    end
+
+    test "builds what load/1 builds, with more overrides", %{opts: opts} do
+      assert {:ok, sources} = Sources.read(opts)
+      assert {:ok, loaded} = Config.load(opts)
+      assert Config.from_sources(sources) == {:ok, loaded}
+
+      assert {:ok, config} =
+               Config.from_sources(sources,
+                 overrides: [model: "test/family/nested", system_prompt: "Base."]
+               )
+
+      assert config.model_ref == "test/family/nested"
+      assert config.tools == [Tool]
+      assert config.system_prompt =~ "Base."
+    end
+
+    test "rejects overrides the sources were read with", %{opts: opts} do
+      assert {:ok, sources} = Sources.read(opts)
+      context = %{executor: {Tackle.Executor.Local, nil}}
+
+      assert {:error, {:reserved_override, :context}} =
+               Config.from_sources(sources, overrides: [context: context])
+
+      assert {:error, {:reserved_override, :providers}} =
+               Config.from_sources(sources, overrides: [providers: [Adapter]])
+
+      assert {:error, {:invalid_option, :overrides, :none}} =
+               Config.from_sources(sources, overrides: :none)
+
+      assert {:error, {:unknown_options, [:cwd]}} = Config.from_sources(sources, cwd: "/")
+    end
+
+    test "instructions can be left out but not added to lean sources", %{opts: opts} do
+      skill = builtin_skill!("guide", requires_tools: ["test_tool"])
+      assert {:ok, sources} = Sources.read([builtin_skills: [skill]] ++ opts)
+
+      assert {:ok, lean} = Config.from_sources(sources, instructions: false)
+      refute Tackle.Tools.LoadSkill in lean.tools
+
+      assert {:ok, lean_sources} =
+               Sources.read([builtin_skills: [skill], instructions: false] ++ opts)
+
+      assert lean_sources.skills == []
+
+      assert {:error, {:invalid_option, :instructions, true}} =
+               Config.from_sources(lean_sources, instructions: true)
+    end
+
+    test "catalog hooks cannot be overridden" do
+      {:ok, catalog} =
+        Catalog.new(
+          adapters: [%{module: Adapter, source: :host}],
+          tools: [],
+          hooks: [%{module: CatalogHook, source: :host}]
+        )
+
+      home = Path.join(System.tmp_dir!(), "tackle-sources-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(home) end)
+
+      assert {:ok, sources} =
+               Sources.read(
+                 catalog: catalog,
+                 env: %{"TACKLE_HOME" => home},
+                 overrides: [model: "test/small"]
+               )
+
+      assert {:ok, %{hooks: [CatalogHook]}} = Config.from_sources(sources)
+
+      assert {:error, :conflicting_hook_sources} =
+               Config.from_sources(sources, overrides: [hooks: [EarlierHook]])
     end
   end
 

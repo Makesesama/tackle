@@ -212,6 +212,28 @@ defmodule Tackle.CodingTest do
     end
   end
 
+  test "the root and every profile are built from sources read once", %{opts: opts, cwd: cwd} do
+    File.mkdir_p!(Path.join(cwd, ".git"))
+    File.mkdir_p!(Path.join(cwd, ".tackle"))
+    File.write!(Path.join(cwd, ".tackle/config.json"), ~s({"thinking": "low"}))
+    executor = FakeJail.new(cwd, self())
+    opts = Keyword.update!(opts, :overrides, &Keyword.put(&1, :context, %{executor: executor}))
+    watched = [Path.join(cwd, "AGENTS.md"), Path.join(cwd, ".tackle/config.json")]
+
+    assert {:ok, _config} = Tackle.Config.load(opts)
+    one_load = drain_reads(watched)
+    assert one_load > 0
+
+    assert {:ok, spec} = Coding.scope_spec(opts)
+    assert map_size(spec.profiles) > 1
+    assert drain_reads(watched) == one_load
+
+    for name <- Map.keys(spec.profiles) do
+      assert {:ok, profile} = ScopeSpec.resolve_profile(spec, name)
+      assert profile.config.context.executor == executor
+    end
+  end
+
   test "composes a default scout without changing generic defaults", %{opts: opts, cwd: cwd} do
     assert {:ok, spec} = Coding.scope_spec(opts)
     assert spec.root_spec.allow_delegation
@@ -668,5 +690,14 @@ defmodule Tackle.CodingTest do
     {:ok, scope} = Tackle.start_scope(spec)
     on_exit(fn -> Tackle.Test.Runtime.stop_scope(scope.scope_ref) end)
     scope
+  end
+
+  defp drain_reads(paths, count \\ 0) do
+    receive do
+      {:fake_jail, op, path} when op in [:read, :stat] ->
+        drain_reads(paths, if(path in paths, do: count + 1, else: count))
+    after
+      0 -> count
+    end
   end
 end

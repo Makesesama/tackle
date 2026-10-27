@@ -18,6 +18,7 @@ defmodule Tackle.Coding do
   alias Tackle.Agents.Default
   alias Tackle.Agents.Definition
   alias Tackle.Config
+  alias Tackle.Config.Sources
   alias Tackle.Executor
   alias Tackle.Lib.Tool
   alias Tackle.Plugins.Catalog
@@ -74,11 +75,12 @@ defmodule Tackle.Coding do
   @spec scope_spec(keyword(), SessionSpec.t() | nil) :: {:ok, ScopeSpec.t()} | {:error, term()}
   def scope_spec(loader_opts \\ [], session \\ nil) do
     with {:ok, catalog_tools} <- catalog_root_tools(loader_opts),
-         {:ok, config} <-
-           Config.load(Keyword.drop(loader_opts, [:root_tools, :catalog_root_tools])),
+         {:ok, sources} <-
+           Sources.read(Keyword.drop(loader_opts, [:root_tools, :catalog_root_tools])),
+         {:ok, config} <- Config.from_sources(sources),
          :ok <- validate_root_tools(Keyword.get(loader_opts, :root_tools, [])),
          :ok <- validate_catalog_tool_conflicts(loader_opts, config),
-         discovery <- discover(config, loader_opts),
+         discovery <- discover(config, sources),
          :ok <- validate_discovery(discovery),
          root_tools =
            Enum.uniq(
@@ -89,8 +91,8 @@ defmodule Tackle.Coding do
          {:ok, profiles} <-
            discovery.definitions
            |> Enum.map(&apply_agent_settings(&1, config.agents))
-           |> build_profiles(config.tools, root_tools, loader_opts),
-         {:ok, root_config} <- root_config(discovery.definitions, root_tools, loader_opts),
+           |> build_profiles(config.tools, root_tools, sources),
+         {:ok, root_config} <- root_config(discovery.definitions, root_tools, sources),
          {:ok, root_spec} <-
            AgentSpec.new(
              name: "root",
@@ -163,11 +165,11 @@ defmodule Tackle.Coding do
 
   defp validate_root_tools(_), do: {:error, :invalid_root_tools}
 
-  defp discover(config, loader_opts) do
+  defp discover(config, sources) do
     Agents.discover(
-      cwd: config.context.cwd,
+      cwd: sources.cwd,
       executor: Executor.from_context(config.context),
-      env: Keyword.get_lazy(loader_opts, :env, &System.get_env/0),
+      env: sources.env,
       builtins: Default.definitions()
     )
   end
@@ -190,18 +192,18 @@ defmodule Tackle.Coding do
     }
   end
 
-  defp build_profiles(definitions, default_tools, trusted_tools, loader_opts) do
+  defp build_profiles(definitions, default_tools, trusted_tools, sources) do
     Enum.reduce_while(definitions, {:ok, %{}}, fn definition, {:ok, profiles} ->
-      case build_profile(definition, default_tools, trusted_tools, loader_opts) do
+      case build_profile(definition, default_tools, trusted_tools, sources) do
         {:ok, spec} -> {:cont, {:ok, Map.put(profiles, definition.name, spec)}}
         {:error, reason} -> {:halt, {:error, {:invalid_agent_profile, definition.path, reason}}}
       end
     end)
   end
 
-  defp build_profile(definition, default_tools, trusted_tools, loader_opts) do
+  defp build_profile(definition, default_tools, trusted_tools, sources) do
     with {:ok, tools} <- profile_tools(definition, default_tools, trusted_tools),
-         {:ok, config} <- load_profile_config(definition, tools, loader_opts) do
+         {:ok, config} <- profile_config(definition, tools, sources) do
       config = %{
         config
         | max_iterations: min_iterations(config.max_iterations, definition.max_iterations),
@@ -245,9 +247,11 @@ defmodule Tackle.Coding do
     Enum.reverse([tool | Enum.reverse(tools)])
   end
 
-  defp load_profile_config(definition, tools, loader_opts) do
+  # A profile without instructions gets none; one with instructions gets them
+  # unless the whole scope was loaded without.
+  defp profile_config(definition, tools, sources) do
     prompt =
-      [definition.prompt, parent_system_prompt(definition, loader_opts)]
+      [definition.prompt, parent_system_prompt(definition, sources)]
       |> Enum.reject(&(&1 in [nil, ""]))
       |> Enum.join("\n\n")
 
@@ -256,19 +260,21 @@ defmodule Tackle.Coding do
       |> maybe_put(:model, definition.model)
       |> maybe_put(:thinking, definition.thinking)
 
-    load_with_overrides(loader_opts, profile_overrides, instructions: definition.instructions)
+    Config.from_sources(sources,
+      overrides: profile_overrides,
+      instructions: definition.instructions and sources.instructions
+    )
   end
 
   # A built-in profile also gets a host's explicit system prompt, unless it
   # opted out of instructions.
-  defp parent_system_prompt(%Definition{source: :builtin, instructions: true}, loader_opts) do
-    loader_opts |> Keyword.get(:overrides, []) |> Keyword.get(:system_prompt)
-  end
+  defp parent_system_prompt(%Definition{source: :builtin, instructions: true}, sources),
+    do: Keyword.get(sources.overrides, :system_prompt)
 
-  defp parent_system_prompt(_definition, _loader_opts), do: nil
+  defp parent_system_prompt(_definition, _sources), do: nil
 
-  defp root_config(definitions, root_tools, loader_opts) do
-    with {:ok, root_config} <- load_with_overrides(loader_opts, tools: root_tools) do
+  defp root_config(definitions, root_tools, sources) do
+    with {:ok, root_config} <- Config.from_sources(sources, overrides: [tools: root_tools]) do
       prompt =
         [root_config.system_prompt, @delegation, Agents.format_for_prompt(definitions)]
         |> Enum.reject(&(&1 in [nil, ""]))
@@ -276,15 +282,6 @@ defmodule Tackle.Coding do
 
       {:ok, %{root_config | system_prompt: prompt}}
     end
-  end
-
-  defp load_with_overrides(opts, overrides, loader_opts \\ []) do
-    merged = opts |> Keyword.get(:overrides, []) |> Keyword.merge(overrides)
-
-    opts =
-      Keyword.take(opts, [:accounts, :available_adapters, :builtin_skills, :catalog, :cwd, :env])
-
-    Config.load(opts |> Keyword.merge(loader_opts) |> Keyword.put(:overrides, merged))
   end
 
   defp maybe_put(opts, _key, nil), do: opts
