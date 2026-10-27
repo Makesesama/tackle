@@ -63,7 +63,6 @@ defmodule Tackle.Config.File do
       else: Map.delete(merged, "compile_gate")
   end
 
-  defp compile_gate_on?(true), do: true
   defp compile_gate_on?(%{"enabled" => false}), do: false
   defp compile_gate_on?(%{}), do: true
   defp compile_gate_on?(_off), do: false
@@ -78,7 +77,7 @@ defmodule Tackle.Config.File do
 
   defp decode(path, contents, known_fields) do
     case JSON.decode(contents) do
-      {:ok, %{} = config} -> validate_fields(path, config, known_fields)
+      {:ok, %{} = config} -> validate_fields(path, normalize_switches(config), known_fields)
       {:ok, _other} -> {:error, {:invalid_config_file, path, :expected_object}}
       {:error, _reason} -> {:error, {:malformed_config_file, path}}
     end
@@ -100,64 +99,97 @@ defmodule Tackle.Config.File do
     with {:ok, model_opts} <- model_options(path, config),
          {:ok, thinking_opts} <- thinking_options(path, config),
          {:ok, provider_opts} <- providers_options(path, config),
-         {:ok, title_opts} <- session_titles_options(path, config),
-         {:ok, watchdog_opts} <- watchdog_options(path, config),
-         {:ok, narration_opts} <- narration_options(path, config),
+         {:ok, switch_opts} <- switch_options(path, config),
          {:ok, decision_opts} <- decision_model_options(path, config),
          {:ok, review_opts} <- review_options(path, config),
          {:ok, agent_opts} <- agents_options(path, config),
-         {:ok, compile_gate_opts} <- compile_gate_options(path, config),
          :ok <- sidebar_option(path, config),
          :ok <- jail_option(path, config) do
       {:ok,
        model_opts ++
          thinking_opts ++
-         provider_opts ++
-         title_opts ++
-         watchdog_opts ++
-         narration_opts ++ decision_opts ++ review_opts ++ agent_opts ++ compile_gate_opts}
+         provider_opts ++ switch_opts ++ decision_opts ++ review_opts ++ agent_opts}
     end
   end
 
-  # The Elixir compile gate is off by default: `true` turns it on with the
-  # defaults, `false`, `null`, or a missing field leave it off, and an object
-  # turns it on and sets `enabled`, `max_rounds`, `timeout_seconds`, and
-  # `warnings`. The log path is not a file setting; `Tackle.Config.load/1` puts
-  # the log under the Tackle home. Values are validated by
-  # `Tackle.Elixir.CompileGate.Settings`.
-  @compile_gate_fields %{
-    "enabled" => :enabled,
-    "max_rounds" => :max_rounds,
-    "timeout_seconds" => :timeout_seconds,
-    "warnings" => :warnings
+  # The features a file switches on and off. Each field takes an object of
+  # the listed members, `true` (the same as `{"enabled": true}`), or `false`
+  # (`{"enabled": false}`), and becomes a keyword list under the named option;
+  # the values are validated by the option's module:
+  #
+  #   * `compile_gate` - `Tackle.Elixir.CompileGate.Settings`, off by default.
+  #     The log path is not a file setting; `Tackle.Config.load/1` puts the
+  #     log under the Tackle home.
+  #   * `session_titles` - `Tackle.Config.SessionTitles`, on by default in
+  #     `Tackle.Config.load/1`.
+  #   * `watchdog` - `Tackle.Config.Watchdog`, off by default.
+  #   * `narration` - `Tackle.Config.Narration`, off by default.
+  @switches %{
+    "compile_gate" =>
+      {:compile_gate,
+       %{
+         "enabled" => :enabled,
+         "max_rounds" => :max_rounds,
+         "timeout_seconds" => :timeout_seconds,
+         "warnings" => :warnings
+       }},
+    "session_titles" => {:session_titles, %{"enabled" => :enabled, "model" => :model}},
+    "watchdog" =>
+      {:watchdog,
+       %{
+         "enabled" => :enabled,
+         "model" => :model,
+         "after_seconds" => :after_seconds,
+         "threshold" => :threshold
+       }},
+    "narration" =>
+      {:narration,
+       %{
+         "enabled" => :enabled,
+         "model" => :model,
+         "interval_seconds" => :interval_seconds,
+         "first_after_seconds" => :first_after_seconds
+       }}
   }
 
-  defp compile_gate_options(path, config) do
-    case Map.fetch(config, "compile_gate") do
-      {:ok, true} -> {:ok, [compile_gate: []]}
-      {:ok, false} -> {:ok, [compile_gate: false]}
-      {:ok, nil} -> {:ok, []}
-      {:ok, %{} = gate} -> compile_gate_fields(path, gate)
-      {:ok, _other} -> {:error, {:invalid_config_field, path, "compile_gate"}}
-      :error -> {:ok, []}
-    end
+  defp normalize_switches(config) do
+    Enum.reduce(Map.keys(@switches), config, fn field, config ->
+      case Map.fetch(config, field) do
+        {:ok, enabled} when is_boolean(enabled) ->
+          Map.put(config, field, %{"enabled" => enabled})
+
+        _object_or_absent ->
+          config
+      end
+    end)
   end
 
-  defp compile_gate_fields(path, gate) do
-    case Map.keys(gate) -- Map.keys(@compile_gate_fields) do
-      [] ->
-        {:ok,
-         [compile_gate: Enum.map(gate, fn {key, value} -> {@compile_gate_fields[key], value} end)]}
-
-      _unknown_fields ->
-        {:error, {:invalid_config_field, path, "compile_gate"}}
-    end
+  defp switch_options(path, config) do
+    Enum.reduce_while(@switches, {:ok, []}, fn {field, {option, members}}, {:ok, acc} ->
+      case object_options(Map.get(config, field), members) do
+        {:ok, nil} -> {:cont, {:ok, acc}}
+        {:ok, opts} -> {:cont, {:ok, [{option, opts} | acc]}}
+        :error -> {:halt, {:error, {:invalid_config_field, path, field}}}
+      end
+    end)
   end
+
+  # An object whose members are all listed becomes a keyword list of their
+  # option names; `null` and a missing field are `nil`.
+  defp object_options(nil, _members), do: {:ok, nil}
+
+  defp object_options(%{} = object, members) do
+    if Map.keys(object) -- Map.keys(members) == [],
+      do: {:ok, Enum.map(object, fn {key, value} -> {Map.fetch!(members, key), value} end)},
+      else: :error
+  end
+
+  defp object_options(_other, _members), do: :error
 
   # Per-profile subagent settings keyed by profile name: each entry may set
   # `model` (canonical model reference) and `thinking`. Names are kept as
   # strings; values are validated by `Tackle.Config`.
-  @agent_fields %{"model" => :model, "thinking" => :thinking}
+  @agent_members %{"model" => :model, "thinking" => :thinking}
 
   defp agents_options(path, config) do
     case Map.fetch(config, "agents") do
@@ -181,79 +213,13 @@ defmodule Tackle.Config.File do
     end
   end
 
-  defp agent_settings(%{} = entry) do
-    if Map.keys(entry) -- Map.keys(@agent_fields) == [] do
-      {:ok, for({key, value} <- entry, value != nil, into: %{}, do: {@agent_fields[key], value})}
-    else
-      :error
-    end
-  end
+  defp agent_settings(entry) do
+    case object_options(entry, @agent_members) do
+      {:ok, settings} when is_list(settings) ->
+        {:ok, for({key, value} <- settings, value != nil, into: %{}, do: {key, value})}
 
-  defp agent_settings(_entry), do: :error
-
-  # The command watchdog is opt-in because it needs a decision model: `false`
-  # and `null` leave it off; an object sets `model` (required canonical decision
-  # model reference) and optionally `enabled`, `after_seconds`, and `threshold`.
-  # Values are validated by `Tackle.Config.Watchdog`.
-  @watchdog_fields %{
-    "enabled" => :enabled,
-    "model" => :model,
-    "after_seconds" => :after_seconds,
-    "threshold" => :threshold
-  }
-
-  defp watchdog_options(path, config) do
-    case Map.fetch(config, "watchdog") do
-      {:ok, false} -> {:ok, [watchdog: false]}
-      {:ok, nil} -> {:ok, []}
-      {:ok, %{} = watchdog} -> watchdog_fields(path, watchdog)
-      {:ok, _other} -> {:error, {:invalid_config_field, path, "watchdog"}}
-      :error -> {:ok, []}
-    end
-  end
-
-  defp watchdog_fields(path, watchdog) do
-    case Map.keys(watchdog) -- Map.keys(@watchdog_fields) do
-      [] ->
-        {:ok,
-         [watchdog: Enum.map(watchdog, fn {key, value} -> {@watchdog_fields[key], value} end)]}
-
-      _unknown_fields ->
-        {:error, {:invalid_config_field, path, "watchdog"}}
-    end
-  end
-
-  # The narrator is opt-in because it needs a chat model of its own: `false`
-  # and `null` leave it off; an object sets `model` (required canonical chat
-  # model reference) and optionally `enabled`, `interval_seconds`, and
-  # `first_after_seconds`. Values are validated by `Tackle.Config.Narration`.
-  @narration_fields %{
-    "enabled" => :enabled,
-    "model" => :model,
-    "interval_seconds" => :interval_seconds,
-    "first_after_seconds" => :first_after_seconds
-  }
-
-  defp narration_options(path, config) do
-    case Map.fetch(config, "narration") do
-      {:ok, false} -> {:ok, [narration: false]}
-      {:ok, nil} -> {:ok, []}
-      {:ok, %{} = narration} -> narration_fields(path, narration)
-      {:ok, _other} -> {:error, {:invalid_config_field, path, "narration"}}
-      :error -> {:ok, []}
-    end
-  end
-
-  defp narration_fields(path, narration) do
-    case Map.keys(narration) -- Map.keys(@narration_fields) do
-      [] ->
-        {:ok,
-         [
-           narration: Enum.map(narration, fn {key, value} -> {@narration_fields[key], value} end)
-         ]}
-
-      _unknown_fields ->
-        {:error, {:invalid_config_field, path, "narration"}}
+      _null_or_invalid ->
+        :error
     end
   end
 
@@ -273,42 +239,6 @@ defmodule Tackle.Config.File do
       :error ->
         {:ok, []}
     end
-  end
-
-  # LLM-generated session titles: `false` disables them; `true` and `null` mean
-  # the default enabled configuration; an object may set `enabled` (boolean,
-  # default true) and `model` (canonical model reference for the title call,
-  # defaulting to the session model).
-  defp session_titles_options(path, config) do
-    case Map.fetch(config, "session_titles") do
-      {:ok, false} -> {:ok, [session_titles: false]}
-      {:ok, true} -> {:ok, [session_titles: []]}
-      {:ok, nil} -> {:ok, []}
-      {:ok, %{} = titles} -> session_titles_fields(path, titles)
-      {:ok, _other} -> {:error, {:invalid_config_field, path, "session_titles"}}
-      :error -> {:ok, []}
-    end
-  end
-
-  defp session_titles_fields(path, titles) do
-    case Map.keys(titles) -- ["enabled", "model"] do
-      [] ->
-        enabled = Map.get(titles, "enabled", true)
-        model = Map.get(titles, "model")
-
-        if valid_titles_shape?(enabled, model) do
-          {:ok, [session_titles: [enabled: enabled, model: model]]}
-        else
-          {:error, {:invalid_config_field, path, "session_titles"}}
-        end
-
-      _unknown_fields ->
-        {:error, {:invalid_config_field, path, "session_titles"}}
-    end
-  end
-
-  defp valid_titles_shape?(enabled, model) do
-    is_boolean(enabled) and (is_nil(model) or (is_binary(model) and model != ""))
   end
 
   # Configured provider instances, keyed by provider id. Each entry names an

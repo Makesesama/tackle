@@ -498,6 +498,11 @@ defmodule Tackle.Config.FileTest do
     assert {:error, {:invalid_config_field, ^path, "session_titles"}} =
              Config.load(available_adapters: [Adapter], env: env)
 
+    write_config(home, JSON.encode!(%{"session_titles" => %{"enabled" => "yes"}}))
+
+    assert {:error, {:invalid_option, :session_titles, enabled: "yes"}} =
+             Config.load(available_adapters: [Adapter], env: env)
+
     write_config(home, JSON.encode!(%{"session_titles" => %{"model" => "test/missing"}}))
 
     assert {:error, {:unknown_model, "test/missing"}} =
@@ -656,8 +661,12 @@ defmodule Tackle.Config.FileTest do
       Config.load(available_adapters: adapters, env: env, overrides: [model: "test/default"])
     end
 
-    path = write_config(home, ~s({"watchdog": true}))
+    path = write_config(home, ~s({"watchdog": "on"}))
     assert {:error, {:invalid_config_field, ^path, "watchdog"}} = load.()
+
+    # `true` is `{"enabled": true}`, which needs a model.
+    write_config(home, ~s({"watchdog": true}))
+    assert {:error, {:invalid_option, :watchdog, model: nil}} = load.()
 
     write_config(home, JSON.encode!(%{"watchdog" => %{"model" => "judge/small", "unknown" => 1}}))
     assert {:error, {:invalid_config_field, ^path, "watchdog"}} = load.()
@@ -952,8 +961,12 @@ defmodule Tackle.Config.FileTest do
       Config.load(available_adapters: [Adapter], env: env, overrides: [model: "test/default"])
     end
 
-    path = write_config(home, ~s({"narration": true}))
+    path = write_config(home, ~s({"narration": 1}))
     assert {:error, {:invalid_config_field, ^path, "narration"}} = load.()
+
+    # `true` is `{"enabled": true}`, which needs a model.
+    write_config(home, ~s({"narration": true}))
+    assert {:error, {:invalid_option, :narration, model: nil}} = load.()
 
     write_config(home, JSON.encode!(%{"narration" => %{"model" => "test/file", "unknown" => 1}}))
     assert {:error, {:invalid_config_field, ^path, "narration"}} = load.()

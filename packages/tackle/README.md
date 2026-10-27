@@ -732,6 +732,13 @@ title call, defaulting to the session's configured model:
 `Tackle.Config.new/1` treats an absent `session_titles` option as disabled, so
 embedding hosts opt into the extra LLM call explicitly.
 
+The switchable features `session_titles`, `watchdog`, `narration`, and
+`compile_gate` each take an object, `true`, or `false`, in either file. `true`
+is the same as `{"enabled": true}` and `false` as `{"enabled": false}`, so a
+project file's `true` turns on a feature with the user's settings for it, and
+`"watchdog": true` without a `model` in either file fails like
+`{"enabled": true}` does.
+
 An optional `watchdog` object enables the command watchdog (`Tackle.Watchdog`),
 which is off by default because it needs a local decision model. Every session
 (root, subagent, and workflow child) then runs one beside it as a runtime

@@ -25,13 +25,12 @@ defmodule Tackle.Config.Narration do
                     "first_after_seconds": 5}
   """
 
+  alias Tackle.Config.Options
   alias Tackle.Lib.LLM
   alias Tackle.Lib.LLM.Selection
 
   @default_interval_seconds 5
   @default_first_after_seconds 5
-  # The longest Erlang timer, `2^32 - 1` milliseconds, in seconds.
-  @max_seconds 4_294_967_295 / 1_000
 
   @enforce_keys [:model_ref, :selection]
   defstruct [
@@ -48,7 +47,7 @@ defmodule Tackle.Config.Narration do
           first_after_seconds: number()
         }
 
-  @option_keys [:enabled, :model, :interval_seconds, :first_after_seconds]
+  @option_keys [:model, :interval_seconds, :first_after_seconds]
 
   @doc """
   Builds and validates a narration config from options.
@@ -57,46 +56,35 @@ defmodule Tackle.Config.Narration do
   adapter modules standing for their default providers); the chat model is
   resolved against them.
   """
-  @spec new(keyword() | t() | false | nil, [Tackle.Lib.LLM.Provider.source()]) ::
+  @spec new(keyword() | false | nil, [Tackle.Lib.LLM.Provider.source()]) ::
           {:ok, t() | nil} | {:error, term()}
-  def new(nil, _providers), do: {:ok, nil}
-  def new(false, _providers), do: {:ok, nil}
-
-  def new(%__MODULE__{} = config, providers) do
-    new(
-      [
-        model: config.model_ref,
-        interval_seconds: config.interval_seconds,
-        first_after_seconds: config.first_after_seconds
-      ],
-      providers
-    )
-  end
-
-  def new(opts, providers) when is_list(opts) do
-    with :ok <- validate_keys(opts),
-         {:ok, enabled} <- fetch_enabled(opts) do
-      if enabled, do: build(opts, providers), else: {:ok, nil}
-    end
-  end
-
-  def new(other, _providers), do: invalid(other)
+  def new(value, providers),
+    do: Options.new(value, :narration, @option_keys, &build(&1, providers))
 
   @doc "Minimum time between two narrations of one run, in milliseconds."
   @spec interval_ms(t()) :: pos_integer()
-  def interval_ms(%__MODULE__{interval_seconds: seconds}), do: to_ms(seconds)
+  def interval_ms(%__MODULE__{interval_seconds: seconds}), do: Options.to_ms(seconds)
 
   @doc "How long a run works before its first narration, in milliseconds."
   @spec first_after_ms(t()) :: pos_integer()
-  def first_after_ms(%__MODULE__{first_after_seconds: seconds}), do: to_ms(seconds)
-
-  defp to_ms(seconds), do: max(round(seconds * 1_000), 1)
+  def first_after_ms(%__MODULE__{first_after_seconds: seconds}), do: Options.to_ms(seconds)
 
   defp build(opts, providers) do
-    with {:ok, model_ref} <- fetch_model(opts),
-         {:ok, interval} <- fetch_seconds(opts, :interval_seconds, @default_interval_seconds),
+    with {:ok, model_ref} <- Options.fetch_model(opts, :narration),
+         {:ok, interval} <-
+           Options.fetch_seconds(
+             opts,
+             :narration,
+             :interval_seconds,
+             @default_interval_seconds
+           ),
          {:ok, first_after} <-
-           fetch_seconds(opts, :first_after_seconds, @default_first_after_seconds),
+           Options.fetch_seconds(
+             opts,
+             :narration,
+             :first_after_seconds,
+             @default_first_after_seconds
+           ),
          {:ok, selection} <- LLM.select(providers, model_ref) do
       {:ok,
        %__MODULE__{
@@ -107,41 +95,4 @@ defmodule Tackle.Config.Narration do
        }}
     end
   end
-
-  defp validate_keys(opts) do
-    if Keyword.keyword?(opts) do
-      case Keyword.keys(opts) -- @option_keys do
-        [] -> :ok
-        unknown -> invalid(Enum.uniq(unknown))
-      end
-    else
-      invalid(opts)
-    end
-  end
-
-  defp fetch_enabled(opts) do
-    case Keyword.get(opts, :enabled, true) do
-      enabled when is_boolean(enabled) -> {:ok, enabled}
-      enabled -> invalid(enabled: enabled)
-    end
-  end
-
-  defp fetch_model(opts) do
-    case Keyword.get(opts, :model) do
-      model when is_binary(model) and model != "" -> {:ok, model}
-      model -> invalid(model: model)
-    end
-  end
-
-  defp fetch_seconds(opts, key, default) do
-    case Keyword.get(opts, key, default) do
-      seconds when is_number(seconds) and seconds > 0 and seconds <= @max_seconds ->
-        {:ok, seconds}
-
-      seconds ->
-        invalid([{key, seconds}])
-    end
-  end
-
-  defp invalid(detail), do: {:error, {:invalid_option, :narration, detail}}
 end

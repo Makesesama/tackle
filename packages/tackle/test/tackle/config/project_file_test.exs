@@ -145,6 +145,35 @@ defmodule Tackle.Config.ProjectFileTest do
     assert config.compile_gate == nil
   end
 
+  test "true and false switch a feature like enabled true and false, keeping its settings",
+       ctx do
+    write(ctx.home, ~s({
+      "narration": {"model": "test/user", "interval_seconds": 3, "enabled": false},
+      "session_titles": {"model": "test/user"},
+      "compile_gate": {"max_rounds": 1}
+    }))
+
+    write(project(ctx.repo), ~s({"narration": true, "session_titles": false}))
+    assert {:ok, config} = load(ctx)
+    assert %{model_ref: "test/user", interval_seconds: 3} = config.narration
+    assert config.session_titles == nil
+    assert config.compile_gate.max_rounds == 1
+
+    write(project(ctx.repo), ~s({"narration": false, "compile_gate": false}))
+    assert {:ok, config} = load(ctx)
+    assert config.narration == nil
+    assert config.compile_gate == nil
+
+    # Only the user turns the compile gate on, also with `true`.
+    write(ctx.home, ~s({"compile_gate": {"enabled": false, "max_rounds": 1}}))
+    write(project(ctx.repo), ~s({"compile_gate": true}))
+    assert {:ok, %{compile_gate: nil}} = load(ctx)
+
+    write(ctx.home, ~s({"compile_gate": true}))
+    write(project(ctx.repo), ~s({"compile_gate": {"max_rounds": 0}}))
+    assert {:ok, %{compile_gate: %{max_rounds: 0}}} = load(ctx)
+  end
+
   test "project and user files are validated and reported separately", ctx do
     path = write(project(ctx.repo), ~s({"model": ""}))
     assert {:error, {:invalid_config_field, ^path, "model"}} = load(ctx)

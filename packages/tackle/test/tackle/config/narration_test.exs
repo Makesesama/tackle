@@ -28,9 +28,6 @@ defmodule Tackle.Config.NarrationTest do
     assert config.selection.adapter == Adapter
     assert config.interval_seconds == 5
     assert config.first_after_seconds == 5
-
-    # A validated config round-trips, for example through Config.new/1.
-    assert {:ok, ^config} = Narration.new(config, [Adapter])
   end
 
   test "rejects unknown options and invalid shapes" do

@@ -21,13 +21,12 @@ defmodule Tackle.Config.Watchdog do
       "watchdog": {"model": "ollama/tev1:4b", "after_seconds": 60, "threshold": 0.85}
   """
 
+  alias Tackle.Config.Options
   alias Tackle.Lib.Decision
   alias Tackle.Lib.Decision.Selection
 
   @default_after_seconds 60
   @default_threshold 0.85
-  # The longest Erlang timer, `2^32 - 1` milliseconds, in seconds.
-  @max_after_seconds 4_294_967_295 / 1_000
 
   @enforce_keys [:model_ref, :selection]
   defstruct [
@@ -44,7 +43,7 @@ defmodule Tackle.Config.Watchdog do
           threshold: number()
         }
 
-  @option_keys [:enabled, :model, :after_seconds, :threshold]
+  @option_keys [:model, :after_seconds, :threshold]
 
   @doc """
   Builds and validates a watchdog config from options.
@@ -53,34 +52,19 @@ defmodule Tackle.Config.Watchdog do
   adapter modules standing for their default providers); the decision model
   is resolved against them.
   """
-  @spec new(keyword() | t() | false | nil, [Tackle.Lib.LLM.Provider.source()]) ::
+  @spec new(keyword() | false | nil, [Tackle.Lib.LLM.Provider.source()]) ::
           {:ok, t() | nil} | {:error, term()}
-  def new(nil, _providers), do: {:ok, nil}
-  def new(false, _providers), do: {:ok, nil}
-
-  def new(%__MODULE__{} = config, providers) do
-    new(
-      [model: config.model_ref, after_seconds: config.after_seconds, threshold: config.threshold],
-      providers
-    )
-  end
-
-  def new(opts, providers) when is_list(opts) do
-    with :ok <- validate_keys(opts),
-         {:ok, enabled} <- fetch_enabled(opts) do
-      if enabled, do: build(opts, providers), else: {:ok, nil}
-    end
-  end
-
-  def new(other, _providers), do: invalid(other)
+  def new(value, providers),
+    do: Options.new(value, :watchdog, @option_keys, &build(&1, providers))
 
   @doc "Returns the delay before a command's first check, in milliseconds."
   @spec after_ms(t()) :: pos_integer()
-  def after_ms(%__MODULE__{after_seconds: seconds}), do: max(round(seconds * 1_000), 1)
+  def after_ms(%__MODULE__{after_seconds: seconds}), do: Options.to_ms(seconds)
 
   defp build(opts, providers) do
-    with {:ok, model_ref} <- fetch_model(opts),
-         {:ok, after_seconds} <- fetch_after_seconds(opts),
+    with {:ok, model_ref} <- Options.fetch_model(opts, :watchdog),
+         {:ok, after_seconds} <-
+           Options.fetch_seconds(opts, :watchdog, :after_seconds, @default_after_seconds),
          {:ok, threshold} <- fetch_threshold(opts),
          {:ok, selection} <- Decision.select(providers, model_ref) do
       {:ok,
@@ -93,47 +77,10 @@ defmodule Tackle.Config.Watchdog do
     end
   end
 
-  defp validate_keys(opts) do
-    if Keyword.keyword?(opts) do
-      case Keyword.keys(opts) -- @option_keys do
-        [] -> :ok
-        unknown -> invalid(Enum.uniq(unknown))
-      end
-    else
-      invalid(opts)
-    end
-  end
-
-  defp fetch_enabled(opts) do
-    case Keyword.get(opts, :enabled, true) do
-      enabled when is_boolean(enabled) -> {:ok, enabled}
-      enabled -> invalid(enabled: enabled)
-    end
-  end
-
-  defp fetch_model(opts) do
-    case Keyword.get(opts, :model) do
-      model when is_binary(model) and model != "" -> {:ok, model}
-      model -> invalid(model: model)
-    end
-  end
-
-  defp fetch_after_seconds(opts) do
-    case Keyword.get(opts, :after_seconds, @default_after_seconds) do
-      seconds when is_number(seconds) and seconds > 0 and seconds <= @max_after_seconds ->
-        {:ok, seconds}
-
-      seconds ->
-        invalid(after_seconds: seconds)
-    end
-  end
-
   defp fetch_threshold(opts) do
     case Keyword.get(opts, :threshold, @default_threshold) do
       threshold when is_number(threshold) and threshold > 0 and threshold <= 1 -> {:ok, threshold}
-      threshold -> invalid(threshold: threshold)
+      threshold -> Options.invalid(:watchdog, threshold: threshold)
     end
   end
-
-  defp invalid(detail), do: {:error, {:invalid_option, :watchdog, detail}}
 end

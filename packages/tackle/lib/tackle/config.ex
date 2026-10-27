@@ -291,7 +291,7 @@ defmodule Tackle.Config do
          {:ok, model_ref} <- fetch_model_ref(opts),
          {:ok, llm} <- LLM.select(providers, model_ref),
          {:ok, session_titles} <-
-           resolve_session_titles(Keyword.get(opts, :session_titles), providers),
+           SessionTitles.new(Keyword.get(opts, :session_titles), providers),
          {:ok, watchdog} <- Watchdog.new(Keyword.get(opts, :watchdog), providers),
          {:ok, narration} <- Narration.new(Keyword.get(opts, :narration), providers),
          {:ok, decision_model} <-
@@ -929,18 +929,6 @@ defmodule Tackle.Config do
   defp resolve_compaction(false), do: {:ok, nil}
   defp resolve_compaction(opts) when is_list(opts), do: CompactionConfig.new(opts)
   defp resolve_compaction(other), do: {:error, {:invalid_option, :compaction, other}}
-
-  defp resolve_session_titles(nil, _providers), do: {:ok, nil}
-  defp resolve_session_titles(false, _providers), do: {:ok, nil}
-
-  defp resolve_session_titles(%SessionTitles{} = config, providers),
-    do: SessionTitles.new(config, providers)
-
-  defp resolve_session_titles(opts, providers) when is_list(opts),
-    do: SessionTitles.new(opts, providers)
-
-  defp resolve_session_titles(other, _providers),
-    do: {:error, {:invalid_option, :session_titles, other}}
 
   defp resolve_decision_model(nil, _providers), do: {:ok, nil}
 
