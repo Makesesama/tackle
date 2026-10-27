@@ -333,6 +333,11 @@ defmodule Tackle.Runtime do
   the agent spec, bounded by the scope's `run_timeout`. Explicit `await/2`
   timeouts still bound the caller's total wait.
 
+  `:event_callback` receives the child's events as the request observes them
+  through the backend's `:subscribe`: a two-argument callback gets the run's
+  `RunRef` and the event, a one-argument callback the event alone. It runs in
+  the request helper, so it should return quickly.
+
   A trusted spec with `model_source: :parent` copies only the requesting agent's
   model reference and thinking level at request time, resolving against the
   child's configured adapters before admission. Resolution runs outside the

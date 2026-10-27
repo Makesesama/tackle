@@ -10,6 +10,10 @@ defmodule Tackle.Runtime.AgentContext do
   `service_task_supervisor` names the `Task.Supervisor` of the agent's
   `Tackle.Runtime.ServiceSupervisor` and is `nil` when the backend runs no
   services for the agent.
+
+  A delegated agent's events reach its request through the backend's
+  `:subscribe` operation (see `Tackle.Runtime.AgentBackend`); the request
+  passes them on to its caller's `:event_callback`.
   """
 
   alias Tackle.AgentScope.Coordinator
@@ -40,7 +44,6 @@ defmodule Tackle.Runtime.AgentContext do
     :limits,
     :parent,
     :terminal,
-    :event_callback,
     :scope_options
   ]
 
@@ -57,7 +60,6 @@ defmodule Tackle.Runtime.AgentContext do
           limits: Tackle.Runtime.Limits.t(),
           parent: map() | nil,
           terminal: map() | nil,
-          event_callback: (term() -> any()) | nil,
           scope_options: term()
         }
 

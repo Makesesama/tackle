@@ -453,7 +453,6 @@ defmodule Tackle.Runtime.Request do
       limits: state.limits,
       parent: state.parent,
       terminal: %{destination: self(), run_id: state.run_ref.run_id},
-      event_callback: event_callback(state),
       scope_options: nil
     }
 
@@ -475,9 +474,6 @@ defmodule Tackle.Runtime.Request do
         {:error, reason, state}
     end
   end
-
-  defp event_callback(%{event_callback: callback}) when is_function(callback, 1), do: callback
-  defp event_callback(_state), do: nil
 
   defp subscribe_to_child_events(%{session_pid: pid} = state) do
     case AgentBackend.call(state.backend, pid, :subscribe, []) do
