@@ -25,11 +25,10 @@ Tackle accepts trusted modules **already available to the running BEAM**:
   opaque settings. Data declares providers; it still never names modules.
 - `Tackle.Config.new/1` accepts `:tools` and `:hooks` module lists from trusted
   code. It checks tool callbacks (`name/0`, `description/0`,
-  `parameters_schema/0`, `execute/2`) and rejects duplicate tool names. Hooks
-  are checked only for loadable modules there; a module that exports no
-  `Tackle.Lib.Hook` callback is rejected when the agent state is built
-  (`Tackle.Lib.State.new/1` raises `ArgumentError`). The defaults come from
-  `Tackle.Tools.default/0`.
+  `parameters_schema/0`, `execute/2`), schemas, and names as
+  `Tackle.Lib.Tool.Registry` does, and rejects duplicate tool names. Hooks
+  must implement at least one `Tackle.Lib.Hook` callback, as in the catalog.
+  The defaults come from `Tackle.Tools.default/0`.
 - `$TACKLE_HOME/config.json` selects `model`, `thinking`, and feature settings
   (session titles, watchdog, narration) and may declare `providers` of
   available adapters; it never names executable modules. Environment settings
@@ -60,7 +59,7 @@ Tackle accepts trusted modules **already available to the running BEAM**:
   their declaration order and provenance, and rejects duplicate adapter IDs,
   default provider IDs shared by two adapters (naming both), tool names, and
   repeated hook modules. Catalog-selected hooks must implement
-  at least one Hook callback; this is stricter than direct `Config.new/1`.
+  at least one Hook callback, as `Config.new/1` requires.
   `Catalog.resolve_tools/2` only resolves names already in that catalog—it
   does not grant them. No external project discovery/loading is involved.
   `Config.load(catalog: catalog)` selects its adapter and hook modules, leaving

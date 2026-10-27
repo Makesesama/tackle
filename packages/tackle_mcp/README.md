@@ -59,7 +59,7 @@ tools = Tackle.Tools.default() ++ Tackle.Plugins.MCP.tools(mcp)
 
 {:ok, config} =
   Tackle.Config.new(
-    adapters: [MyAdapter],
+    providers: [MyAdapter],
     model: "my-adapter/my-model",
     tools: tools
   )
