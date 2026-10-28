@@ -5,8 +5,6 @@ defmodule Tackle.Application do
 
   @impl true
   def start(_type, _args) do
-    configure_runtime_backend()
-
     with {:ok, auth_file} <- auth_file() do
       children = [
         {Tackle.Auth.Store, path: auth_file, name: Tackle.Auth.Store},
@@ -15,12 +13,6 @@ defmodule Tackle.Application do
       ]
 
       Supervisor.start_link(children, strategy: :one_for_one, name: Tackle.Supervisor)
-    end
-  end
-
-  defp configure_runtime_backend do
-    if is_nil(Application.get_env(:tackle_runtime, :default_backend)) do
-      Application.put_env(:tackle_runtime, :default_backend, Tackle.Runtime.RootBackend)
     end
   end
 

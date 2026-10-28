@@ -13,7 +13,7 @@ defmodule Tackle.LocalReviewTest do
   alias Tackle.Review
   alias Tackle.Review.{Change, Diff, Finding, Result, Rules}
   alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
-  alias Tackle.Runtime.{AgentSpec, ScopeSpec}
+  alias Tackle.Runtime.{AgentSpec, RootBackend, ScopeSpec}
 
   defmodule Adapter do
     @moduledoc false
@@ -470,6 +470,7 @@ defmodule Tackle.LocalReviewTest do
 
       spec =
         ScopeSpec.new!(
+          backend: RootBackend,
           root_spec: AgentSpec.new!(name: "root", config: root_config, allow_delegation: true),
           profiles: profiles
         )
@@ -515,6 +516,7 @@ defmodule Tackle.LocalReviewTest do
 
       spec =
         ScopeSpec.new!(
+          backend: RootBackend,
           root_spec: AgentSpec.new!(name: "root", config: root_config, allow_delegation: true),
           profiles: profiles
         )

@@ -1037,6 +1037,7 @@ defmodule Bench.E2E do
     {:ok, scope} =
       Tackle.Runtime.start_scope(
         ScopeSpec.new!(
+          backend: Tackle.Runtime.RootBackend,
           root_spec: agent,
           limits: Limits.default(),
           profiles: %{},

@@ -2,9 +2,11 @@ defmodule Tackle.Runtime.ScopeSpec do
   @moduledoc """
   Trusted description of one root-agent scope and its allowlisted profiles.
 
-  `:backend` is the host adapter for every agent in the scope. `:session` is an
-  opaque backend option retained for compatibility with the root harness; SaaS
-  hosts may use it for their own root-session specification.
+  `:backend` is the host adapter for every agent in the scope; it is
+  required (`{:error, {:missing_scope_spec, :backend}}`), there is no
+  application default. `:session` is an opaque backend option retained for
+  compatibility with the root harness; SaaS hosts may use it for their own
+  root-session specification.
   """
 
   alias Tackle.Runtime.AgentBackend
@@ -38,9 +40,7 @@ defmodule Tackle.Runtime.ScopeSpec do
   def new(opts) when is_list(opts), do: opts |> Map.new() |> new()
 
   def new(%{} = opts) do
-    backend = Map.get(opts, :backend) || Application.get_env(:tackle_runtime, :default_backend)
-
-    with {:ok, backend} <- validate_backend(backend),
+    with {:ok, backend} <- validate_backend(Map.get(opts, :backend)),
          {:ok, raw_root_spec} <- fetch_root_spec(opts),
          {:ok, root_spec} <- validate_agent_spec(backend, raw_root_spec),
          {:ok, limits} <- Limits.new(Map.get(opts, :limits, Limits.default())),

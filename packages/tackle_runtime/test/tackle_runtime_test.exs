@@ -34,4 +34,9 @@ defmodule Tackle.Runtime.PackageTest do
     assert {:error, {:invalid_config, %{bad: true}}} =
              ScopeSpec.new(backend: Backend, root_spec: root)
   end
+
+  test "a scope spec must name its backend" do
+    root = AgentSpec.new!(name: "root", config: %{value: :root})
+    assert ScopeSpec.new(root_spec: root) == {:error, {:missing_scope_spec, :backend}}
+  end
 end

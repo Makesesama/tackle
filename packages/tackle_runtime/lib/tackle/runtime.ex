@@ -221,7 +221,7 @@ defmodule Tackle.Runtime do
   @spec prepare_spec(AgentRef.t(), AgentSpec.t()) :: {:ok, AgentSpec.t()} | {:error, term()}
   def prepare_spec(%AgentRef{} = requester, %AgentSpec{} = spec) do
     with {:ok, pid} <- Registry.whereis(requester),
-         {:ok, backend} <- backend(requester) do
+         {:ok, backend} <- Registry.backend(requester) do
       AgentBackend.prepare_child(backend, spec, pid)
     end
   end
@@ -238,7 +238,7 @@ defmodule Tackle.Runtime do
   @spec configure_spec(AgentRef.t(), AgentSpec.t(), [AgentBackend.configure_option()]) ::
           {:ok, AgentSpec.t()} | {:error, term()}
   def configure_spec(%AgentRef{} = requester, %AgentSpec{} = spec, opts) do
-    with {:ok, backend} <- backend(requester) do
+    with {:ok, backend} <- Registry.backend(requester) do
       AgentBackend.configure(backend, spec, opts)
     end
   end
@@ -250,7 +250,7 @@ defmodule Tackle.Runtime do
   @spec describe_spec(AgentRef.t(), AgentSpec.t()) ::
           {:ok, AgentBackend.description()} | {:error, term()}
   def describe_spec(%AgentRef{} = requester, %AgentSpec{} = spec) do
-    with {:ok, backend} <- backend(requester) do
+    with {:ok, backend} <- Registry.backend(requester) do
       AgentBackend.describe(backend, spec)
     end
   end
@@ -262,7 +262,7 @@ defmodule Tackle.Runtime do
   """
   @spec spec_llm(AgentRef.t(), AgentSpec.t()) :: {:ok, AgentBackend.llm()} | {:error, term()}
   def spec_llm(%AgentRef{} = requester, %AgentSpec{} = spec) do
-    with {:ok, backend} <- backend(requester) do
+    with {:ok, backend} <- Registry.backend(requester) do
       AgentBackend.llm(backend, spec)
     end
   end
@@ -524,7 +524,7 @@ defmodule Tackle.Runtime do
 
   defp with_agent(%AgentRef{} = agent_ref, operation, args) do
     with {:ok, pid} <- Registry.whereis(agent_ref),
-         {:ok, backend} <- backend(agent_ref) do
+         {:ok, backend} <- Registry.backend(agent_ref) do
       AgentBackend.call(backend, pid, operation, args)
     end
   end
@@ -533,19 +533,6 @@ defmodule Tackle.Runtime do
     case Registry.coordinator(ref) do
       {:ok, pid} -> {:ok, pid}
       {:error, :not_found} -> {:error, :scope_not_found}
-    end
-  end
-
-  defp backend(ref) do
-    case Registry.backend(ref) do
-      {:ok, backend} ->
-        {:ok, backend}
-
-      {:error, :not_found} ->
-        case Application.get_env(:tackle_runtime, :default_backend) do
-          backend when is_atom(backend) and not is_nil(backend) -> {:ok, backend}
-          _other -> {:error, :not_found}
-        end
     end
   end
 

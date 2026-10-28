@@ -1,7 +1,5 @@
 import Config
 
-config :tackle_runtime, default_backend: Tackle.Runtime.RootBackend
-
 if config_env() == :test do
   test_home =
     Path.join(

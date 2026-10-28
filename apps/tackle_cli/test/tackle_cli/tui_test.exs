@@ -29,6 +29,7 @@ defmodule Tackle.CLI.TUITest do
   alias Tackle.Lib.{Event, LLM, Message, State}
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.ID
+  alias Tackle.Runtime.RootBackend
   alias Tackle.Runtime.Scope
   alias Tackle.Session.{Snapshot, UsageTimeline}
 
@@ -66,6 +67,11 @@ defmodule Tackle.CLI.TUITest do
     @impl true
     def init({test_pid, agent_ref}) do
       {:ok, _pid} = Tackle.Runtime.Registry.register(agent_ref, :agent)
+      # A scope registers its backend so the runtime routes calls for its
+      # agents through it; the stub stands in for a root session's scope.
+      {:ok, _pid} =
+        Registry.register(Tackle.Runtime.Registry, {:backend, agent_ref.scope_id}, RootBackend)
+
       {:ok, llm} = LLM.select([Adapter], "openai-codex/test-model")
       agent_state = State.new(llm: llm)
 

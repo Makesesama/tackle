@@ -196,6 +196,7 @@ defmodule Tackle.Test.Runtime do
   alias Tackle.Config
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.Limits
+  alias Tackle.Runtime.RootBackend
   alias Tackle.Runtime.ScopeSpec
   alias Tackle.Session.Journal
   alias Tackle.Session.Reader
@@ -247,6 +248,7 @@ defmodule Tackle.Test.Runtime do
     limits = Keyword.get(opts, :limits, Limits.default())
 
     ScopeSpec.new!(
+      backend: RootBackend,
       root_spec: agent_spec("root", root_opts),
       limits: limits,
       profiles: Keyword.get(opts, :profiles, %{}),

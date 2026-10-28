@@ -8,6 +8,7 @@ defmodule Tackle.Runtime.ContractsTest do
   alias Tackle.Runtime.Limits
   alias Tackle.Runtime.Outcome
   alias Tackle.Runtime.Ref
+  alias Tackle.Runtime.RootBackend
   alias Tackle.Runtime.RunRef
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.ScopeSpec
@@ -135,7 +136,11 @@ defmodule Tackle.Runtime.ContractsTest do
       spec = agent_spec("researcher")
 
       assert {:ok, %ScopeSpec{} = scope_spec} =
-               ScopeSpec.new(root_spec: agent_spec("root"), profiles: %{"researcher" => spec})
+               ScopeSpec.new(
+                 backend: RootBackend,
+                 root_spec: agent_spec("root"),
+                 profiles: %{"researcher" => spec}
+               )
 
       assert {:ok, ^spec} = ScopeSpec.resolve_profile(scope_spec, "researcher")
 
@@ -149,6 +154,7 @@ defmodule Tackle.Runtime.ContractsTest do
     test "resolves function profiles and reports failures" do
       scope_spec =
         ScopeSpec.new!(
+          backend: RootBackend,
           root_spec: agent_spec("root"),
           profiles: %{
             "ok" => fn -> {:ok, agent_spec("ok")} end,
@@ -174,7 +180,11 @@ defmodule Tackle.Runtime.ContractsTest do
                AgentSpec.new(name: "x", config: config(), timeout: 0)
 
       assert {:error, {:invalid_profile, "bad", :nope}} =
-               ScopeSpec.new(root_spec: agent_spec("root"), profiles: %{"bad" => :nope})
+               ScopeSpec.new(
+                 backend: RootBackend,
+                 root_spec: agent_spec("root"),
+                 profiles: %{"bad" => :nope}
+               )
     end
   end
 

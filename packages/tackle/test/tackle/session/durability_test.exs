@@ -5,6 +5,7 @@ defmodule Tackle.Session.DurabilityTest do
 
   alias Tackle.Lib.Message
   alias Tackle.Runtime.ID
+  alias Tackle.Runtime.RootBackend
   alias Tackle.Runtime.ScopeSpec
   alias Tackle.Session.Catalog
   alias Tackle.Session.Journal
@@ -460,7 +461,13 @@ defmodule Tackle.Session.DurabilityTest do
     session = session_spec(home: ctx.home, model_ref: "missing/model")
 
     assert {:error, reason} =
-             Tackle.start_scope(ScopeSpec.new!(root_spec: agent_spec("root"), session: session))
+             Tackle.start_scope(
+               ScopeSpec.new!(
+                 backend: RootBackend,
+                 root_spec: agent_spec("root"),
+                 session: session
+               )
+             )
 
     assert inspect(reason) =~ "configuration_required"
   end

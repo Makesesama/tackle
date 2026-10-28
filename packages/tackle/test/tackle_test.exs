@@ -9,6 +9,7 @@ defmodule TackleTest do
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.Envelope
+  alias Tackle.Runtime.RootBackend
   alias Tackle.Runtime.Scope
   alias Tackle.Runtime.ScopeRef
   alias Tackle.Runtime.ScopeSpec
@@ -556,7 +557,7 @@ defmodule TackleTest do
   defp start_scope(config_opts) do
     {:ok, config} = Tackle.Config.new(config_opts)
     root_spec = AgentSpec.new!(name: "root", config: config)
-    {:ok, scope} = Tackle.start_scope(ScopeSpec.new!(root_spec: root_spec))
+    {:ok, scope} = Tackle.start_scope(ScopeSpec.new!(backend: RootBackend, root_spec: root_spec))
     on_exit(fn -> stop_scope(scope.scope_ref) end)
     scope
   end
