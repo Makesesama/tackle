@@ -277,7 +277,6 @@ defmodule Tackle.LocalReview.HistoryTest do
 
     refute File.exists?(ctx.history.dir)
     assert History.outcomes() == [:useful, :not_useful, :dismissed, :fixed]
-    assert History.events() -- History.outcomes() == [:shown, :rejected]
   end
 
   test "skips lines that cannot be decoded or are not events", ctx do

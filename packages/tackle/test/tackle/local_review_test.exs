@@ -376,19 +376,6 @@ defmodule Tackle.LocalReviewTest do
       assert Enum.map(events, & &1["event"]) == ["shown", "shown", "dismissed"]
     end
 
-    test "with :shown among the skipped outcomes, only new findings are reported", %{
-      history: history
-    } do
-      script = script(%{findings: [nil_check()]})
-      opts = [history: history, skip_outcomes: [:shown, :dismissed]]
-      assert {:ok, %Result{blocking: [_shown]}} = local_review(change(), script, opts)
-
-      assert {:ok, second} = local_review(change(), script, opts)
-      assert second.blocking == []
-      assert [%{reason: :known}] = second.dropped
-      assert second.summary.verdict == :clean
-    end
-
     test "open_history/2 opens the change's history or says why it cannot" do
       home = Tackle.Test.Runtime.tmp_home()
       assert {%History{} = history, []} = LocalReview.open_history(change(), home: home)
@@ -433,9 +420,6 @@ defmodule Tackle.LocalReviewTest do
 
       assert {:error, {:invalid_option, :history, "/repo"}} =
                LocalReview.run(change(), [history: "/repo"] ++ base)
-
-      assert {:error, {:invalid_option, :skip_outcomes, [:great]}} =
-               LocalReview.run(change(), [history: history, skip_outcomes: [:great]] ++ base)
 
       # Options read here, before the review sees them, fail like its own.
       invalid = [

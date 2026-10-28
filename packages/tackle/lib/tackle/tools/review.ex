@@ -220,7 +220,6 @@ defmodule Tackle.Tools.Review do
   defp configured_profile(_context), do: nil
 
   defp cwd(%{cwd: cwd}) when is_binary(cwd), do: cwd
-  defp cwd(%{"cwd" => cwd}) when is_binary(cwd), do: cwd
   defp cwd(_context), do: nil
 
   # The stage profiles come from the agent's own scope, resolved when the

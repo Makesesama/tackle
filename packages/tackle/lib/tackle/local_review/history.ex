@@ -103,10 +103,6 @@ defmodule Tackle.LocalReview.History do
   @spec outcomes() :: [outcome()]
   def outcomes, do: @outcomes
 
-  @doc "Returns every finding event, the outcomes included."
-  @spec events() :: [event()]
-  def events, do: @events
-
   @doc """
   Opens the history of the repository whose root is `root`.
 

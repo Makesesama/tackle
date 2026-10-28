@@ -17,9 +17,8 @@ defmodule Tackle.LocalReview do
       selects the built-in rules; discovery warnings are reported in
       `result.summary.warnings`;
     * **history** - with `:history` (a `Tackle.LocalReview.History`), findings
-      with one of the `:skip_outcomes` events recorded are not reported
-      again, and the finished run is recorded with its shown and rejected
-      findings.
+      the user dismissed are not reported again, and the finished run is
+      recorded with its shown and rejected findings.
 
   History is an aid, not a requirement: `open_history/2` opens it or says
   why it is unavailable, and when it cannot be read or written, the review
@@ -38,7 +37,7 @@ defmodule Tackle.LocalReview do
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
 
-  @local_keys [:executor, :home, :user_home, :history, :skip_outcomes]
+  @local_keys [:executor, :home, :user_home, :history]
 
   @typedoc """
   Every `Tackle.Review.option()`, and:
@@ -48,11 +47,8 @@ defmodule Tackle.LocalReview do
     * `:home` and `:user_home` - the Tackle home and the user's home
       directory rules are discovered with (see
       `Tackle.LocalReview.Rules.discover/1`);
-    * `:history` - a `Tackle.LocalReview.History` to skip known findings with
-      and to record the run in (default `nil`, no history);
-    * `:skip_outcomes` - the history events whose findings are not reported
-      again (default `[:dismissed]`); add `:shown` for an incremental review
-      that reports only findings not shown before.
+    * `:history` - a `Tackle.LocalReview.History` to skip dismissed
+      findings with and to record the run in (default `nil`, no history).
   """
   @type option ::
           Review.option()
@@ -60,7 +56,6 @@ defmodule Tackle.LocalReview do
           | {:home, Path.t() | nil}
           | {:user_home, Path.t() | nil}
           | {:history, History.t() | nil}
-          | {:skip_outcomes, [History.event()]}
 
   @doc """
   Reviews a change with the local settings, rules, and history.
@@ -71,7 +66,7 @@ defmodule Tackle.LocalReview do
   value}}` when its context holds something else under `:review_settings`,
   and `{:error, {:missing_option, :executor}}` when rules have to be
   discovered without an executor. An invalid option this module reads
-  (`:history`, `:skip_outcomes`, `:settings`, `:default_rules`,
+  (`:history`, `:settings`, `:default_rules`,
   `:known_fingerprints`, or `:warnings`) is `{:error, {:invalid_option,
   key, value}}`, as for `Tackle.Review.run/2`, before anything runs.
   """
@@ -80,13 +75,12 @@ defmodule Tackle.LocalReview do
     {local, review_opts} = Keyword.split(opts, @local_keys)
 
     with {:ok, history} <- option(local, :history, nil, &history?/1),
-         {:ok, skip_outcomes} <- option(local, :skip_outcomes, [:dismissed], &events?/1),
          {:ok, _settings} <- option(review_opts, :settings, nil, &settings?/1),
          {:ok, _known} <- option(review_opts, :known_fingerprints, [], &Enumerable.impl_for/1),
          {:ok, _warnings} <- option(review_opts, :warnings, [], &string_list?/1),
          {:ok, settings} <- settings(review_opts),
          {:ok, rules, rule_warnings} <- rules(change, local, review_opts, settings) do
-      {known, history_warnings} = known(history, skip_outcomes)
+      {known, history_warnings} = known(history)
 
       review_opts =
         review_opts
@@ -162,7 +156,6 @@ defmodule Tackle.LocalReview do
   end
 
   defp history?(value), do: is_nil(value) or is_struct(value, History)
-  defp events?(value), do: is_list(value) and Enum.all?(value, &(&1 in History.events()))
   defp settings?(value), do: is_nil(value) or is_struct(value, ReviewSettings)
   defp string_list?(value), do: is_list(value) and Enum.all?(value, &is_binary/1)
 
@@ -222,10 +215,10 @@ defmodule Tackle.LocalReview do
 
   ## History
 
-  defp known(nil, _skip_outcomes), do: {[], []}
+  defp known(nil), do: {[], []}
 
-  defp known(history, skip_outcomes) do
-    case History.fingerprints(history, skip_outcomes) do
+  defp known(history) do
+    case History.fingerprints(history, [:dismissed]) do
       {:ok, fingerprints} ->
         {Enum.to_list(fingerprints), []}
 
