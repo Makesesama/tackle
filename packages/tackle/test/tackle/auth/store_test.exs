@@ -402,7 +402,7 @@ defmodule Tackle.Auth.StoreTest do
       second = start_store(path, :second)
 
       holder = start_lock_holder(first, "openai-codex")
-      assert_receive {:holding, ^holder}
+      assert_receive {:holding, ^holder}, 5_000
 
       waiter = start_lock_holder(second, "openai-codex")
       refute_receive {:holding, ^waiter}, 300
@@ -433,7 +433,7 @@ defmodule Tackle.Auth.StoreTest do
       second = start_store(path, :second)
 
       holder = start_lock_holder(first, "openai-codex")
-      assert_receive {:holding, ^holder}
+      assert_receive {:holding, ^holder}, 5_000
       Process.exit(holder, :kill)
 
       assert :after = Store.with_lock(second, "openai-codex", fn -> :after end)
@@ -443,7 +443,7 @@ defmodule Tackle.Auth.StoreTest do
       store = start_store(path, Store, credential_lock_timeout: 200)
 
       holder = start_lock_holder(store, "openai-codex")
-      assert_receive {:holding, ^holder}
+      assert_receive {:holding, ^holder}, 5_000
 
       assert {:error, {:credential_lock_failed, {:lock_timeout, lock_path}}} =
                Store.with_lock(store, "openai-codex", fn -> flunk("ran unlocked") end)

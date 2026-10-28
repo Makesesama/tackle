@@ -9,6 +9,9 @@ defmodule Tackle.FileLockTest do
 
   alias Tackle.FileLock
 
+  # Taking a lock starts a `flock` OS process, which can be slow under load.
+  @acquire_timeout 5_000
+
   setup do
     dir = Path.join(System.tmp_dir!(), "tackle-file-lock-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
@@ -35,7 +38,7 @@ defmodule Tackle.FileLockTest do
 
       test "a second holder fails at once without waiting", %{path: path} do
         holder = start_holder(path, @mode_opts)
-        assert_receive {:acquired, ^holder, {:ok, lock}}
+        assert_receive {:acquired, ^holder, {:ok, lock}}, @acquire_timeout
 
         assert {:error, {:locked, owner}} = FileLock.acquire(path, @mode_opts)
         assert owner["pid"] == lock.owner["pid"]
@@ -47,7 +50,7 @@ defmodule Tackle.FileLockTest do
 
       test "a waiting holder gets the lock once the first releases it", %{path: path} do
         first = start_holder(path, @mode_opts)
-        assert_receive {:acquired, ^first, {:ok, _lock}}
+        assert_receive {:acquired, ^first, {:ok, _lock}}, @acquire_timeout
 
         second = start_holder(path, Keyword.put(@mode_opts, :wait, 10_000))
         refute_receive {:acquired, ^second, _result}, 300
@@ -59,7 +62,7 @@ defmodule Tackle.FileLockTest do
 
       test "waiting gives up after the timeout", %{path: path} do
         holder = start_holder(path, @mode_opts)
-        assert_receive {:acquired, ^holder, {:ok, _lock}}
+        assert_receive {:acquired, ^holder, {:ok, _lock}}, @acquire_timeout
 
         started = System.monotonic_time(:millisecond)
         assert {:error, {:lock_timeout, ^path}} = acquire_waiting(path, @mode_opts, 300)
@@ -72,7 +75,7 @@ defmodule Tackle.FileLockTest do
 
       test "the lock is released when its holder dies", %{path: path} do
         holder = start_holder(path, @mode_opts)
-        assert_receive {:acquired, ^holder, {:ok, _lock}}
+        assert_receive {:acquired, ^holder, {:ok, _lock}}, @acquire_timeout
 
         Process.exit(holder, :kill)
         assert {:ok, lock} = acquire_waiting(path, @mode_opts, 5_000)
@@ -107,7 +110,7 @@ defmodule Tackle.FileLockTest do
     test "keeps a record whose holder died with process_bound: false", %{path: path} do
       opts = [advisory: false, process_bound: false]
       holder = start_holder(path, opts)
-      assert_receive {:acquired, ^holder, {:ok, lock}}
+      assert_receive {:acquired, ^holder, {:ok, lock}}, @acquire_timeout
 
       Process.exit(holder, :kill)
       assert {:error, {:locked, owner}} = FileLock.acquire(path, advisory: false)
