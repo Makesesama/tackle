@@ -34,8 +34,8 @@ defmodule Tackle.Narrator do
        backs off, and keeps watching.
 
   The root agent's own turn is not narrated. Model calls run as unlinked tasks
-  under the service task supervisor; their usage is accumulated for
-  diagnostics only and never counted against any token budget.
+  under the service task supervisor; their usage is never counted against any
+  token budget.
   """
 
   use GenServer
@@ -47,7 +47,7 @@ defmodule Tackle.Narrator do
   alias Tackle.AgentService
   alias Tackle.AgentService.Call
   alias Tackle.Config.Narration, as: Settings
-  alias Tackle.Lib.{Event, LLM, Usage}
+  alias Tackle.Lib.{Event, LLM}
   alias Tackle.Lib.LLM.Response
   alias Tackle.Narration.Digest
   alias Tackle.Runtime
@@ -63,70 +63,18 @@ defmodule Tackle.Narrator do
           {:agent_ref, AgentRef.t()}
           | {:task_supervisor, Supervisor.supervisor()}
           | {:settings, Settings.t()}
-          | {:llm_opts, keyword()}
+          | {:request_timeout, pos_integer()}
 
   @doc """
   Starts a narrator for one root agent.
 
   Options are `:agent_ref`, `:task_supervisor` (the agent's service
-  `Task.Supervisor`), `:settings` (`Tackle.Config.Narration`), and `:llm_opts`,
-  passed to the model call (for example a `:receive_timeout`) through
-  `Tackle.Lib.LLM.request_opts/3`, so they cannot replace the narration
-  request's messages, tools, temperature, reasoning effort, or token limit.
-  The selection already carries its provider's settings.
+  `Task.Supervisor`), `:settings` (`Tackle.Config.Narration`), and
+  `:request_timeout`, the milliseconds a model request may take (30 seconds by
+  default). The selection already carries its provider's settings.
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts), do: AgentService.start_link(__MODULE__, opts)
-
-  @doc "Whether a narrator is currently running for `agent_ref`."
-  @spec running?(AgentRef.t()) :: boolean()
-  def running?(%AgentRef{} = agent_ref), do: AgentService.running?(agent_ref, __MODULE__)
-
-  @doc """
-  The prompt sent to the narration model for one run's digest state
-  (`Tackle.Narration.Digest.state/1`).
-  """
-  @spec prompt(map()) :: String.t()
-  def prompt(state) when is_map(state) do
-    "You write the live status line of a coding agent's delegated task. " <>
-      "From the task and its recent activity below, write one short present-tense line, " <>
-      "at most 12 words, saying what it is doing right now, for example " <>
-      "\"reading the session tests to find where titles are stored\". " <>
-      "Describe the newest activity. When previous_status is set, say what is new instead " <>
-      "of repeating it. Do not use quotes, markdown, or trailing punctuation. " <>
-      "Do not address anyone and do not do the task.\n\nActivity:\n" <>
-      JSON.encode!(state)
-  end
-
-  @doc """
-  Cleans a model answer into a status line.
-
-  Keeps the first non-blank line, strips wrapping quotes and trailing
-  sentence punctuation, collapses whitespace, and bounds it to 100 characters.
-  Returns `nil` when nothing remains.
-  """
-  @spec normalize(term()) :: String.t() | nil
-  def normalize(text) when is_binary(text) do
-    line =
-      text
-      |> String.replace_invalid("")
-      |> String.split("\n")
-      |> Enum.map(&String.trim/1)
-      |> Enum.find("", &(&1 != ""))
-      |> trim_quotes()
-      |> String.split()
-      |> Enum.join(" ")
-      |> String.trim_trailing(".")
-      |> String.trim()
-
-    cond do
-      line == "" -> nil
-      String.length(line) <= @max_chars -> line
-      true -> String.slice(line, 0, @max_chars - 1) <> "…"
-    end
-  end
-
-  def normalize(_text), do: nil
 
   @impl true
   def init(opts) do
@@ -134,15 +82,14 @@ defmodule Tackle.Narrator do
       agent_ref: Keyword.fetch!(opts, :agent_ref),
       task_supervisor: Keyword.fetch!(opts, :task_supervisor),
       settings: Keyword.fetch!(opts, :settings),
-      llm_opts: Keyword.get(opts, :llm_opts, []),
+      request_timeout: AgentService.request_timeout!(opts, @request_timeout_ms),
       calls: %{},
       runs: %{},
       timer: nil,
       inflight: nil,
       retry_at: nil,
       backoff_ms: nil,
-      warned?: false,
-      usage: nil
+      warned?: false
     }
 
     case AgentService.subscribe(state.agent_ref) do
@@ -151,10 +98,9 @@ defmodule Tackle.Narrator do
     end
   end
 
-  # Tasks, digests of the runs' activity (tool arguments, assistant text),
-  # the model's selection with its provider settings, and the request options
-  # may carry secrets; crash reports and `:sys.get_status/1` show only run and
-  # call ids, timing, and option keys.
+  # Tasks, digests of the runs' activity (tool arguments, assistant text), and
+  # the model's selection with its provider settings may carry secrets; crash
+  # reports and `:sys.get_status/1` show only run and call ids and timing.
   @impl true
   def format_status(status), do: StatusRedaction.format_status(status, &redact_state/1)
 
@@ -163,8 +109,7 @@ defmodule Tackle.Narrator do
       state
       | runs: Map.new(runs, fn {id, run} -> {id, Map.delete(run, :digest)} end),
         calls: Map.new(calls, fn {id, call} -> {id, Map.delete(call, :prompt)} end),
-        settings: Map.take(settings, [:model_ref, :interval_seconds, :first_after_seconds]),
-        llm_opts: StatusRedaction.keys(state.llm_opts)
+        settings: Map.take(settings, [:model_ref, :interval_seconds, :first_after_seconds])
     }
   end
 
@@ -362,21 +307,16 @@ defmodule Tackle.Narrator do
     %Settings{selection: selection} = state.settings
     observed = Digest.state(run.digest)
 
-    request = [
+    opts = [
       messages: [%{role: :user, content: prompt(observed)}],
       temperature: 0.2,
       tools: [],
       tool_choice: "none",
       reasoning_effort: :none,
-      max_tokens: 60
-    ]
-
-    defaults = [
+      max_tokens: 60,
       credential_store: Tackle.Auth.credential_store(),
-      receive_timeout: @request_timeout_ms
+      receive_timeout: state.request_timeout
     ]
-
-    opts = LLM.request_opts(request, defaults, state.llm_opts)
 
     # The adapter enforces its receive timeout; the call reaps a request that
     # ignores it.
@@ -385,7 +325,7 @@ defmodule Tackle.Narrator do
     case Call.start(
            state.task_supervisor,
            generate,
-           Keyword.fetch!(opts, :receive_timeout),
+           state.request_timeout,
            run.run_id
          ) do
       {:ok, call} ->
@@ -398,7 +338,6 @@ defmodule Tackle.Narrator do
   end
 
   defp answered(state, run_id, {:ok, %Response{} = response}) do
-    state = %{state | usage: Usage.aggregate([state.usage, response.usage])}
     state = %{state | retry_at: nil, backoff_ms: nil}
 
     case Map.fetch(state.runs, run_id) do
@@ -412,6 +351,42 @@ defmodule Tackle.Narrator do
 
   defp text(%Response{tool_calls: [_ | _]}), do: nil
   defp text(%Response{content: content}), do: normalize(content)
+
+  defp prompt(state) do
+    "You write the live status line of a coding agent's delegated task. " <>
+      "From the task and its recent activity below, write one short present-tense line, " <>
+      "at most 12 words, saying what it is doing right now, for example " <>
+      "\"reading the session tests to find where titles are stored\". " <>
+      "Describe the newest activity. When previous_status is set, say what is new instead " <>
+      "of repeating it. Do not use quotes, markdown, or trailing punctuation. " <>
+      "Do not address anyone and do not do the task.\n\nActivity:\n" <>
+      JSON.encode!(state)
+  end
+
+  # A status line is the answer's first non-blank line without wrapping quotes,
+  # trailing sentence punctuation, or repeated whitespace, bounded to 100
+  # characters; `nil` when nothing remains.
+  defp normalize(text) when is_binary(text) do
+    line =
+      text
+      |> String.replace_invalid("")
+      |> String.split("\n")
+      |> Enum.map(&String.trim/1)
+      |> Enum.find("", &(&1 != ""))
+      |> trim_quotes()
+      |> String.split()
+      |> Enum.join(" ")
+      |> String.trim_trailing(".")
+      |> String.trim()
+
+    cond do
+      line == "" -> nil
+      String.length(line) <= @max_chars -> line
+      true -> String.slice(line, 0, @max_chars - 1) <> "…"
+    end
+  end
+
+  defp normalize(_text), do: nil
 
   # Every answer counts as the run's narration attempt, so an empty one waits
   # out the interval instead of being retried at once.

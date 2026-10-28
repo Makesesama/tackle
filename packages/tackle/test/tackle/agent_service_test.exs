@@ -48,6 +48,17 @@ defmodule Tackle.AgentServiceTest do
     end
   end
 
+  test "request_timeout!/2 takes a positive integer or the default" do
+    assert AgentService.request_timeout!([], 30_000) == 30_000
+    assert AgentService.request_timeout!([request_timeout: 50], 30_000) == 50
+
+    for timeout <- [0, 1.5, :soon, nil] do
+      assert_raise ArgumentError, fn ->
+        AgentService.request_timeout!([request_timeout: timeout], 30_000)
+      end
+    end
+  end
+
   describe "schedule/3" do
     test "keeps a timer with an unchanged due time and replaces others" do
       at = AgentService.now() + 60_000

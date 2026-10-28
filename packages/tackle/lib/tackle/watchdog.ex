@@ -30,9 +30,8 @@ defmodule Tackle.Watchdog do
   Decision calls run as unlinked tasks under the service task supervisor, one
   at a time, so a slow model request never blocks the watchdog.
   `Tackle.Lib.Decision.ask/4` checks every answer and turns a crashing adapter
-  into an error, so only a killed task still needs handling.
-  Their usage is accumulated for diagnostics only; it is never counted against
-  any token budget.
+  into an error, so only a killed task still needs handling. Their usage is
+  never counted against any token budget.
   """
 
   use GenServer
@@ -46,7 +45,7 @@ defmodule Tackle.Watchdog do
   alias Tackle.Config.Watchdog, as: Settings
   alias Tackle.Lib.Decision
   alias Tackle.Lib.Decision.{Answer, Question, Result}
-  alias Tackle.Lib.{Event, Usage}
+  alias Tackle.Lib.Event
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
   alias Tackle.StatusRedaction
@@ -67,15 +66,15 @@ defmodule Tackle.Watchdog do
           {:agent_ref, AgentRef.t()}
           | {:task_supervisor, Supervisor.supervisor()}
           | {:settings, Settings.t()}
-          | {:decision_opts, keyword()}
+          | {:request_timeout, pos_integer()}
 
   @doc """
   Starts a watchdog for one agent.
 
   Options are `:agent_ref`, `:task_supervisor` (the agent's service
   `Task.Supervisor`), `:settings` (`Tackle.Config.Watchdog`), and
-  `:decision_opts`, passed to `Tackle.Lib.Decision.ask/4` (for example a
-  `:receive_timeout`). The selection already carries its provider's settings.
+  `:request_timeout`, the milliseconds a decision request may take (60 seconds
+  by default). The selection already carries its provider's settings.
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts), do: AgentService.start_link(__MODULE__, opts)
@@ -144,12 +143,11 @@ defmodule Tackle.Watchdog do
       agent_ref: Keyword.fetch!(opts, :agent_ref),
       task_supervisor: Keyword.fetch!(opts, :task_supervisor),
       settings: Keyword.fetch!(opts, :settings),
-      decision_opts: Keyword.get(opts, :decision_opts, []),
+      request_timeout: AgentService.request_timeout!(opts, @decision_timeout_ms),
       calls: %{},
       timer: nil,
       inflight: nil,
-      warned?: false,
-      usage: nil
+      warned?: false
     }
 
     case AgentService.subscribe(state.agent_ref) do
@@ -158,9 +156,9 @@ defmodule Tackle.Watchdog do
     end
   end
 
-  # Tracked commands and their output, the decision model's selection, and
-  # the decision options may carry secrets; crash reports and
-  # `:sys.get_status/1` show only call ids, timing, and option keys.
+  # Tracked commands and their output and the decision model's selection may
+  # carry secrets; crash reports and `:sys.get_status/1` show only call ids
+  # and timing.
   @impl true
   def format_status(status), do: StatusRedaction.format_status(status, &redact_state/1)
 
@@ -168,8 +166,7 @@ defmodule Tackle.Watchdog do
     %{
       state
       | calls: Map.new(calls, fn {id, call} -> {id, Map.delete(call, :digest)} end),
-        settings: Map.take(settings, [:model_ref, :after_seconds, :threshold]),
-        decision_opts: StatusRedaction.keys(state.decision_opts)
+        settings: Map.take(settings, [:model_ref, :after_seconds, :threshold])
     }
   end
 
@@ -256,13 +253,13 @@ defmodule Tackle.Watchdog do
 
   defp start_decision(state, id, observed) do
     %Settings{selection: selection} = state.settings
-    opts = Keyword.put_new(state.decision_opts, :receive_timeout, @decision_timeout_ms)
+    opts = [receive_timeout: state.request_timeout]
 
     # The adapter enforces its receive timeout; the call reaps a request that
     # ignores it.
     ask = fn -> Decision.ask(selection, observed, [question()], opts) end
 
-    case Call.start(state.task_supervisor, ask, Keyword.fetch!(opts, :receive_timeout), id) do
+    case Call.start(state.task_supervisor, ask, state.request_timeout, id) do
       {:ok, call} -> %{state | inflight: call}
       {:error, reason} -> decided(state, id, {:error, reason})
     end
@@ -271,8 +268,7 @@ defmodule Tackle.Watchdog do
   # `Tackle.Lib.Decision.ask/4` returns only results that answer the verdict
   # question with one of its options and probabilities in 0..1, and turns
   # adapter crashes into errors.
-  defp decided(state, id, {:ok, %Result{answers: %{@verdict => answer}, usage: usage}}) do
-    state = %{state | usage: Usage.aggregate([state.usage, usage])}
+  defp decided(state, id, {:ok, %Result{answers: %{@verdict => answer}}}) do
     # Without a reported probability the verdict cannot reach the threshold.
     verdict(state, id, answer.choice, Answer.choice_probability(answer) || 0)
   end

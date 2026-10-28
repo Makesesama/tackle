@@ -311,7 +311,7 @@ defmodule Tackle.WatchdogTest do
          agent_ref: scope.root_agent_ref,
          task_supervisor: task_supervisor,
          settings: settings,
-         decision_opts: [receive_timeout: 50]}
+         request_timeout: 50}
       )
 
     log =

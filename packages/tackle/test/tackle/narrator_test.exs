@@ -93,29 +93,15 @@ defmodule Tackle.NarratorTest do
       refute_receive {:writer_called, _writer, _opts}, 300
     end
 
-    test "session llm_opts cannot replace the narration request", ctx do
-      narrator =
-        start_narrator(ctx.scope,
-          llm_opts: [
-            temperature: 0.9,
-            reasoning_effort: :high,
-            max_tokens: 4_000,
-            tools: [:bogus],
-            tool_choice: "auto",
-            receive_timeout: 1_234
-          ]
-        )
+    test "requests carry the request timeout and the credential store", ctx do
+      narrator = start_narrator(ctx.scope, request_timeout: 1_234)
 
       send_event(narrator, subagent_started("run-1", "call-1"))
       send_event(narrator, subagent_progress("run-1", "call-1", read("r1", "a.ex")))
 
       assert_receive {:writer_called, writer, opts}, 2_000
-      assert Keyword.get_values(opts, :temperature) == [0.2]
-      assert Keyword.get_values(opts, :reasoning_effort) == [:none]
-      assert Keyword.get_values(opts, :max_tokens) == [60]
-      assert Keyword.get_values(opts, :tools) == [[]]
-      assert Keyword.get_values(opts, :tool_choice) == ["none"]
       assert Keyword.get_values(opts, :receive_timeout) == [1_234]
+      assert opts[:credential_store] == Tackle.Auth.credential_store()
       send(writer, {:writer_reply, answer("reading a.ex")})
     end
 
@@ -324,7 +310,7 @@ defmodule Tackle.NarratorTest do
     end
 
     test "a failing model warns once, backs off, and keeps narrating", ctx do
-      narrator = start_narrator(ctx.scope, llm_opts: [receive_timeout: 50])
+      narrator = start_narrator(ctx.scope, request_timeout: 50)
 
       log =
         capture_log(fn ->
@@ -381,8 +367,7 @@ defmodule Tackle.NarratorTest do
     test "its status shows neither tasks, activity, nor provider settings", ctx do
       {:ok, provider} = Provider.new("narr", Writer, %{"base_url" => "https://s3cr3t.test"})
 
-      narrator =
-        start_narrator(ctx.scope, providers: [provider], llm_opts: [api_key: "s3cr3t-key"])
+      narrator = start_narrator(ctx.scope, providers: [provider])
 
       send_event(narrator, subagent_tool_start("call-1", "s3cr3t task"))
       send_event(narrator, subagent_started("run-1", "call-1"))
@@ -407,7 +392,6 @@ defmodule Tackle.NarratorTest do
       assert status =~ "run-1"
       assert status =~ "call-2"
       assert status =~ "narr/fake"
-      assert status =~ ":api_key"
     end
   end
 
@@ -430,23 +414,23 @@ defmodule Tackle.NarratorTest do
           }
         )
 
-      assert Narrator.running?(scope.root_agent_ref)
+      assert narrator_running?(scope.root_agent_ref)
 
       {:ok, run_ref} = Tackle.Runtime.request_agent(scope.root_agent_ref, "child", "work")
       assert_receive {:adapter_called, adapter, _model, _opts}, 2_000
-      refute Narrator.running?(run_ref.agent_ref)
+      refute narrator_running?(run_ref.agent_ref)
       assert Registry.service_task_supervisor(run_ref.agent_ref) == {:error, :not_found}
 
       send(adapter, {:respond, "done"})
       assert %Tackle.Runtime.Outcome{status: :ok} = Tackle.Runtime.await(run_ref, 2_000)
 
       Tackle.Runtime.stop_scope(scope.scope_ref)
-      refute Narrator.running?(scope.root_agent_ref)
+      refute narrator_running?(scope.root_agent_ref)
     end
 
     test "agents without a narration config run no narrator" do
       scope = start_scope()
-      refute Narrator.running?(scope.root_agent_ref)
+      refute narrator_running?(scope.root_agent_ref)
     end
 
     test "narrates a real foreground subagent through the root session" do
@@ -525,12 +509,13 @@ defmodule Tackle.NarratorTest do
 
     start_supervised!(
       {Narrator,
-       agent_ref: scope.root_agent_ref,
-       task_supervisor: task_supervisor,
-       settings: settings,
-       llm_opts: Keyword.get(opts, :llm_opts, [])}
+       [agent_ref: scope.root_agent_ref, task_supervisor: task_supervisor, settings: settings] ++
+         Keyword.take(opts, [:request_timeout])}
     )
   end
+
+  defp narrator_running?(agent_ref),
+    do: match?({:ok, _pid}, Registry.service(agent_ref, Narrator))
 
   defp send_event(narrator, %Event{} = event),
     do: send(narrator, {:tackle_event, "session", "turn", event})

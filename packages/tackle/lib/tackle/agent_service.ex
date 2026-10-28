@@ -34,6 +34,23 @@ defmodule Tackle.AgentService do
     do: match?({:ok, _pid}, Registry.service(agent_ref, module))
 
   @doc """
+  Reads the `:request_timeout` start option, the milliseconds a model request
+  may take, or `default`; raises `ArgumentError` unless it is a positive
+  integer.
+  """
+  @spec request_timeout!(keyword(), pos_integer()) :: pos_integer()
+  def request_timeout!(opts, default) do
+    case Keyword.get(opts, :request_timeout, default) do
+      timeout when is_integer(timeout) and timeout > 0 ->
+        timeout
+
+      other ->
+        raise ArgumentError,
+              "expected :request_timeout to be a positive integer, got: #{inspect(other)}"
+    end
+  end
+
+  @doc """
   Subscribes the calling service to its agent's session.
 
   A session refuses subscriptions during a turn, which happens when a service
