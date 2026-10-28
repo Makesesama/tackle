@@ -236,6 +236,18 @@ shape: round"))
              }
     end
 
+    test "a directory that cannot be listed is a problem", %{project: project, opts: opts} do
+      put(project, "fine.md", agent("fine", ""))
+      locked = Path.join(project, "locked")
+      put(locked, "hidden.md", agent("hidden", ""))
+      File.chmod!(locked, 0o000)
+      on_exit(fn -> File.chmod(locked, 0o700) end)
+
+      assert {:error, {:invalid_agent_definitions, [problem]}} = Agents.discover(opts)
+      assert problem.path == locked
+      assert problem.message =~ "could not be listed"
+    end
+
     test "project definitions replace user definitions, which replace built-ins", %{
       project: project,
       opts: opts

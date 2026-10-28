@@ -34,7 +34,8 @@ defmodule Tackle.AgentService.Call do
   @doc """
   Settles `call` when `message` is its reply, its task's exit, or its
   timeout: returns the task's result, `{:error, {:crashed, reason}}`, or
-  `{:error, :timeout}` after killing the task. Other messages and a `nil`
+  `{:error, :timeout}` after killing the task (a result or exit that arrived
+  just before the timeout is handled still counts). Other messages and a `nil`
   call return `:error`.
   """
   @spec match(t() | nil, term()) :: {:ok, term()} | :error
@@ -47,8 +48,11 @@ defmodule Tackle.AgentService.Call do
     do: settled(call, {:error, {:crashed, reason}})
 
   def match(%__MODULE__{task: %Task{ref: ref} = task} = call, {__MODULE__, ref}) do
-    Task.shutdown(task, :brutal_kill)
-    settled(call, {:error, :timeout})
+    case Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> settled(call, result)
+      {:exit, reason} -> settled(call, {:error, {:crashed, reason}})
+      nil -> settled(call, {:error, :timeout})
+    end
   end
 
   def match(_call, _message), do: :error

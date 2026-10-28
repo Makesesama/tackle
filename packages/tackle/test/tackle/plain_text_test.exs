@@ -29,8 +29,16 @@ defmodule Tackle.PlainTextTest do
 
   test "truncate_bytes/2 never splits a character" do
     assert PlainText.truncate_bytes("üü", 4) == "üü"
-    assert PlainText.truncate_bytes("üüü", 3) == "ü…"
-    assert PlainText.truncate_bytes("üüü", 1) == "…"
+    assert PlainText.truncate_bytes("üüü", 5) == "ü…"
+    assert PlainText.truncate_bytes("üüü", 4) == "…"
+    assert PlainText.truncate_bytes("üüü", 3) == "…"
+    assert PlainText.truncate_bytes("üüü", 2) == "ü"
+    assert PlainText.truncate_bytes("üüü", 1) == ""
+    assert PlainText.truncate_bytes("abcdef", 4) == "a…"
+
+    for text <- ["abcdef", "üüüü", "aüb€c"], bytes <- 0..12 do
+      assert byte_size(PlainText.truncate_bytes(text, bytes)) <= bytes
+    end
   end
 
   test "last_chars/2 keeps the end on characters" do

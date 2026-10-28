@@ -51,6 +51,7 @@ defmodule YamlFrontmatterTest do
       assert YamlFrontmatter.list(~s(["a, b", "c\\"d"])) == {:ok, ["a, b", ~s(c"d)]}
       assert YamlFrontmatter.list("[{lib,test}/**, '*.md']") == {:ok, ["{lib,test}/**", "*.md"]}
       assert YamlFrontmatter.list("[]") == {:ok, []}
+      assert YamlFrontmatter.list(~s(["a" \t , "b"\t \t])) == {:ok, ["a", "b"]}
     end
 
     test "reads block lists as parse/1 returns them" do

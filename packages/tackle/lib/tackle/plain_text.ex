@@ -13,6 +13,7 @@ defmodule Tackle.PlainText do
   @escape ~r/\e\[[0-?]*[ -\/]*[@-~]|\e\][^\a\e]*(?:\a|\e\\)|\e[ -\/]*[0-~]/u
   # C0 controls except tab and newline, DEL, and C1 controls.
   @control ~r/[\x00-\x08\x0B-\x1F\x7F\x{80}-\x{9F}]/u
+  @ellipsis "…"
 
   @doc """
   Cleans text for a model.
@@ -39,18 +40,24 @@ defmodule Tackle.PlainText do
   @doc "Cuts `text` to its first `chars` characters, marking a cut with `…`."
   @spec truncate(String.t(), non_neg_integer()) :: String.t()
   def truncate(text, chars) when is_binary(text) and is_integer(chars) and chars >= 0 do
-    if String.length(text) <= chars, do: text, else: String.slice(text, 0, chars) <> "…"
+    if String.length(text) <= chars, do: text, else: String.slice(text, 0, chars) <> @ellipsis
   end
 
   @doc """
   Cuts `text` to at most `bytes` bytes without splitting a character, marking
-  a cut with `…`.
+  a cut with `…` within that limit (a limit too small for the mark gets none).
   """
   @spec truncate_bytes(String.t(), non_neg_integer()) :: String.t()
   def truncate_bytes(text, bytes) when is_binary(text) and byte_size(text) <= bytes, do: text
 
+  def truncate_bytes(text, bytes)
+      when is_binary(text) and is_integer(bytes) and bytes >= byte_size(@ellipsis),
+      do: cut_end(text, bytes - byte_size(@ellipsis)) <> @ellipsis
+
   def truncate_bytes(text, bytes) when is_binary(text) and is_integer(bytes) and bytes >= 0,
-    do: text |> binary_part(0, bytes) |> drop_partial_last() |> Kernel.<>("…")
+    do: cut_end(text, bytes)
+
+  defp cut_end(text, bytes), do: text |> binary_part(0, bytes) |> drop_partial_last()
 
   @doc "Keeps the last `chars` characters of `text`."
   @spec last_chars(String.t(), non_neg_integer()) :: String.t()

@@ -70,7 +70,7 @@ defmodule Tackle.Agents do
       files
       |> ProjectFiles.tackle_dirs(cwd, homes[:home], "agents")
       |> Enum.flat_map(fn {source, dir} ->
-        Enum.map(markdown_files(files, dir), &load_file(files, &1, source))
+        Enum.map(markdown_files(files, dir), &load_entry(files, &1, source))
       end)
 
     {definitions, problems} =
@@ -140,8 +140,8 @@ defmodule Tackle.Agents do
         |> Enum.reject(&String.starts_with?(&1, "."))
         |> Enum.flat_map(&markdown_entry(files, dir, &1))
 
-      {:error, _reason} ->
-        []
+      {:error, reason} ->
+        [{:file, {:unlistable, dir, reason}}]
     end
   end
 
@@ -154,6 +154,11 @@ defmodule Tackle.Agents do
       true -> []
     end
   end
+
+  defp load_entry(_files, {:unlistable, dir, reason}, _source),
+    do: {:error, problem(dir, "could not be listed (#{ProjectFiles.format_error(reason)})")}
+
+  defp load_entry(files, path, source), do: load_file(files, path, source)
 
   defp load_file(files, path, source) do
     with {:ok, contents} <- read(files, path),

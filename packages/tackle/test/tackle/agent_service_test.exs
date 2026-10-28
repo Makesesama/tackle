@@ -35,6 +35,16 @@ defmodule Tackle.AgentServiceTest do
       refute Process.alive?(call.task.pid)
     end
 
+    test "a reply already received when the timeout is handled still counts", %{
+      supervisor: supervisor
+    } do
+      {:ok, call} = Call.start(supervisor, fn -> :answer end, 60_000, nil)
+      ref = call.task.ref
+      await_message(fn message -> match?({^ref, _reply}, message) end)
+
+      assert Call.match(call, {Call, ref}) == {:ok, :answer}
+    end
+
     test "ignores other messages and no call" do
       assert Call.match(nil, {make_ref(), :answer}) == :error
     end
@@ -56,6 +66,17 @@ defmodule Tackle.AgentServiceTest do
       assert_raise ArgumentError, fn ->
         AgentService.request_timeout!([request_timeout: timeout], 30_000)
       end
+    end
+  end
+
+  # Waits until a matching message is in the mailbox, without taking it.
+  defp await_message(match?, attempts \\ 100) do
+    {:messages, messages} = Process.info(self(), :messages)
+
+    cond do
+      Enum.any?(messages, match?) -> :ok
+      attempts == 0 -> flunk("message never arrived")
+      true -> Process.sleep(10) && await_message(match?, attempts - 1)
     end
   end
 

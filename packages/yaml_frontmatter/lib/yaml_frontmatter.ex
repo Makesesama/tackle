@@ -152,7 +152,7 @@ defmodule YamlFrontmatter do
 
   # After a quoted item comes the end or a separator.
   defp after_quoted(rest) do
-    case String.trim_leading(rest, " ") |> String.trim_leading("\t") do
+    case String.replace(rest, ~r/\A[ \t]+/, "") do
       "" -> {:ok, ""}
       <<separator, rest::binary>> when separator in [?,, ?\n] -> {:ok, rest}
       _other -> {:error, :malformed_list}

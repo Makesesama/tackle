@@ -326,12 +326,15 @@ defmodule Tackle.ProjectFiles do
   order.
 
   `visit` receives a directory and returns its ordered contents to keep, each
-  `{:file, path}` (returned) or `{:dir, path}` (visited next). At most 256
+  `{:file, item}` (returned; usually a path, or any term a caller wants in
+  its place, such as an error for a directory it could not list) or
+  `{:dir, path}` (visited next). At most 256
   directories are visited, so symlinked directory loops cannot make the walk
   explode; a truncated walk logs a warning and still returns the files
   already listed.
   """
-  @spec walk(t(), Path.t(), (Path.t() -> [{:file | :dir, Path.t()}])) :: [Path.t()]
+  @spec walk(t(), Path.t(), (Path.t() -> [{:file, item} | {:dir, Path.t()}])) :: [item]
+        when item: term()
   def walk(%__MODULE__{}, root, visit) when is_function(visit, 1),
     do: walk([{:dir, root}], visit, @max_walk_dirs, root, [])
 
