@@ -13,8 +13,9 @@ defmodule Tackle.CLI.TUI.ReviewCall do
     * `summary` - the final counts, once the review finished.
 
   The live model only exists while the shell watched the call. A settled
-  call is drawn from its result text instead (`parse_result/1`), which is
-  also all a resumed session has.
+  call is drawn from its result text instead
+  (`Tackle.Tools.Review.parse_result/1`), which is also all a resumed
+  session has.
   """
 
   alias Tackle.CLI.TUI.ReviewProgress
@@ -38,44 +39,6 @@ defmodule Tackle.CLI.TUI.ReviewCall do
             deletions: nil,
             progress: %ReviewProgress{},
             summary: nil
-
-  @typedoc "One finding line of a `review_changes` result."
-  @type finding :: %{
-          group: :blocking | :optional,
-          location: String.t(),
-          severity: atom(),
-          category: String.t(),
-          rule: String.t() | nil,
-          title: String.t(),
-          unverified?: boolean()
-        }
-
-  @typedoc """
-  A parsed `review_changes` result: the reviewed `target` and file count
-  (`nil` when nothing was reviewed), the blocking and optional counts, how
-  many verified findings the profile did not show (`hidden`), the findings
-  in result order, and the notes.
-  """
-  @type result :: %{
-          target: String.t() | nil,
-          files: non_neg_integer() | nil,
-          blocking: non_neg_integer(),
-          optional: non_neg_integer(),
-          hidden: non_neg_integer(),
-          findings: [finding()],
-          notes: [String.t()]
-        }
-
-  @severities %{
-    "blocker" => :blocker,
-    "high" => :high,
-    "medium" => :medium,
-    "low" => :low
-  }
-
-  @reviewed ~r/^Reviewed (\d+) files? \((.*)\): (\d+) blocking, (\d+) optional finding\(s\)\.$/u
-  @nothing ~r/^Nothing to review in (.*)\.$/u
-  @finding ~r/^\d+\. (.+?:\d+(?:-\d+)?)((?: \(removed lines\))?) \[(\w+), (\w+)(?:, rule ([^\]]+))?\] (.+?)((?: \(unverified\))?)$/u
 
   @doc "An empty projection, before the review reported anything."
   @spec new() :: t()
@@ -151,127 +114,4 @@ defmodule Tackle.CLI.TUI.ReviewCall do
 
   defp count(value) when is_integer(value) and value >= 0, do: value
   defp count(_value), do: nil
-
-  @doc """
-  Parses the result text of a `review_changes` call, or returns `nil` when
-  it is not one (an error, or a format this shell does not know).
-
-      iex> Tackle.CLI.TUI.ReviewCall.parse_result("Nothing to review in staged changes.")
-      %{target: "staged changes", files: nil, blocking: 0, optional: 0, hidden: 0, findings: [], notes: []}
-  """
-  @spec parse_result(String.t() | nil) :: result() | nil
-  def parse_result(text) when is_binary(text) do
-    if String.valid?(text), do: parse_valid(text)
-  end
-
-  def parse_result(_text), do: nil
-
-  defp parse_valid(text) do
-    [headline | lines] = String.split(text, "\n")
-
-    case headline(String.trim(headline)) do
-      nil -> nil
-      result -> body(lines, result)
-    end
-  end
-
-  defp headline(line) do
-    cond do
-      match = Regex.run(@reviewed, line) ->
-        [_line, files, target, blocking, optional] = match
-
-        %{
-          target: target,
-          files: String.to_integer(files),
-          blocking: String.to_integer(blocking),
-          optional: String.to_integer(optional),
-          hidden: 0,
-          findings: [],
-          notes: []
-        }
-
-      match = Regex.run(@nothing, line) ->
-        [_line, target] = match
-
-        %{
-          target: target,
-          files: nil,
-          blocking: 0,
-          optional: 0,
-          hidden: 0,
-          findings: [],
-          notes: []
-        }
-
-      true ->
-        nil
-    end
-  end
-
-  # Sections are `Blocking:`, `Optional:`, the verified findings the
-  # profile did not show, and `Notes:`; finding lines are numbered (`- ` for
-  # hidden ones), their details indented below them. A hidden section's
-  # `- … and N more` line counts N.
-  defp body(lines, result) do
-    {result, _section} =
-      Enum.reduce(lines, {result, nil}, fn line, {result, section} ->
-        case {line, section} do
-          {"Blocking:", _section} ->
-            {result, :blocking}
-
-          {"Optional:", _section} ->
-            {result, :optional}
-
-          {"Notes:", _section} ->
-            {result, :notes}
-
-          {"Verified but not shown under the " <> _profile, _section} ->
-            {result, :hidden}
-
-          {"- … and " <> more, :hidden} ->
-            {%{result | hidden: result.hidden + more_count(more)}, :hidden}
-
-          {"- " <> _finding, :hidden} ->
-            {%{result | hidden: result.hidden + 1}, :hidden}
-
-          {"- " <> note, :notes} ->
-            {%{result | notes: [note | result.notes]}, :notes}
-
-          {line, group} when group in [:blocking, :optional] ->
-            {finding(result, line, group), group}
-
-          _other ->
-            {result, section}
-        end
-      end)
-
-    %{result | findings: Enum.reverse(result.findings), notes: Enum.reverse(result.notes)}
-  end
-
-  defp more_count(text) do
-    case Integer.parse(text) do
-      {count, _rest} when count > 0 -> count
-      _other -> 0
-    end
-  end
-
-  defp finding(result, line, group) do
-    case Regex.run(@finding, line) do
-      [_line, location, removed, severity, category, rule, title, unverified] ->
-        finding = %{
-          group: group,
-          location: location <> if(removed == "", do: "", else: " (old)"),
-          severity: Map.get(@severities, severity, :low),
-          category: category,
-          rule: if(rule == "", do: nil, else: rule),
-          title: title,
-          unverified?: unverified != ""
-        }
-
-        %{result | findings: [finding | result.findings]}
-
-      _no_match ->
-        result
-    end
-  end
 end

@@ -67,9 +67,8 @@ defmodule Tackle.Tools.Review do
 
   The data is plain maps of strings, numbers, and atoms, so frontends can
   forward it as JSON. The result text stays the model-facing contract;
-  frontends may read its finding lines
-  (`N. path:line [severity, category, rule ID] title`) to draw a settled
-  call.
+  frontends draw a settled call, and a resumed session's, from it with
+  `parse_result/1`, which reads the text `format_result/3` writes.
   """
 
   use Tackle.Lib.Tool
@@ -86,6 +85,38 @@ defmodule Tackle.Tools.Review do
   @profiles %{"quiet" => :quiet, "default" => :default, "assertive" => :assertive}
   @hidden_limit 10
   @hidden_heading "Verified but not shown under the"
+  @severities Map.new(Finding.severities(), &{Atom.to_string(&1), &1})
+
+  @reviewed ~r/^Reviewed (\d+) files? \((.*)\): (\d+) blocking, (\d+) optional finding\(s\)\.$/u
+  @nothing ~r/^Nothing to review in (.*)\.$/u
+  @finding_line ~r/^\d+\. (.+?:\d+(?:-\d+)?)((?: \(removed lines\))?) \[(\w+), (\w+)(?:, rule ([^\]]+))?\] (.+?)((?: \(unverified\))?)$/u
+
+  @typedoc "One finding line of a result text, as `parse_result/1` reads it."
+  @type parsed_finding :: %{
+          group: :blocking | :optional,
+          location: String.t(),
+          severity: Finding.severity(),
+          category: String.t(),
+          rule: String.t() | nil,
+          title: String.t(),
+          unverified?: boolean()
+        }
+
+  @typedoc """
+  A parsed result text: the reviewed `target` and file count (`nil` when
+  nothing was reviewed), the blocking and optional counts, how many
+  verified findings the profile did not show (`hidden`), the findings in
+  result order, and the notes.
+  """
+  @type parsed_result :: %{
+          target: String.t(),
+          files: non_neg_integer() | nil,
+          blocking: non_neg_integer(),
+          optional: non_neg_integer(),
+          hidden: non_neg_integer(),
+          findings: [parsed_finding()],
+          notes: [String.t()]
+        }
 
   tool_name("review_changes")
 
@@ -308,8 +339,8 @@ defmodule Tackle.Tools.Review do
   @doc """
   The tool's result text for `result`: a headline, the blocking and
   optional findings with their details, and `notes` followed by the
-  review's own notes. Frontends parse its headline and finding lines to
-  draw a settled call (see the moduledoc's Progress section).
+  review's own notes. `parse_result/1` reads it back, so frontends can draw
+  a settled call.
   """
   @spec format_result(Result.t(), Change.t(), [String.t()]) :: String.t()
   def format_result(%Result{} = result, %Change{} = change, notes) when is_list(notes) do
@@ -456,4 +487,121 @@ defmodule Tackle.Tools.Review do
 
   defp plural(1, noun), do: "1 #{noun}"
   defp plural(count, noun), do: "#{count} #{noun}s"
+
+  ## Parsing
+
+  @doc """
+  Reads a result text `format_result/3` wrote, or returns `nil` for any
+  other text (such as an error).
+
+  A finding's location is `path:line` or `path:first-last`, with ` (old)`
+  for removed lines; a severity this version does not know reads as `:low`.
+
+      iex> Tackle.Tools.Review.parse_result("Nothing to review in staged changes.")
+      %{target: "staged changes", files: nil, blocking: 0, optional: 0, hidden: 0, findings: [], notes: []}
+  """
+  @spec parse_result(String.t() | nil) :: parsed_result() | nil
+  def parse_result(text) when is_binary(text) do
+    if String.valid?(text), do: parse_valid(text)
+  end
+
+  def parse_result(_text), do: nil
+
+  defp parse_valid(text) do
+    [headline | lines] = String.split(text, "\n")
+
+    case headline(String.trim(headline)) do
+      nil -> nil
+      result -> body(lines, result)
+    end
+  end
+
+  defp headline(line) do
+    cond do
+      match = Regex.run(@reviewed, line) ->
+        [_line, files, target, blocking, optional] = match
+
+        parsed(target, String.to_integer(files),
+          blocking: String.to_integer(blocking),
+          optional: String.to_integer(optional)
+        )
+
+      match = Regex.run(@nothing, line) ->
+        [_line, target] = match
+        parsed(target, nil, [])
+
+      true ->
+        nil
+    end
+  end
+
+  defp parsed(target, files, counts) do
+    Map.merge(
+      %{
+        target: target,
+        files: files,
+        blocking: 0,
+        optional: 0,
+        hidden: 0,
+        findings: [],
+        notes: []
+      },
+      Map.new(counts)
+    )
+  end
+
+  # Sections are `Blocking:`, `Optional:`, the verified findings the
+  # profile did not show, and `Notes:`; finding lines are numbered (`- ` for
+  # hidden ones), their details indented below them. A hidden section's
+  # `- … and N more` line counts N.
+  defp body(lines, result) do
+    {result, _section} = Enum.reduce(lines, {result, nil}, &body_line/2)
+    %{result | findings: Enum.reverse(result.findings), notes: Enum.reverse(result.notes)}
+  end
+
+  defp body_line("Blocking:", {result, _section}), do: {result, :blocking}
+  defp body_line("Optional:", {result, _section}), do: {result, :optional}
+  defp body_line("Notes:", {result, _section}), do: {result, :notes}
+  defp body_line(@hidden_heading <> _profile, {result, _section}), do: {result, :hidden}
+
+  defp body_line("- … and " <> more, {result, :hidden}),
+    do: {%{result | hidden: result.hidden + more_count(more)}, :hidden}
+
+  defp body_line("- " <> _finding, {result, :hidden}),
+    do: {%{result | hidden: result.hidden + 1}, :hidden}
+
+  defp body_line("- " <> note, {result, :notes}),
+    do: {%{result | notes: [note | result.notes]}, :notes}
+
+  defp body_line(line, {result, group}) when group in [:blocking, :optional],
+    do: {parse_finding(result, line, group), group}
+
+  defp body_line(_line, acc), do: acc
+
+  defp more_count(text) do
+    case Integer.parse(text) do
+      {count, _rest} when count > 0 -> count
+      _other -> 0
+    end
+  end
+
+  defp parse_finding(result, line, group) do
+    case Regex.run(@finding_line, line) do
+      [_line, location, removed, severity, category, rule, title, unverified] ->
+        finding = %{
+          group: group,
+          location: location <> if(removed == "", do: "", else: " (old)"),
+          severity: Map.get(@severities, severity, :low),
+          category: category,
+          rule: if(rule == "", do: nil, else: rule),
+          title: title,
+          unverified?: unverified != ""
+        }
+
+        %{result | findings: [finding | result.findings]}
+
+      _no_match ->
+        result
+    end
+  end
 end

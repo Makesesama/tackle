@@ -16,6 +16,7 @@ defmodule Tackle.CLI.TUI.ReviewCallView do
   """
 
   alias Tackle.CLI.TUI.{MessageView, ReviewCall, ReviewDashboard, ReviewProgress}
+  alias Tackle.Tools.Review
 
   import Tackle.CLI.TUI.ReviewRows
 
@@ -30,7 +31,7 @@ defmodule Tackle.CLI.TUI.ReviewCallView do
   def target(model, output, args) do
     cond do
       ReviewCall.loaded?(model) -> model.target
-      result = ReviewCall.parse_result(output) -> result.target
+      result = Review.parse_result(output) -> result.target
       true -> requested_target(args)
     end
   end
@@ -65,7 +66,7 @@ defmodule Tackle.CLI.TUI.ReviewCallView do
   end
 
   def preview(model, :completed, output, width, budget) do
-    case ReviewCall.parse_result(output) do
+    case Review.parse_result(output) do
       nil ->
         nil
 
