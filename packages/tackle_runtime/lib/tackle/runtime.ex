@@ -267,6 +267,23 @@ defmodule Tackle.Runtime do
     end
   end
 
+  @doc """
+  Resolves one of the trusted profiles of `ref`'s scope (the scope spec's
+  `:profiles`) into a spec its backend validated, as `request_agent/4` does
+  for a profile name, without starting a run.
+
+  `ref` is any reference into the scope. Returns the errors of
+  `Tackle.Runtime.ScopeSpec.resolve_profile/2`, such as `{:error,
+  {:unknown_profile, name}}` for a profile the scope does not allow, and
+  `{:error, :scope_not_found}` once the scope is gone.
+  """
+  @spec resolve_profile(Ref.t(), String.t()) :: {:ok, AgentSpec.t()} | {:error, term()}
+  def resolve_profile(ref, name) do
+    with {:ok, coordinator} <- coordinator(ref) do
+      Coordinator.resolve_profile(coordinator, name)
+    end
+  end
+
   @doc "Delivers text to an in-scope agent's bounded inbox (at the next provider boundary when busy)."
   @spec tell(AgentRef.t(), AgentRef.t(), String.t()) :: :ok | {:error, term()}
   def tell(%AgentRef{} = from, %AgentRef{} = to, message) when is_binary(message) do

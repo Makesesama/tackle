@@ -102,8 +102,9 @@ the backend of a requester's scope:
 - `llm/1` (`Tackle.Runtime.spec_llm/2`) returns the model client and its
   options, credentials included, for a direct model call outside a run.
 
-`Tackle.Runtime.prepare_spec/2` applies `prepare_child/2` to a spec without
-starting a run. Backends without a callback return
+`Tackle.Runtime.resolve_profile/2` resolves one of a scope's trusted profiles
+by name, as a delegated request does, and `Tackle.Runtime.prepare_spec/2`
+applies `prepare_child/2` to a spec, both without starting a run. Backends without a callback return
 `{:error, {:unsupported_backend_callback, name}}`, and a raising callback
 returns `{:error, {:agent_backend_failed, message}}`.
 `Tackle.Runtime.RootBackend` implements all three;

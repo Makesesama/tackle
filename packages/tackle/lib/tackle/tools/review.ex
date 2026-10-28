@@ -74,7 +74,6 @@ defmodule Tackle.Tools.Review do
 
   use Tackle.Lib.Tool
 
-  alias Tackle.AgentScope.Coordinator
   alias Tackle.Config
   alias Tackle.Executor
   alias Tackle.Lib.Tool
@@ -83,7 +82,7 @@ defmodule Tackle.Tools.Review do
   alias Tackle.Review.{Change, Delegation, Detector, Finding, Rank, Result, Verifier}
   alias Tackle.Review.Settings, as: ReviewSettings
   alias Tackle.Runtime
-  alias Tackle.Runtime.{AgentRef, Ref, Registry}
+  alias Tackle.Runtime.AgentRef
 
   @profiles %{"quiet" => :quiet, "default" => :default, "assertive" => :assertive}
   @hidden_limit 10
@@ -197,18 +196,9 @@ defmodule Tackle.Tools.Review do
   # The stage profiles come from the agent's own scope, resolved when the
   # review starts, so the tool can only use what the scope already allows.
   defp profiles(agent_ref) do
-    scope_ref = Ref.scope_ref(agent_ref)
-
     Map.new([Detector.profile(), Verifier.profile()], fn name ->
-      {name, fn -> resolve_profile(scope_ref, name) end}
+      {name, fn -> Runtime.resolve_profile(agent_ref, name) end}
     end)
-  end
-
-  defp resolve_profile(scope_ref, name) do
-    case Registry.coordinator(scope_ref) do
-      {:ok, coordinator} -> Coordinator.resolve_profile(coordinator, name)
-      {:error, :not_found} -> {:error, :scope_not_found}
-    end
   end
 
   defp history(change, context, home) do

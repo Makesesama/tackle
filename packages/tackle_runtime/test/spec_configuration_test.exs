@@ -187,6 +187,33 @@ defmodule Tackle.Runtime.SpecConfigurationTest do
     assert {:error, {:invalid_backend_description, :nope}} = Runtime.describe_spec(requester, bad)
   end
 
+  test "resolve_profile resolves the scope's trusted profiles by name" do
+    child = AgentSpec.new!(name: "child", config: config())
+    lazy = AgentSpec.new!(name: "lazy", config: config(%{model: "test/slow"}))
+
+    profiles = %{
+      "child" => child,
+      "lazy" => fn -> {:ok, lazy} end,
+      "broken" => fn -> {:error, :no_model} end
+    }
+
+    root = AgentSpec.new!(name: "root", config: config())
+    spec = ScopeSpec.new!(backend: Backend, root_spec: root, profiles: profiles)
+    {:ok, scope} = Runtime.start_scope(spec)
+
+    assert Runtime.resolve_profile(scope.scope_ref, "child") == {:ok, child}
+    assert Runtime.resolve_profile(scope.root_agent_ref, "lazy") == {:ok, lazy}
+
+    assert Runtime.resolve_profile(scope.scope_ref, "broken") ==
+             {:error, {:profile_failed, "broken", :no_model}}
+
+    assert Runtime.resolve_profile(scope.scope_ref, "root") ==
+             {:error, {:unknown_profile, "root"}}
+
+    :ok = Runtime.stop_scope(scope.scope_ref)
+    assert Runtime.resolve_profile(scope.scope_ref, "child") == {:error, :scope_not_found}
+  end
+
   test "a backend without the callbacks refuses them" do
     requester = start(MinimalBackend, %{})
     spec = AgentSpec.new!(name: "child", config: %{})

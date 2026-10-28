@@ -47,7 +47,6 @@ defmodule Tackle.CLI.TUI.Review do
   """
 
   alias ExRatatui.Command
-  alias Tackle.AgentScope.Coordinator
   alias Tackle.CLI.Output.Review, as: ReviewOutput
   alias Tackle.CLI.TUI.{Composer, ReviewProgress, ReviewView, State}
   alias Tackle.CLI.Widgets.Input
@@ -55,7 +54,7 @@ defmodule Tackle.CLI.TUI.Review do
   alias Tackle.LocalReview
   alias Tackle.LocalReview.History
   alias Tackle.Review.{Change, Detector, Finding, Result, Verifier}
-  alias Tackle.Runtime.Registry
+  alias Tackle.Runtime
 
   @usage "Usage: /review [RANGE | --staged]"
 
@@ -414,15 +413,8 @@ defmodule Tackle.CLI.TUI.Review do
   # review starts, as `Tackle.Tools.Review` resolves them for the agent.
   defp profiles(scope_ref) do
     Map.new([Detector.profile(), Verifier.profile()], fn name ->
-      {name, fn -> resolve_profile(scope_ref, name) end}
+      {name, fn -> Runtime.resolve_profile(scope_ref, name) end}
     end)
-  end
-
-  defp resolve_profile(scope_ref, name) do
-    case Registry.coordinator(scope_ref) do
-      {:ok, coordinator} -> Coordinator.resolve_profile(coordinator, name)
-      {:error, :not_found} -> {:error, :scope_not_found}
-    end
   end
 
   # -- background messages ----------------------------------------------------
