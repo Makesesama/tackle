@@ -11,7 +11,10 @@ defmodule Tackle.SystemPrompt do
        when the working directory is under it, otherwise up to the Git root,
        or only the working directory outside a Git repository (see
        `Tackle.ProjectFiles.ancestors/3`);
-    4. available Agent Skills from `.agents/skills`, when present; and
+    4. the Agent Skills given as `:skills` (discovered `.agents/skills`
+       files and the host's built-in skills, see `Tackle.Skills`) that
+       `Tackle.Skills.format_for_prompt/2` lists for the agent's tools,
+       when there are any; and
     5. the current working directory.
 
   With `instructions: false`, steps 2 and 3 are skipped and their files are

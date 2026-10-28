@@ -18,7 +18,9 @@ defmodule Tackle do
   `Tackle.Config.load/1` loads exactly one agent's execution configuration.
   Trusted host or distribution code composes that value into a
   `Tackle.Runtime.AgentSpec` and `Tackle.Runtime.ScopeSpec` before starting the
-  runtime.
+  runtime. `Tackle.Coding.scope_spec/2` builds the coding harness's scope spec
+  instead: the root's configuration, the built-in and discovered subagent
+  profiles, the delegation tools, and the scope's limits.
   """
 
   alias Tackle.Runtime

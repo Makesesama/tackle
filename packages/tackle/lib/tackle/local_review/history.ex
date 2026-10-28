@@ -17,7 +17,7 @@ defmodule Tackle.LocalReview.History do
 
   ## Runs
 
-  `record_run/4` appends a run line with what was reviewed (change mode,
+  `record_run/3` appends a run line with what was reviewed (change mode,
   base and head), the profile and samples, summary counts, digests of the
   rules and stage prompts in effect (to compare runs across prompt and rule
   changes), the cost settings (unit size, batching, per-stage models and
@@ -39,9 +39,10 @@ defmodule Tackle.LocalReview.History do
     * `useful`, `not_useful`, `dismissed`, `fixed` - outcomes reported by
       the user through `record_outcome/4`; may carry a `"note"`.
 
-  `fingerprints/2` reads back the fingerprints with given events, which
-  `Tackle.LocalReview` passes to `Tackle.Review.run/2` as
-  `:known_fingerprints` to skip dismissed (or already shown) findings.
+  `fingerprints/2` reads back the fingerprints with given events;
+  `Tackle.LocalReview` passes the `dismissed` ones to `Tackle.Review.run/2`
+  as `:known_fingerprints`, so dismissed findings are not reported again
+  while findings merely shown before are.
 
   Lines are appended with one write each. A line that cannot be decoded,
   such as a partial line left by a crash, is skipped when reading; the next
@@ -106,9 +107,11 @@ defmodule Tackle.LocalReview.History do
   @doc """
   Opens the history of the repository whose root is `root`.
 
-  Fails only when the Tackle home cannot be resolved or an option is
-  invalid (`{:invalid_home, value}`, or `{:invalid_option, key, value}`
-  for another option); files are created on the first write.
+  Fails only when the Tackle home cannot be resolved
+  (`:user_home_unavailable`, also for `home: nil`), `root` is not a
+  non-empty path (`{:invalid_root, root}`), or an option is invalid
+  (`{:invalid_home, value}`, or `{:invalid_option, key, value}` for another
+  option); files are created on the first write.
   """
   @spec open(Path.t(), [open_option()]) :: {:ok, t()} | {:error, term()}
   def open(root, opts \\ [])

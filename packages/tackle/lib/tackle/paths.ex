@@ -1,10 +1,13 @@
 defmodule Tackle.Paths do
   @moduledoc """
-  Resolves the harness-owned configuration and authentication paths.
+  Resolves the harness-owned directories and files: the Tackle home with
+  `config.json` and `auth.json`, the user's home directory and its
+  `~/.agents`, and the project keys of session storage and review history.
 
   `TACKLE_HOME` overrides the default `~/.tackle` directory. Resolution returns
   explicit errors rather than guessing when the operating-system user home is
-  unavailable.
+  unavailable. `homes/1` resolves both homes once, so everything discovered
+  for one session uses the same environment.
   """
 
   @type resolve_option ::

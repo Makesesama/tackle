@@ -9,7 +9,9 @@ defmodule Tackle.Skills do
     * the project `.agents/skills` directory in the working directory and the
       ancestors `Tackle.ProjectFiles.ancestors/3` searches (up to the Git root,
       or without one up to the home directory); and
-    * the user-level `~/.agents/skills` directory.
+    * the user-level `~/.agents/skills` directory, in the home directory
+      given as `:user_home` (default: the operating system's, see
+      `Tackle.Paths.user_home/1`), regardless of `$TACKLE_HOME`.
 
   Only the name, description, and skill directory are included in the system
   prompt; the model loads a skill's instructions on demand with the
@@ -19,7 +21,8 @@ defmodule Tackle.Skills do
 
   The harness reads skill files itself through `Tackle.ProjectFiles`, so a
   skill under `~/.agents/skills` loads even when a jailed executor cannot see
-  that directory. Files a skill references relative to its directory are still
+  that directory, and project skills, and user skills that are symlinks into
+  the workspace, are read through the session executor. Files a skill references relative to its directory are still
   accessed with the agent's own tools.
 
   A host can also ship built-in skills with its distribution, such as a guide

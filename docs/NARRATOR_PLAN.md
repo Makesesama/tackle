@@ -218,9 +218,15 @@ Where the code differs from, or adds to, the steps above:
   - backs off globally after a failed request (the model is shared): the delay
     starts at twice `interval_seconds`, doubles up to 60 s, and resets on the
     next answer; the failed run stays due;
-  - passes the harness credential store and the session's provider options to
-    the call, so a remote chat model would also work; the reaping timer is the
-    receive timeout (30 s) plus a grace of at most 5 s;
+  - passes the harness credential store to the call, and the narration
+    model's selection carries its provider's settings, so a remote chat model
+    would also work; the only request option a host can set is
+    `:request_timeout` (30 s by default), and the reaping timer is that
+    timeout plus a grace of at most 5 s (no longer than the timeout itself);
+  - has no `running?/1`, since nothing asks (the watchdog keeps its
+    `running?/1` for the CLI);
+  - logs a failing model once, by error kind and HTTP status, never with the
+    request (the task and assistant text);
   - does not republish a line identical to the run's previous narration, but
     counts the answer as the run's narration attempt (as it does for empty
     answers), so it is not asked again before the interval.

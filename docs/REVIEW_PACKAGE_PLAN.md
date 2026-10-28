@@ -125,11 +125,11 @@ rules, and history; the `review_changes` tool, `tackle review`, and the TUI
 review call it.
 
 - `Tackle.Tools.Review` (`review_changes`): loads the change from the agent's
-  workspace, resolves rules from disk, reads and writes the file history,
-  and calls `Review.run` with plain options.
-- The file history (today's `Tackle.Review.History`, renamed into the
-  harness namespace, for example `Tackle.ReviewHistory`), with the same
-  JSONL format under `$TACKLE_HOME/review/`.
+  workspace, opens the file history (`Tackle.LocalReview.open_history/2`),
+  and reviews through `Tackle.LocalReview`.
+- The file history, `Tackle.LocalReview.History` (formerly
+  `Tackle.Review.History`), with the same JSONL format under
+  `$TACKLE_HOME/review/`.
 - Rule discovery from `$TACKLE_HOME/review/rules` and `.tackle/review/rules`
   through the executor (`Tackle.LocalReview.Rules`, phase 3), loaded with
   `Tackle.Review.Rules.load/2`.

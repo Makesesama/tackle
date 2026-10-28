@@ -305,9 +305,10 @@ the agent should do, such as a fine-grained GitHub token for one repository.
 Commands also need the tool itself on `PATH`, for example `gh` in the project's
 devshell.
 
-Tackle reads project guidance (`AGENTS.md`), skills, and project agent
-definitions inside the workspace through the jail, so a symlink that jailed code
-plants to a host file such as `~/.tackle/auth.json` resolves to nothing. The
+Tackle reads project guidance (`AGENTS.md`), skills, agent definitions, saved
+workflows, review rules, and `.tackle/config.json` inside the workspace through
+the jail, so a symlink that jailed code plants to a host file such as
+`~/.tackle/auth.json` resolves to nothing. The
 same holds for host files that are symlinks into the workspace, such as a
 `~/.agents/skills` entry linked to a repository's copy: once a path leads into
 the workspace, the rest of it is resolved in the jail.

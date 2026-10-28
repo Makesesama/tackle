@@ -15,8 +15,11 @@ YamlFrontmatter.parse("just some markdown")
 
 Lists keep the text the file has; `YamlFrontmatter.list/1` reads such a value
 as a list of strings, from a flow list (`[read, "bash"]`), a block list
-(`- read` lines), or comma-separated items, with quoted items unquoted and
-commas inside braces kept (`lib/*.{ex,exs}`):
+(`- read` lines), or items separated by commas or newlines, with quoted items
+unquoted and commas inside quotes, braces, or brackets kept
+(`lib/*.{ex,exs}`). An empty value is an empty list, and a malformed one is
+`{:error, :malformed_list}`. The harness reads agent profiles' `tools` with
+it, and `tackle_review` review rules' `applies_to`:
 
 ```elixir
 YamlFrontmatter.list(~s(["read", 'bash']))

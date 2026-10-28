@@ -162,8 +162,9 @@ primitives inside the jail; the launcher must mount the workspace at the same
 path as on the host. Put the executor in the loader overrides
 (`overrides: [context: %{executor: executor}]`) so subagent profiles get it
 too; `Tackle.Config` rejects a malformed executor rather than falling back to
-the local one. With a jailed executor, `AGENTS.md`, skills, and project agent
-definitions inside the workspace are also read through the jail (see
+the local one. With a jailed executor, `AGENTS.md`, skills, agent
+definitions, saved workflows, review rules, and `.tackle/config.json` inside
+the workspace are also read through the jail (see
 `Tackle.ProjectFiles`), so symlinks planted by jailed code cannot expose host
 files; those files are limited to 1 MiB. Files outside the workspace, such as
 `~/.agents/skills` or `$TACKLE_HOME/workflows`, are read and written on the
@@ -222,17 +223,20 @@ Review the requested change. Report concrete findings with file and line
 references. Do not edit files.
 ```
 
-`name` and `description` are required, as is a non-empty prompt body. Supported
-optional fields are `tools`, `model`, `thinking`, `timeoutMs`, `maxIterations`,
-`advertise`, `allowDelegation`, and `instructions`. Tool lists may be
-comma-separated, a flow list such as `[read, "bash"]`, or an indented `- read`
-block list (`YamlFrontmatter.list/1`); an empty `tools:` leaves the list unset,
-so the profile gets the default tools, while `tools: []` selects none.
-`timeoutMs` is at most `300000` (five minutes). Unknown fields, invalid
-values, duplicate definitions within one source, unavailable models, and tools
-the root agent does not have (other than the review output tools) fail startup
-explicitly. Built-in profiles instead drop the tools a host did not configure,
-so a host that restricts its tools restricts them too.
+`name` and a non-blank `description` are required, as is a non-empty prompt
+body. Supported optional fields are `tools`, `model`, `thinking`, `timeoutMs`,
+`maxIterations`, `advertise`, `allowDelegation`, and `instructions`. Tool
+lists may be comma-separated, a flow list such as `[read, "bash"]`, or an
+indented `- read` block list, with quoted names unquoted
+(`YamlFrontmatter.list/1`); an empty `tools:` leaves the list unset, so the
+profile gets the session's configured tools, while `tools: []` selects none.
+`timeoutMs` (default and maximum `300000`, five minutes) is checked at
+discovery: a larger value is an error naming the agent and the limit, not
+silently capped. Unknown fields, invalid values, duplicate definitions within
+one source, unavailable models, and tools the root agent does not have (other
+than the review output tools) fail startup explicitly. Built-in profiles
+instead drop the tools the root agent does not have, so a host that restricts
+its tools restricts them too.
 
 `Tackle.Agents.discover/1` returns `{:ok, definitions}` or, when any file
 fails, `{:error, {:invalid_agent_definitions, problems}}` with each file's path
@@ -242,7 +246,10 @@ these defaults by name.
 
 Agent files are inert configuration. Tool names resolve only against modules
 already selected by trusted harness code; they cannot load modules or arbitrary
-code. Omitting `tools` inherits the root's trusted tools. Omitting `model` makes
+code. Omitting `tools` gives the profile the session's configured tools
+(`Tackle.Tools.default/0` unless the host passes `:tools`), not the root-only
+tools (`:root_tools`, granted catalog tools, and the subagent tools);
+`allowDelegation: true` adds `subagent`. Omitting `model` makes
 the child use the requesting parent's current model and thinking selection;
 setting `model` pins the configured selection. A `thinking` override requires an
 explicit `model`. `allowDelegation` independently grants the child the subagent
@@ -263,7 +270,8 @@ listed proactively.
 - `scout` performs fast, read-only codebase reconnaissance with `read` and `bash`;
 - `reviewer` performs read-only correctness, regression, and security review with
   `read` and `bash`;
-- `worker` performs implementation tasks with the harness's trusted coding tools.
+- `worker` performs implementation tasks with the session's configured tools
+  (by default `read`, `bash`, `edit`, and `write`).
 
 It also defines `review-detector` and `review-verifier`, the model stages of
 `Tackle.Review` (code review; experimental, in
@@ -299,18 +307,26 @@ fail. A verifier keeps the verdicts it reported before failing.
 review the current Git change with `Tackle.Review` and get back a compact list
 of findings to fix; a host grants it like `run_workflow` (the CLI grants it to
 the root agent). It runs the review through `Tackle.LocalReview`, which adds
-the session's review settings, the user's and project's rules
-(`Tackle.LocalReview.Rules`, which refuses rule files larger than
-`Tackle.Review.Rules.max_file_bytes/1` without reading them), and the history.
-Reviews are recorded by
-`Tackle.LocalReview.History` in
+the session's review settings, the rules, and the history. Rules
+(`Tackle.LocalReview.Rules`) are the built-in ones, flat Markdown files in
+`$TACKLE_HOME/review/rules`, and those in the nearest `.tackle/review/rules`
+at or above the working directory, within the bounds used for
+`.tackle/agents` (`$TACKLE_HOME` itself is never a project directory);
+project files are read through the session executor, and a file larger than
+`Tackle.Review.Rules.max_file_bytes/1` is reported as a warning without being
+read. Reviews are recorded by `Tackle.LocalReview.History` in
 `$TACKLE_HOME/review/<project-key>/` (`runs.jsonl`, `findings.jsonl`, private
 to the current user). Rules and history use the session's Tackle home, the
 one its configuration was loaded with (`Tackle.Config.homes/1`). The project
 key is the Git repository root encoded with `Tackle.Paths.project_key/1`, as
-session storage encodes project directories. Findings dismissed there are not reported again. A line left
-incomplete by a crash or a full disk is skipped, and the next write starts on a
-new line, so the lines after it are kept.
+session storage encodes project directories. Findings dismissed there are not
+reported again; findings merely shown before are. A line left incomplete by a
+crash or a full disk is skipped, and the next write starts on a new line, so
+the lines after it are kept. The session context's `:review_history` turns
+the history off (`false`) or passes options to
+`Tackle.LocalReview.History.open/2`; when it cannot be opened
+(`Tackle.LocalReview.open_history/2`), the review runs without it and its
+result says why.
 
 Reviews read the change with [`gix_ex`](../gix_ex/README.md) (gitoxide)
 in the host process rather than with `git` through the session executor;
@@ -330,8 +346,10 @@ network, and OS permissions. Do not use this profile as an isolation boundary.
 
 `Tackle.Coding.scope_spec/2` owns this composition in the harness package. It loads
 normal global/project guidance for root and child agents, advertises the profiles to the
-root, and limits the scope to two simultaneous children plus the root. Excess
-requests are rejected rather than queued. Children have unlimited loop iterations
+root, and limits each agent to four simultaneous children and the scope to
+five agents (the root plus four children) and five concurrent turns; the
+delegation prompt states the same limit. Excess requests are rejected rather
+than queued. Children have unlimited loop iterations
 by default and a five-minute inactivity timeout, renewed by model steps, streaming
 output, and tool progress. There is no total run-duration cap. `timeoutMs` (and
 the tool's `timeout_ms` override) sets the idle window, not total runtime; a tool
@@ -682,8 +700,9 @@ package is the developer harness, not the former library.
 `Tackle.Skills` discovers `SKILL.md` files in project `.agents/skills`
 directories from the working directory up to the Git root (without one, up to
 your home directory when the working directory is under it, otherwise only the
-working directory), and in
-`~/.agents/skills`. The system prompt includes only skill names, descriptions,
+working directory), and in `~/.agents/skills` (the home directory of
+`Tackle.Paths.user_home/1`, which `Tackle.Skills.discover/1` takes as
+`:user_home`). The system prompt includes only skill names, descriptions,
 and directories. The model loads a skill's instructions on demand with the
 `load_skill` tool (`Tackle.Tools.LoadSkill`), which every agent offered a skill
 is granted. The tool serves only offered skills, by name. The harness reads the

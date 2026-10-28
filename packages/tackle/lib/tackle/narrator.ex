@@ -31,7 +31,9 @@ defmodule Tackle.Narrator do
        text: text, auxiliary: true}`. Empty answers and answers with tool calls
        are dropped. Answers for runs that finished meanwhile are discarded.
     5. A failing model never touches the agent: the narrator logs one warning,
-       backs off, and keeps watching.
+       backs off, and keeps watching. The warning names the failure by error
+       kind and HTTP status, never the request, which holds the task and
+       assistant text.
 
   The root agent's own turn is not narrated. Model calls run as unlinked tasks
   under the service task supervisor; their usage is never counted against any
@@ -71,7 +73,9 @@ defmodule Tackle.Narrator do
   Options are `:agent_ref`, `:task_supervisor` (the agent's service
   `Task.Supervisor`), `:settings` (`Tackle.Config.Narration`), and
   `:request_timeout`, the milliseconds a model request may take (30 seconds by
-  default). The selection already carries its provider's settings.
+  default; anything but a positive integer raises `ArgumentError`). The
+  selection already carries its provider's settings, and requests carry the
+  harness credential store (`Tackle.Auth`).
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts), do: AgentService.start_link(__MODULE__, opts)

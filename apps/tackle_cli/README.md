@@ -39,13 +39,17 @@ The logo pattern and palette live in `lib/tackle_cli/tui/glyph.ex`.
 ### Saved workflows
 
 Open `/workflows` to search saved Lua workflows in the nearest project
-`.tackle/workflows` or `$TACKLE_HOME/workflows` (project names override user
+`.tackle/workflows` (searched up to the Git root, or without one up to your
+home directory) or `$TACKLE_HOME/workflows` (project names override user
 names). Enter asks the agent to run the selected workflow when idle.
 Ctrl+G edits it in `$VISUAL` / `$EDITOR`, even during a turn.
 
 Type a new lowercase-hyphenated name and select `+ new workflow` to edit a
 starter script. The project file is created only after the editor succeeds
-and the template has changed; otherwise no file is created. Workflows take no
+and the template has changed; otherwise no file is created. Where the project
+directory would be `$TACKLE_HOME/workflows` itself, as in your home directory
+with the default `$TACKLE_HOME`, the picker explains that there is no project
+directory instead of creating one. Workflows take no
 parameters: edit Lua locals for configuration, or ask the agent to write a workflow.
 Esc closes the picker; arrows or Ctrl+P/N select rows.
 
@@ -294,7 +298,10 @@ It starts the same scope as an interactive run, without a durable session,
 so `--model`/`--thinking`, the jail, and project `.tackle/agents` overrides
 of `review-detector` and `review-verifier` apply. Rules come from the
 built-in set, `$TACKLE_HOME/review/rules`, and the nearest
-`.tackle/review/rules`. Progress is written to standard error one line per
+`.tackle/review/rules` (searched like `.tackle/agents`; `$TACKLE_HOME` itself
+never counts as a project), read through the jail when there is one. A rule
+file larger than the rule size limit is skipped with a warning without being
+read. Progress is written to standard error one line per
 event; findings go to standard output, grouped into blocking and optional
 ones with severity, `path:line`, title, trigger, and rule. The exit status is
 `0` when no blocking finding is shown, `1` when one is (for CI and Git hooks),
@@ -305,9 +312,11 @@ Every review is recorded in a personal history under
 private to the current user), keyed by the Git repository root the same way
 sessions key project directories. Findings dismissed in that history are not
 reported again; findings merely shown before still are, so the exit status
-does not change because a review ran earlier. The interactive root agent can
-review its own work with the `review_changes` tool, which records the same
-history.
+does not change because a review ran earlier. When the history cannot be
+opened, the review runs without it and notes why. The interactive root agent
+can review its own work with the `review_changes` tool, which records the same
+history. All three use the Tackle home the session's configuration was loaded
+with.
 
 In the TUI, `/review [RANGE | --staged]` runs the same review in the
 background, delegated from the root agent, so its detector and verifier runs
@@ -430,10 +439,11 @@ the file format and security boundaries.
 Every CLI coding scope enables `scout`, `reviewer`, and `worker` by default;
 the former `explorer` profile has been removed. Scout performs quick read-only
 reconnaissance, reviewer performs read-only code review, and worker can implement
-changes with the harness's trusted coding tools. All have fresh conversation
-context, no further delegation, unlimited iterations by default, a five-minute
-inactivity timeout renewed by child progress (not a total runtime cap), and share
-a limit of two simultaneous children. They share the workspace. Scout and reviewer
+changes with the session's configured tools (`read`, `bash`, `edit`, and
+`write`). All have fresh conversation context, no further delegation, unlimited
+iterations by default, a five-minute inactivity timeout renewed by child
+progress (not a total runtime cap), and share a limit of four simultaneous
+children; further requests are rejected, not queued. They share the workspace. Scout and reviewer
 are instructed not to edit it, but
 **bash is not sandboxed or enforced read-only**. Profiles are configured by
 `Tackle.Coding` in the harness package, not the frontend. Each built-in child request

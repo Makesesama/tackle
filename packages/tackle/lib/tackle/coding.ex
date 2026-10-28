@@ -9,11 +9,16 @@ defmodule Tackle.Coding do
   Project profiles override user profiles, which override built-ins. The
   `agents` object of `config.json` or the project's `.tackle/config.json`
   (`Tackle.Config`) then replaces a profile's `model` and `thinking` by name;
-  names without a discovered profile are ignored. Profile
-  files may select only tools already available to the trusted root harness,
-  plus the review output tools of `Tackle.Tools.review/0`; naming any other
-  tool fails the scope. Built-in profiles drop the tools the host did not
-  configure, so a host that restricts its tools restricts them too.
+  names without a discovered profile are ignored.
+
+  A profile without a `tools` list gets the configured tools (`:tools`,
+  `Tackle.Tools.default/0` by default), plus `subagent` when it may delegate,
+  but none of the root-only tools. Profile files may name only tools the root
+  agent has (the configured tools, `:root_tools`, granted catalog tools, and
+  the subagent tools), plus the review output tools of
+  `Tackle.Tools.review/0`; naming any other tool fails the scope. Built-in
+  profiles drop the tools the root agent does not have, so a host that
+  restricts its tools restricts them too.
   """
 
   alias Tackle.Agents

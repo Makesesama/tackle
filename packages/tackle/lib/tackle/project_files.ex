@@ -1,7 +1,9 @@
 defmodule Tackle.ProjectFiles do
   @moduledoc """
-  Host-side access to project files such as `AGENTS.md`, `.agents/skills`,
-  `.tackle/agents`, `.tackle/config.json`, and saved workflows.
+  Host-side access to project files: `AGENTS.md`, `.agents/skills`,
+  `.tackle/agents`, `.tackle/workflows`, `.tackle/review/rules`,
+  `.tackle/config.json`, and their user-level counterparts under
+  `~/.agents` and `$TACKLE_HOME`.
 
   The harness accesses these files itself, outside the agent's tools. With a jailed
   executor, jailed code can write anywhere in the workspace, so a path inside
@@ -24,7 +26,9 @@ defmodule Tackle.ProjectFiles do
   the nearest Git root. Without one it stops at the user's home directory
   (inclusive) when the working directory is under it, and searches only the
   working directory otherwise, so directories other users can write, such as
-  `/tmp`, are never searched on behalf of a project below them.
+  `/tmp`, are never searched on behalf of a project below them. A `.tackle`
+  directory that is `$TACKLE_HOME` itself is never a project's
+  (`tackle_dirs/4`, `project_tackle_file/4`).
   """
 
   alias Tackle.{Executor, Paths}

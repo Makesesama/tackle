@@ -27,6 +27,10 @@ defmodule Tackle.Watchdog do
     5. A failing decision model never stops anything: the watchdog logs one
        warning and keeps watching, backing off like a healthy verdict.
 
+  Logs name a stopped call by its tool call id and a failing model by error
+  kind and HTTP status, never the command, its output, or the request, which
+  may carry secrets.
+
   Decision calls run as unlinked tasks under the service task supervisor, one
   at a time, so a slow model request never blocks the watchdog.
   `Tackle.Lib.Decision.ask/4` checks every answer and turns a crashing adapter
@@ -74,8 +78,9 @@ defmodule Tackle.Watchdog do
   Options are `:agent_ref`, `:task_supervisor` (the agent's service
   `Task.Supervisor`), `:settings` (`Tackle.Config.Watchdog`), and
   `:request_timeout`, the milliseconds a decision request may take (60 seconds
-  by default). The selection already carries its provider's settings, and
-  requests carry the harness credential store (`Tackle.Auth`).
+  by default; anything but a positive integer raises `ArgumentError`). The
+  selection already carries its provider's settings, and requests carry the
+  harness credential store (`Tackle.Auth`).
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts), do: AgentService.start_link(__MODULE__, opts)

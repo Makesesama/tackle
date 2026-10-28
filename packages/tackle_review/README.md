@@ -43,8 +43,9 @@ backend in `test/support/backend.ex`, which runs `Tackle.Lib` loops directly
 and shows the smallest host a review needs.
 
 The harness (`packages/tackle`) is one host: `Tackle.LocalReview` adds the
-local session's settings, rules discovered under `$TACKLE_HOME` and
-`.tackle/review/rules`, and a file history, and the `review_changes` tool,
+local session's settings, rules discovered in `$TACKLE_HOME/review/rules` and
+the project's `.tackle/review/rules` (`Tackle.LocalReview.Rules`), and a file
+history (`Tackle.LocalReview.History`), and the `review_changes` tool,
 `tackle review`, and the TUI's `/review` use it.
 
 ## Development
