@@ -294,6 +294,21 @@ Use Elixir's standard-library `JSON` module; never Jason or another JSON library
 
 saved as `.tackle/review/rules/no-jason.md`.
 
+`tackle review rules` checks the rules in effect in the current directory. It
+lists each rule with its source, severity, and globs, and the rule files that
+do not load with the reason. It also shows the built-in rules that
+`default_rules` leaves out and the directories it read, or where to create
+the project directory. A file that does not load is skipped by every review,
+so check after editing rules. The exit status is `0` when every file loads,
+`1` when one does not, and `2` when the check could not run (for example an
+invalid `review` setting). To review a revision named `rules`, run
+`tackle review -- rules`.
+
+The root agent can write rules too. The CLI grants it the
+`check_review_rules` tool, which runs the same check, and offers the
+`tackle-review-rules` skill, a guide to the rule format, so you can ask it to
+"add a review rule that ...".
+
 It starts the same scope as an interactive run, without a durable session,
 so `--model`/`--thinking`, the jail, and project `.tackle/agents` overrides
 of `review-detector` and `review-verifier` apply. Rules come from the

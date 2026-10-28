@@ -79,6 +79,9 @@ defmodule Tackle.CLI.Output.Review do
   def format_error({:invalid_profile, name, _value}),
     do: "the agent profile #{name} could not be loaded"
 
+  def format_error({:unknown_default_rules, ids}),
+    do: "review.default_rules names unknown built-in rules: #{Enum.join(ids, ", ")}"
+
   def format_error(reason), do: Tackle.CLI.Jail.format_error(reason) || inspect(reason)
 
   @doc "Converts a result and its change into JSON-encodable data."

@@ -41,6 +41,7 @@ defmodule Tackle.CLI.Parser do
           | {:mcp_logout, String.t()}
           | {:sdk, %{}}
           | {:review, review_options()}
+          | {:review_rules, %{}}
 
   @type review_options :: %{
           model: String.t() | nil,
@@ -189,6 +190,8 @@ defmodule Tackle.CLI.Parser do
 
   defp parse_result({:ok, [:review], %{args: %{range: "-" <> _ = range}}}, _parser),
     do: {:error, "unrecognized argument: #{inspect(range)}; see `tackle help review`"}
+
+  defp parse_result({:ok, [:review, :rules], _result}, _parser), do: {:ok, {:review_rules, %{}}}
 
   defp parse_result({:ok, [:review], result}, _parser) do
     range = Map.get(result.args, :range)
@@ -463,6 +466,15 @@ defmodule Tackle.CLI.Parser do
           about:
             "Review a change (experimental). Exits 1 when blocking findings are shown, " <>
               "2 when the review fails.",
+          subcommands: [
+            rules: [
+              name: "rules",
+              about:
+                "Check the review rules in effect here: lists them and the rule files that " <>
+                  "do not load. Exits 1 when a file does not load, 2 when the check fails. " <>
+                  "To review a revision named rules, run `tackle review -- rules`."
+            ]
+          ],
           args: [
             range: [
               value_name: "RANGE",

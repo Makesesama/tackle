@@ -19,7 +19,7 @@ defmodule Tackle.CLI.DistributionTest do
              Catalog.resolve_tools(catalog, ["read"])
   end
 
-  test "the catalog bundles the workflow and review tools next to the subagent tools" do
+  test "the catalog bundles the workflow, review, and rule check tools next to the subagent tools" do
     assert {:ok, catalog} = Distribution.catalog()
 
     assert {:ok, [%{module: Tackle.Workflow.Tool, source: :tackle}]} =
@@ -28,7 +28,14 @@ defmodule Tackle.CLI.DistributionTest do
     assert {:ok, [%{module: Tackle.Tools.Review, source: :tackle}]} =
              Catalog.resolve_tools(catalog, ["review_changes"])
 
-    assert Distribution.root_tool_names() == ["run_workflow", "review_changes"]
+    assert {:ok, [%{module: Tackle.Tools.ReviewRules, source: :tackle}]} =
+             Catalog.resolve_tools(catalog, ["check_review_rules"])
+
+    assert Distribution.root_tool_names() == [
+             "run_workflow",
+             "review_changes",
+             "check_review_rules"
+           ]
   end
 
   test "the CLI's coding scope grants run_workflow and review_changes to a delegating root agent" do
@@ -54,6 +61,7 @@ defmodule Tackle.CLI.DistributionTest do
 
     assert Tackle.Workflow.Tool in spec.root_spec.config.tools
     assert Tackle.Tools.Review in spec.root_spec.config.tools
+    assert Tackle.Tools.ReviewRules in spec.root_spec.config.tools
     assert Tackle.Tools.Subagent in spec.root_spec.config.tools
 
     # The review stages it delegates to are among the scope's profiles.
@@ -73,13 +81,26 @@ defmodule Tackle.CLI.DistributionTest do
 
     assert guide =~ "tackle.parallel(items, fn, opts?)"
 
+    # So is the review rule guide, with the rule check.
+    assert spec.root_spec.config.system_prompt =~ "<name>tackle-review-rules</name>"
+
+    assert {:ok, rule_guide} =
+             Tackle.Tools.LoadSkill.run(
+               %{"name" => "tackle-review-rules"},
+               spec.root_spec.config.context
+             )
+
+    assert rule_guide =~ "check_review_rules"
+
     # Profiles do not inherit the workflow tool unless they list it explicitly,
     # and so are not offered its guide either.
     for {_name, profile} <- spec.profiles do
       refute Tackle.Workflow.Tool in profile.config.tools
       refute Tackle.Tools.Review in profile.config.tools
+      refute Tackle.Tools.ReviewRules in profile.config.tools
       refute Tackle.Tools.LoadSkill in profile.config.tools
       refute profile.config.system_prompt =~ "tackle-workflows"
+      refute profile.config.system_prompt =~ "tackle-review-rules"
     end
   end
 
@@ -106,14 +127,23 @@ defmodule Tackle.CLI.DistributionTest do
              Catalog.resolve_tools(catalog, ["plugin_probe"])
 
     assert Distribution.plugin_tools() == [PluginTool]
-    assert Distribution.root_tool_names() == ["run_workflow", "review_changes", "plugin_probe"]
+
+    assert Distribution.root_tool_names() == [
+             "run_workflow",
+             "review_changes",
+             "check_review_rules",
+             "plugin_probe"
+           ]
   end
 
-  test "the bundled workflow guide is a valid built-in skill gated on run_workflow" do
-    assert {:ok, [skill]} = Distribution.builtin_skills()
-    assert skill.name == "tackle-workflows"
-    assert skill.source == :builtin
-    assert skill.requires_tools == ["run_workflow"]
+  test "the bundled guides are valid built-in skills gated on their tools" do
+    assert {:ok, [workflows, review_rules]} = Distribution.builtin_skills()
+    assert workflows.name == "tackle-workflows"
+    assert workflows.source == :builtin
+    assert workflows.requires_tools == ["run_workflow"]
+    assert review_rules.name == "tackle-review-rules"
+    assert review_rules.source == :builtin
+    assert review_rules.requires_tools == ["check_review_rules"]
   end
 
   test "bundles Codex, DeepSeek, Anthropic, OpenRouter, and Ollama as default adapters" do

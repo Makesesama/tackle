@@ -265,4 +265,119 @@ defmodule Tackle.LocalReview.RulesTest do
       end
     end
   end
+
+  describe "check/1" do
+    test "reports the rules, the problems, and the directories it read", ctx do
+      put(ctx.builtin, "inj.md", rule("injection"))
+      put(ctx.builtin, "nil.md", rule("missing-nil-check"))
+      put(ctx.user, "mine.md", rule("mine", extra: ["applies_to: [\"lib/**\"]"]))
+      put(ctx.project, "off.md", "---\nid: injection\nstatus: suppressed\n---\n")
+      put(ctx.project, "bad.md", "---\nid: bad\ncategory: style\nseverity: low\n---\nx\n")
+
+      check = RuleDiscovery.check(ctx.opts)
+
+      discovery = RuleDiscovery.discover(ctx.opts)
+      assert Enum.map(check.rules, & &1.path) == Enum.map(discovery.rules, & &1.path)
+      assert check.warnings == discovery.warnings
+
+      assert Enum.map(check.rules, &{&1.id, &1.source}) == [
+               {"injection", :project},
+               {"mine", :user},
+               {"missing-nil-check", :builtin}
+             ]
+
+      assert [%{path: bad, message: "category must be one of" <> _}] = check.warnings
+      assert bad == Path.join(ctx.project, "bad.md")
+
+      assert %{
+               user_dir: user,
+               user_dir_found?: true,
+               project_dir: project,
+               builtin_ids: ["injection", "missing-nil-check"],
+               builtin_rules: :all
+             } = check
+
+      assert {user, project} == {ctx.user, ctx.project}
+      assert check.new_project_dir == ctx.project
+
+      text = RuleDiscovery.format_check(check)
+      assert text =~ "Review rules: 2 active, 1 suppressed; 1 problem."
+      assert text =~ "- #{bad}: category must be one of"
+
+      assert text =~
+               "- injection: suppressed, project, replaces the built-in rule " <>
+                 "(#{Path.join(ctx.project, "off.md")})"
+
+      assert text =~
+               "- mine: medium correctness, user, applies to lib/** " <>
+                 "(#{Path.join(ctx.user, "mine.md")})"
+
+      assert text =~ "- missing-nil-check: medium correctness, built-in\n"
+      assert text =~ "- user: #{ctx.user}\n- project: #{ctx.project}"
+      refute text =~ "default_rules"
+    end
+
+    test "says where project rules go when there are none", ctx do
+      child = Path.join(ctx.cwd, "lib/deep")
+      File.mkdir_p!(child)
+      check = RuleDiscovery.check(Keyword.put(ctx.opts, :cwd, child))
+
+      assert %{rules: [], warnings: [], project_dir: nil, user_dir_found?: false} = check
+      assert check.new_project_dir == ctx.project
+
+      text = RuleDiscovery.format_check(check)
+      assert text =~ "Review rules: 0 active; no problems."
+      assert text =~ "Rules: none."
+      assert text =~ "- user: #{ctx.user} (does not exist)"
+      assert text =~ "- project: none found; create #{ctx.project}"
+    end
+
+    test "never suggests $TACKLE_HOME as the project directory", %{root: root, builtin: builtin} do
+      cwd = Path.join(root, "notes")
+      File.mkdir_p!(cwd)
+      home = Path.join(root, ".tackle")
+      opts = [cwd: cwd, home: home, user_home: root, builtin_dir: builtin]
+
+      assert RuleDiscovery.check(opts).new_project_dir == Path.join(cwd, ".tackle/review/rules")
+    end
+
+    test "suggests a project directory inside the executor's workspace", ctx do
+      # A jail that mounts only a subdirectory of the repository cannot
+      # create rules at the Git root.
+      child = Path.join(ctx.cwd, "app/lib")
+      File.mkdir_p!(child)
+      workspace = Path.join(ctx.cwd, "app")
+      opts = Keyword.merge(ctx.opts, cwd: child, executor: FakeJail.new(workspace))
+
+      assert RuleDiscovery.check(opts).new_project_dir ==
+               Path.join(workspace, ".tackle/review/rules")
+
+      assert RuleDiscovery.check(Keyword.put(opts, :executor, FakeJail.new(ctx.cwd))).new_project_dir ==
+               ctx.project
+    end
+
+    test "lists the built-in rules the selection leaves out", %{opts: opts, root: root} do
+      opts = Keyword.merge(Keyword.delete(opts, :builtin_dir), home: root)
+      check = RuleDiscovery.check(Keyword.put(opts, :builtin_rules, ["injection"]))
+
+      assert check.builtin_ids == Rules.builtin_ids()
+      assert Enum.map(check.rules, & &1.id) == ["injection"]
+
+      left_out = Rules.builtin_ids() -- ["injection"]
+
+      assert RuleDiscovery.format_check(check) =~
+               "Built-in rules left out by review.default_rules: " <> Enum.join(left_out, ", ")
+    end
+
+    test "reads project rules through the executor", ctx do
+      secret = Path.join(ctx.home, "secret.md")
+      put(ctx.home, "secret.md", rule("secret"))
+      File.mkdir_p!(ctx.project)
+      File.ln_s!(secret, Path.join(ctx.project, "leak.md"))
+
+      check = RuleDiscovery.check(Keyword.put(ctx.opts, :executor, FakeJail.new(ctx.cwd)))
+      assert check.rules == []
+      assert check.project_dir == ctx.project
+    end
+  end
 end

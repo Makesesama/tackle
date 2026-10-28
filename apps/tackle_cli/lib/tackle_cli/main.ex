@@ -4,6 +4,7 @@ defmodule Tackle.CLI.Main do
   alias Tackle.CLI.Parser
   alias Tackle.CLI.MCP, as: MCPCommands
   alias Tackle.CLI.Review
+  alias Tackle.CLI.ReviewRules
   alias Tackle.CLI.Run
   alias Tackle.CLI.SDK
 
@@ -44,6 +45,7 @@ defmodule Tackle.CLI.Main do
   defp dispatch({:run, opts}), do: Run.run(opts)
   defp dispatch({:sdk, %{}}), do: SDK.run()
   defp dispatch({:review, opts}), do: Review.run(opts)
+  defp dispatch({:review_rules, %{}}), do: ReviewRules.run()
   defp dispatch({:sessions, opts}), do: Run.sessions(opts)
   defp dispatch({:archive, session_id}), do: Run.archive(session_id)
   defp dispatch({:unarchive, session_id}), do: Run.unarchive(session_id)

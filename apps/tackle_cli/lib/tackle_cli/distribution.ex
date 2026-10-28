@@ -12,16 +12,17 @@ defmodule Tackle.CLI.Distribution do
   ]
 
   # Delegation tools bundled with the CLI distribution. `run_workflow` is the
-  # optional `tackle_workflow` plugin's model-facing tool and `review_changes`
-  # the harness's code review tool; the CLI grants both to the root agent next
-  # to the subagent tools.
+  # optional `tackle_workflow` plugin's model-facing tool, `review_changes`
+  # the harness's code review tool, and `check_review_rules` its rule check;
+  # the CLI grants them to the root agent next to the subagent tools.
   @bundled_tools [
     Tackle.Tools.Subagent,
     Tackle.Tools.SubagentStatus,
     Tackle.Tools.SubagentWait,
     Tackle.Tools.SubagentCancel,
     Tackle.Workflow.Tool,
-    Tackle.Tools.Review
+    Tackle.Tools.Review,
+    Tackle.Tools.ReviewRules
   ]
 
   @doc """
@@ -72,30 +73,36 @@ defmodule Tackle.CLI.Distribution do
   def plugin_tools, do: Enum.map(plugins().tools, & &1.module)
 
   @doc """
-  Names of catalog tools the CLI grants to the root agent: the workflow and
-  code review tools and the tools of enabled plugin projects.
+  Names of catalog tools the CLI grants to the root agent: the workflow,
+  code review, and review rule check tools and the tools of enabled plugin
+  projects.
 
   The subagent tools are granted by `Tackle.Coding` itself; these need an
   explicit grant.
   """
   @spec root_tool_names() :: [String.t()]
   def root_tool_names do
-    [Tackle.Workflow.Tool.name(), Tackle.Tools.Review.name()] ++
+    [Tackle.Workflow.Tool.name(), Tackle.Tools.Review.name(), Tackle.Tools.ReviewRules.name()] ++
       Enum.map(plugin_tools(), & &1.name())
   end
 
   @doc """
   Built-in skills bundled with the CLI distribution.
 
-  The `run_workflow` guide is offered only to agents that have that tool.
+  The `run_workflow` guide and the review rule guide are offered only to
+  agents that have `run_workflow` and `check_review_rules` respectively.
   """
   @spec builtin_skills() :: {:ok, [Tackle.Skills.Skill.t()]} | {:error, term()}
   def builtin_skills do
     with {:ok, workflows} <-
            Tackle.Skills.builtin(Tackle.Workflow.Tool.skill_markdown(),
              requires_tools: [Tackle.Workflow.Tool.name()]
+           ),
+         {:ok, review_rules} <-
+           Tackle.Skills.builtin(Tackle.Tools.ReviewRules.skill_markdown(),
+             requires_tools: [Tackle.Tools.ReviewRules.name()]
            ) do
-      {:ok, [workflows]}
+      {:ok, [workflows, review_rules]}
     end
   end
 

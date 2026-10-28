@@ -209,6 +209,16 @@ defmodule Tackle.CLI.ParserTest do
     assert {:error, _message} = Parser.parse(["review", "--unit-lines", "0"])
   end
 
+  test "parses the review rules check, which takes no options" do
+    assert {:ok, {:review_rules, %{}}} = Parser.parse(["review", "rules"])
+    assert {:error, _message} = Parser.parse(["review", "rules", "--staged"])
+    assert {:error, _message} = Parser.parse(["review", "rules", "HEAD"])
+    # `--` reviews a revision named rules.
+    assert {:ok, {:review, %{range: "rules"}}} = Parser.parse(["review", "--", "rules"])
+    assert {:help, help} = Parser.parse(["help", "review"])
+    assert help =~ "rules"
+  end
+
   test "rejects --staged together with a review range" do
     assert {:error, error} = Parser.parse(["review", "--staged", "HEAD~1"])
     assert error =~ "--staged cannot be combined with a RANGE"

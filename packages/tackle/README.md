@@ -314,7 +314,12 @@ at or above the working directory, within the bounds used for
 `.tackle/agents` (`$TACKLE_HOME` itself is never a project directory);
 project files are read through the session executor, and a file larger than
 `Tackle.Review.Rules.max_file_bytes/1` is reported as a warning without being
-read. Reviews are recorded by `Tackle.LocalReview.History` in
+read. `Tackle.LocalReview.Rules.check/1` discovers the same rules, reports
+where it looked, and `format_check/1` renders the report. The opt-in
+`Tackle.Tools.ReviewRules` (`check_review_rules`) tool returns that text, so
+an agent can check rule files it wrote. Its `skill_markdown/0`, a guide to
+writing rules, is meant to be offered as a built-in skill gated on the tool.
+Reviews are recorded by `Tackle.LocalReview.History` in
 `$TACKLE_HOME/review/<project-key>/` (`runs.jsonl`, `findings.jsonl`, private
 to the current user). Rules and history use the session's Tackle home, the
 one its configuration was loaded with (`Tackle.Config.homes/1`). The project
