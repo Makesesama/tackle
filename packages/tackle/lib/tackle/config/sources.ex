@@ -19,7 +19,11 @@ defmodule Tackle.Config.Sources do
   logged once, here.
 
   The fields are the read sources; build configurations with
-  `Tackle.Config.from_sources/2` rather than reading them.
+  `Tackle.Config.from_sources/2` rather than reading them. `home` (the
+  Tackle home) and `user_home` (the user's home directory, `nil` for none)
+  are resolved from `env` once; whatever else is discovered for the same
+  session takes them as its `:home` and `:user_home` options (see
+  `Tackle.Paths.homes/1`).
   """
 
   require Logger
@@ -45,11 +49,12 @@ defmodule Tackle.Config.Sources do
     :overrides
   ]
 
-  @enforce_keys [:env, :cwd, :home, :providers, :file_options, :layers, :overrides]
+  @enforce_keys [:env, :cwd, :home, :user_home, :providers, :file_options, :layers, :overrides]
   defstruct [
     :env,
     :cwd,
     :home,
+    :user_home,
     :providers,
     :file_options,
     :layers,
@@ -64,6 +69,7 @@ defmodule Tackle.Config.Sources do
           env: %{optional(String.t()) => String.t()},
           cwd: Path.t(),
           home: Path.t(),
+          user_home: Path.t() | nil,
           providers: [Provider.t()],
           file_options: keyword(),
           layers: [{Path.t(), keyword()}],
@@ -125,6 +131,7 @@ defmodule Tackle.Config.Sources do
          env: env,
          cwd: cwd,
          home: home,
+         user_home: user_home,
          providers: Enum.map(entries, & &1.provider),
          file_options: file_opts,
          layers: layers,

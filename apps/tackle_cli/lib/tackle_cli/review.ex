@@ -105,6 +105,8 @@ defmodule Tackle.CLI.Review do
     parent = self()
     tag = make_ref()
     device = Map.get(opts, :progress_device, :stderr)
+    # The rules and history of the scope's Tackle home.
+    homes = Tackle.Config.homes(scope_spec.root_spec.config.context)
 
     review_opts =
       [
@@ -112,9 +114,9 @@ defmodule Tackle.CLI.Review do
         profiles: scope_spec.profiles,
         samples: opts.samples,
         executor: executor,
-        history: history(change, device),
+        history: history(change, homes[:home], device),
         on_event: &send(parent, {tag, &1})
-      ] ++ profile_option(opts.profile) ++ Map.get(opts, :tuning, [])
+      ] ++ homes ++ profile_option(opts.profile) ++ Map.get(opts, :tuning, [])
 
     task = Task.async(fn -> LocalReview.run(change, review_opts) end)
     await_review(task, tag, ReviewProgress.new(), device)
@@ -125,8 +127,8 @@ defmodule Tackle.CLI.Review do
   defp profile_option(profile), do: [profile: profile]
 
   # History is an aid: without it the review still runs.
-  defp history(change, device) do
-    case History.open(change.root) do
+  defp history(change, home, device) do
+    case History.open(change.root, home: home) do
       {:ok, history} ->
         history
 

@@ -111,7 +111,7 @@ defmodule Tackle.CLI.TUI.State do
           external_editor: Tackle.CLI.TUI.ExternalEditor.editor(),
           workflow_editor: Tackle.CLI.TUI.ExternalEditor.editor(),
           cwd: Path.t() | nil,
-          env: map() | nil,
+          homes: Tackle.Paths.homes() | nil,
           full_repaint?: boolean(),
           image_paths: [String.t()],
           pastes: %{optional(non_neg_integer()) => Tackle.CLI.TUI.Pastes.Paste.t()},
@@ -197,7 +197,7 @@ defmodule Tackle.CLI.TUI.State do
             external_editor: &Tackle.CLI.TUI.ExternalEditor.edit/1,
             workflow_editor: &Tackle.CLI.TUI.ExternalEditor.edit_workflow/1,
             cwd: nil,
-            env: nil,
+            homes: nil,
             # Set while the terminal has just been handed back by an external
             # editor: the next frame is drawn blank so the one after repaints
             # every cell.
@@ -306,7 +306,10 @@ defmodule Tackle.CLI.TUI.State do
         external_editor: external_editor(opts),
         workflow_editor: editor(opts, :workflow_editor, extension: ".lua"),
         cwd: Keyword.get_lazy(opts, :cwd, fn -> File.cwd!() |> Path.expand() end),
-        env: Keyword.get_lazy(opts, :env, &System.get_env/0),
+        homes:
+          Keyword.get_lazy(opts, :homes, fn ->
+            Tackle.Config.homes(snapshot.agent_state.context)
+          end),
         executor:
           Keyword.get_lazy(opts, :executor, fn ->
             Tackle.CLI.Jail.executor() || Tackle.Executor.local()

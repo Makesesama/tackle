@@ -43,6 +43,7 @@ defmodule Tackle.Config do
   alias Tackle.Lib.Tool
   alias Tackle.Lib.Tool.Policy
   alias Tackle.Lib.Tool.Schema
+  alias Tackle.Paths
   alias Tackle.Review.Settings, as: ReviewSettings
   alias Tackle.SystemPrompt
 
@@ -172,7 +173,11 @@ defmodule Tackle.Config do
   supplied the adapters. `:accounts` (`t:Tackle.Providers.accounts/0`)
   defaults to `Tackle.Auth.accounts/0`. Tests and embedding hosts may supply
   an `:env` map; normal callers use the process environment. `:cwd` selects the working
-  directory used for prompt discovery and built-in tools.
+  directory used for prompt discovery and built-in tools. The session context
+  gets the working directory under `:cwd`, and the Tackle home and the user's
+  home directory resolved from the environment under `:tackle_home` and
+  `:user_home` (see `homes/1`), so tools that discover files, such as
+  `review_changes`, use the same homes as the session.
 
   Discovered `.agents/skills` are offered to the session together with
   `:builtin_skills`, a list of host-supplied skills from
@@ -422,6 +427,25 @@ defmodule Tackle.Config do
            max_iterations: max_iterations
        }}
     end
+  end
+
+  @doc """
+  Returns the homes of a session context as `:home` and `:user_home`
+  options: the `:tackle_home` and `:user_home` entries `from_sources/2`
+  puts there, with those the context lacks resolved from the process
+  environment (`Tackle.Paths.homes/1`). Tools and frontends that discover
+  files for a session, such as `review_changes` and its rules and history,
+  pass them on.
+  """
+  @spec homes(map()) :: Paths.homes()
+  def homes(context) when is_map(context) do
+    context
+    |> Map.take([:tackle_home, :user_home])
+    |> Enum.map(fn
+      {:tackle_home, home} -> {:home, home}
+      {:user_home, home} -> {:user_home, home}
+    end)
+    |> Paths.homes()
   end
 
   @doc """

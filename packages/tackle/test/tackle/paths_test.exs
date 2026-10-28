@@ -35,4 +35,18 @@ defmodule Tackle.PathsTest do
     assert Paths.agents_dir(env: %{"HOME" => "/home/a"}) == {:ok, "/home/a/.agents"}
     assert Paths.agents_dir(user_home: nil) == {:error, :user_home_unavailable}
   end
+
+  test "homes keeps the given homes and resolves the others from one environment" do
+    env = %{"TACKLE_HOME" => "/srv/tackle", "HOME" => "/home/a"}
+    assert Paths.homes(env: env) == [home: "/srv/tackle", user_home: "/home/a"]
+    assert Paths.homes(env: env, home: nil) == [home: nil, user_home: "/home/a"]
+    assert Paths.homes(env: env, home: "/x/../y", user_home: nil) == [home: "/y", user_home: nil]
+
+    assert Paths.homes(env: %{}, user_home: "/home/b") == [
+             home: "/home/b/.tackle",
+             user_home: "/home/b"
+           ]
+
+    assert Paths.homes(env: %{}, user_home: nil) == [home: nil, user_home: nil]
+  end
 end

@@ -30,7 +30,10 @@ defmodule Tackle.LocalReview.Rules do
 
     * `:cwd` - working directory for the project search (default: current);
     * `:executor` - session executor for workspace files (default: local);
-    * `:env` - environment for `TACKLE_HOME` (default: the process's);
+    * `:home` and `:user_home` - the Tackle home holding the user rules and
+      the user's home directory bounding the project search, `nil` for none
+      (default: resolved from the process environment, see
+      `Tackle.Paths.homes/1`);
     * `:builtin_dir` - directory to read instead of the embedded built-in
       rules, or `nil` for no built-in rules (default: the embedded rules);
     * `:builtin_rules` and `:max_rule_bytes` - see
@@ -39,7 +42,8 @@ defmodule Tackle.LocalReview.Rules do
   @type option ::
           {:cwd, Path.t()}
           | {:executor, Executor.t() | nil}
-          | {:env, %{optional(String.t()) => String.t()}}
+          | {:home, Path.t() | nil}
+          | {:user_home, Path.t() | nil}
           | {:builtin_dir, Path.t() | nil}
           | {:builtin_rules, :all | [String.t()]}
           | {:max_rule_bytes, pos_integer()}
@@ -52,8 +56,8 @@ defmodule Tackle.LocalReview.Rules do
   """
   @spec discover([option()]) :: Rules.discovery()
   def discover(opts \\ []) do
-    env = Keyword.get_lazy(opts, :env, &System.get_env/0)
-    files = ProjectFiles.new(executor: Keyword.get(opts, :executor), env: env)
+    homes = opts |> Keyword.take([:home, :user_home]) |> Paths.homes()
+    files = ProjectFiles.new(executor: Keyword.get(opts, :executor), user_home: homes[:user_home])
     cwd = opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> Path.expand()
     max_bytes = opts |> Keyword.take([:max_rule_bytes]) |> Rules.max_file_bytes()
 
@@ -71,15 +75,9 @@ defmodule Tackle.LocalReview.Rules do
           {false, [{:builtin, read_directory(host_files, Path.expand(dir), true, max_bytes)}]}
       end
 
-    tackle_home =
-      case Paths.home(env: env) do
-        {:ok, home} -> home
-        {:error, _reason} -> nil
-      end
-
     discovered =
       files
-      |> ProjectFiles.tackle_dirs(cwd, tackle_home, @rules_dir)
+      |> ProjectFiles.tackle_dirs(cwd, homes[:home], @rules_dir)
       |> Enum.map(fn {source, dir} -> {source, read_directory(files, dir, false, max_bytes)} end)
 
     Rules.load(

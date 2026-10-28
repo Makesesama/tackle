@@ -12,14 +12,21 @@ defmodule Tackle.Config.Prompt do
   alias Tackle.Tools.LoadSkill
 
   @doc """
-  Puts the working directory, the offered skills, the `load_skill` tool, and
-  the system prompt into `config`. `base` replaces the base prompt;
-  `instructions: false` leaves out the instruction files and skills.
+  Puts the working directory, the Tackle and user homes, the offered skills,
+  the `load_skill` tool, and the system prompt into `config`. `base` replaces
+  the base prompt; `instructions: false` leaves out the instruction files and
+  skills.
   """
   @spec assemble(Tackle.Config.t(), Sources.t(), String.t() | nil, boolean()) ::
           {:ok, Tackle.Config.t()} | {:error, term()}
   def assemble(config, %Sources{} = sources, base, instructions) do
-    context = Map.put(config.context, :cwd, sources.cwd)
+    context =
+      Map.merge(config.context, %{
+        cwd: sources.cwd,
+        tackle_home: sources.home,
+        user_home: sources.user_home
+      })
+
     skills = if instructions, do: Skills.available(sources.skills, config.tools), else: []
 
     with {:ok, tools, context} <- grant_skills(config.tools, context, skills),

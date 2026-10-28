@@ -171,7 +171,8 @@ defmodule Tackle.Coding do
     Agents.discover(
       cwd: sources.cwd,
       executor: Executor.from_context(config.context),
-      env: sources.env,
+      home: sources.home,
+      user_home: sources.user_home,
       builtins: Default.definitions()
     )
   end

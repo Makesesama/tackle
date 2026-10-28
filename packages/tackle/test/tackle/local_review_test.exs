@@ -547,6 +547,28 @@ defmodule Tackle.LocalReviewTest do
       refute Enum.map_join(calls(:detector), "\n", & &1.prompt) =~ "<rule id="
     end
 
+    test "discovers the user rules of the given Tackle home" do
+      home = Tackle.Test.Runtime.tmp_home()
+      rule = "---\nid: house-style\ncategory: correctness\nseverity: medium\n---\nCheck it.\n"
+      File.mkdir_p!(Path.join(home, "review/rules"))
+      File.write!(Path.join(home, "review/rules/house-style.md"), rule)
+
+      profiles = profiles(script())
+      scope = start_scope(root: [allow_delegation: true], profiles: profiles)
+
+      opts = [
+        requester: scope.root_agent_ref,
+        profiles: profiles,
+        executor: Executor.local(),
+        home: home,
+        user_home: nil,
+        default_rules: []
+      ]
+
+      assert {:ok, _result} = LocalReview.run(change(), opts)
+      assert Enum.map_join(calls(:detector), "\n", & &1.prompt) =~ ~s(<rule id="house-style")
+    end
+
     test "a requester without a session fails before reading its settings" do
       script = script()
       profiles = profiles(script)

@@ -174,9 +174,9 @@ defmodule Tackle.CLI.TUI.Workflows do
   end
 
   # Run uses the process cwd for its session loader. Capture the same default
-  # when mounting the shell; explicit cwd/env keep tests independent of globals.
-  defp options(state),
-    do: [cwd: cwd(state), executor: state.executor, env: state.env || System.get_env()]
+  # when mounting the shell; the session's homes keep the picker on the
+  # session's workflows.
+  defp options(state), do: [cwd: cwd(state), executor: state.executor] ++ (state.homes || [])
 
   defp cwd(state), do: state.cwd || File.cwd!()
 

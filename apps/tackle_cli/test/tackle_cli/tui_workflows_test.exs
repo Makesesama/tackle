@@ -30,7 +30,7 @@ defmodule Tackle.CLI.TUI.WorkflowsTest do
 
     state = %State{
       cwd: cwd,
-      env: %{"TACKLE_HOME" => home},
+      homes: [home: home, user_home: nil],
       input: Input.new(),
       agent_state: AgentState.new(),
       conversation: Viewport.new_conversation(80, 24),

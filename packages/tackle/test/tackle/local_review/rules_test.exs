@@ -34,7 +34,7 @@ defmodule Tackle.LocalReview.RulesTest do
       builtin: builtin,
       user: Path.join(home, "review/rules"),
       project: Path.join(cwd, ".tackle/review/rules"),
-      opts: [cwd: cwd, env: %{"TACKLE_HOME" => home}, builtin_dir: builtin]
+      opts: [cwd: cwd, home: home, user_home: nil, builtin_dir: builtin]
     }
   end
 
@@ -64,7 +64,7 @@ defmodule Tackle.LocalReview.RulesTest do
       assert Enum.map(Rules.builtin_files(), &elem(&1, 0)) ==
                @builtin_rules |> Map.keys() |> Enum.map(&(&1 <> ".md")) |> Enum.sort()
 
-      opts = Keyword.merge(Keyword.delete(opts, :builtin_dir), env: %{"TACKLE_HOME" => root})
+      opts = Keyword.merge(Keyword.delete(opts, :builtin_dir), home: root)
       assert %{rules: rules, warnings: []} = RuleDiscovery.discover(opts)
       assert Enum.map(rules, & &1.id) == @builtin_rules |> Map.keys() |> Enum.sort()
 
@@ -96,7 +96,7 @@ defmodule Tackle.LocalReview.RulesTest do
 
       put(project, "own.md", rule("project-only"))
       put(project, "inj.md", rule("injection", severity: "low"))
-      opts = Keyword.merge(Keyword.delete(opts, :builtin_dir), env: %{"TACKLE_HOME" => root})
+      opts = Keyword.merge(Keyword.delete(opts, :builtin_dir), home: root)
 
       ids = fn keep ->
         opts
@@ -120,7 +120,7 @@ defmodule Tackle.LocalReview.RulesTest do
       opts: opts,
       root: root
     } do
-      opts = Keyword.merge(Keyword.delete(opts, :builtin_dir), env: %{"TACKLE_HOME" => root})
+      opts = Keyword.merge(Keyword.delete(opts, :builtin_dir), home: root)
       assert %{rules: rules, warnings: []} = RuleDiscovery.discover(opts)
 
       assert Map.new(rules, &{&1.id, {&1.category, &1.severity}}) == @builtin_rules
@@ -178,10 +178,10 @@ defmodule Tackle.LocalReview.RulesTest do
       put(Path.join(root, ".tackle/review/rules"), "mine.md", rule("mine"))
       cwd = Path.join(root, "notes")
       File.mkdir_p!(cwd)
-      env = %{"TACKLE_HOME" => Path.join(root, ".tackle"), "HOME" => root}
+      opts = [cwd: cwd, home: Path.join(root, ".tackle"), user_home: root, builtin_dir: builtin]
 
       assert %{rules: [%Rule{id: "mine", source: :user}], warnings: []} =
-               RuleDiscovery.discover(cwd: cwd, env: env, builtin_dir: builtin)
+               RuleDiscovery.discover(opts)
     end
 
     test "without a Git root, does not climb above the working directory outside home", ctx do

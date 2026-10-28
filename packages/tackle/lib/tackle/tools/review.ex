@@ -6,6 +6,9 @@ defmodule Tackle.Tools.Review do
   the user's and project's rules (read through the session executor), and
   the history apply.
 
+  Rules and history are found with the session's homes
+  (`Tackle.Config.homes/1`).
+
   The change is loaded from Git in the agent's working directory
   (`Tackle.Review.Change`, which reads the repository on the host even for
   a jailed agent, limited to the agent's workspace; see its documentation):
@@ -39,9 +42,9 @@ defmodule Tackle.Tools.Review do
   earlier are reported again, so a second review after a fix shows what is
   still wrong. Hosts configure history through the session context's
   `:review_history`: `false` disables it, a keyword list is passed to
-  `Tackle.LocalReview.History.open/2` (default `[]`, the process's
-  `TACKLE_HOME`). When history is unavailable the review still runs and the
-  result says so.
+  `Tackle.LocalReview.History.open/2` (default `[]`, the session's Tackle
+  home). When history is unavailable the review still runs and the result
+  says so.
 
   ## Progress
 
@@ -72,6 +75,7 @@ defmodule Tackle.Tools.Review do
   use Tackle.Lib.Tool
 
   alias Tackle.AgentScope.Coordinator
+  alias Tackle.Config
   alias Tackle.Executor
   alias Tackle.Lib.Tool
   alias Tackle.LocalReview
@@ -119,19 +123,21 @@ defmodule Tackle.Tools.Review do
     with {:ok, agent_ref} <- fetch_agent_ref(context),
          :ok <- ensure_delegation(agent_ref),
          {:ok, change} <- load_change(args, context) do
-      {history, notes} = history(change, context)
+      homes = Config.homes(context)
+      {history, notes} = history(change, context, homes[:home])
       profile = profile(args, context)
       report = reporter(context)
       report.(loaded(change, Atom.to_string(profile)))
 
-      opts = [
-        requester: agent_ref,
-        profiles: profiles(agent_ref),
-        profile: profile,
-        executor: Executor.from_context(context),
-        history: history,
-        on_event: &report_event(report, &1)
-      ]
+      opts =
+        [
+          requester: agent_ref,
+          profiles: profiles(agent_ref),
+          profile: profile,
+          executor: Executor.from_context(context),
+          history: history,
+          on_event: &report_event(report, &1)
+        ] ++ homes
 
       case LocalReview.run(change, opts) do
         {:ok, result} -> {:ok, format_result(result, change, notes)}
@@ -205,13 +211,13 @@ defmodule Tackle.Tools.Review do
     end
   end
 
-  defp history(change, context) do
+  defp history(change, context, home) do
     case Map.get(context, :review_history, []) do
       false ->
         {nil, []}
 
       opts when is_list(opts) ->
-        case History.open(change.root, opts) do
+        case History.open(change.root, Keyword.put_new(opts, :home, home)) do
           {:ok, history} ->
             {history, []}
 

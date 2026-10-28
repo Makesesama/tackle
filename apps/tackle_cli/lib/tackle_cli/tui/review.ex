@@ -141,15 +141,16 @@ defmodule Tackle.CLI.TUI.Review do
 
   @typedoc """
   Everything the background command needs, captured from the shell state
-  when the review starts: where and how to load the change, the requester
-  and scope to delegate from, the cancellation signal, and, for a
-  re-review, the previously reviewed change.
+  when the review starts: where and how to load the change, the homes its
+  rules and history are found with, the requester and scope to delegate
+  from, the cancellation signal, and, for a re-review, the previously
+  reviewed change.
   """
   @type request :: %{
           cwd: Path.t() | nil,
           workspace: Path.t() | nil,
           executor: Tackle.Executor.t(),
-          env: map() | nil,
+          homes: Tackle.Paths.homes(),
           range: String.t() | nil,
           staged: boolean(),
           requester: Tackle.Runtime.AgentRef.t() | nil,
@@ -292,7 +293,7 @@ defmodule Tackle.CLI.TUI.Review do
       cwd: state.cwd,
       workspace: Tackle.Executor.workspace(state.executor),
       executor: state.executor,
-      env: state.env,
+      homes: state.homes || Tackle.Paths.homes(),
       range: review.target.range,
       staged: review.target.staged,
       requester: state.agent_ref,
@@ -342,7 +343,7 @@ defmodule Tackle.CLI.TUI.Review do
           {:ok, Result.t() | :unchanged} | {:error, term()}
   def execute(request, notify) when is_map(request) and is_function(notify, 1) do
     with {:ok, change} <- load_change(request) do
-      {history, notes} = open_history(change, request.env)
+      {history, notes} = open_history(change, request.homes[:home])
       paths = if request.previous, do: touched_paths(request.previous, change)
       notify.({:loaded, change, history, paths, notes})
 
@@ -359,7 +360,7 @@ defmodule Tackle.CLI.TUI.Review do
               history: history,
               cancellation: request.signal,
               on_event: &notify.({:event, &1})
-            ] ++ if(is_map(request.env), do: [env: request.env], else: [])
+            ] ++ request.homes
 
           LocalReview.run(restrict(change, paths), opts)
       end
@@ -391,10 +392,8 @@ defmodule Tackle.CLI.TUI.Review do
     end
   end
 
-  defp open_history(change, env) do
-    opts = if is_map(env), do: [env: env], else: []
-
-    case History.open(change.root, opts) do
+  defp open_history(change, home) do
+    case History.open(change.root, home: home) do
       {:ok, history} ->
         {history, []}
 

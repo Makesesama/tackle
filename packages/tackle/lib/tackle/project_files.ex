@@ -59,8 +59,9 @@ defmodule Tackle.ProjectFiles do
   Options:
 
     * `:executor` - the session executor;
-    * `:user_home` and `:env` - select the user's home directory that bounds
-      project discovery outside a Git repository (see `Tackle.Paths.user_home/1`).
+    * `:user_home` - the user's home directory that bounds project discovery
+      outside a Git repository, `nil` for none (default: the operating
+      system's, see `Tackle.Paths.user_home/1`).
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
@@ -71,7 +72,7 @@ defmodule Tackle.ProjectFiles do
       executor: executor,
       workspace: workspace,
       real_workspace: workspace && host_realpath(workspace),
-      user_home: opts |> Keyword.take([:user_home, :env]) |> Paths.user_home()
+      user_home: opts |> Keyword.take([:user_home]) |> Paths.user_home()
     }
   end
 

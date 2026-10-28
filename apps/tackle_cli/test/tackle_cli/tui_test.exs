@@ -3633,9 +3633,9 @@ defmodule Tackle.CLI.TUITest do
   end
 
   test "/workflows routes keys and submits the selected workflow through the agent" do
-    {cwd, env} = workflow_locations()
+    {cwd, homes} = workflow_locations()
     File.write!(Path.join(cwd, ".tackle/workflows/review.lua"), "-- Review changes\nreturn 'ok'")
-    {_id, tui} = start_tui(cwd: cwd, env: env)
+    {_id, tui} = start_tui(cwd: cwd, homes: homes)
 
     inject_paste(tui, "/workflows")
     inject_key(tui, "enter")
@@ -3681,7 +3681,7 @@ defmodule Tackle.CLI.TUITest do
   end
 
   test "workflow editor injection edits Lua and completes the terminal repaint" do
-    {cwd, env} = workflow_locations()
+    {cwd, homes} = workflow_locations()
     path = Path.join(cwd, ".tackle/workflows/review.lua")
     File.write!(path, "-- Review\nreturn 'old'")
     test_pid = self()
@@ -3691,7 +3691,7 @@ defmodule Tackle.CLI.TUITest do
       {:ok, "-- Edited\nreturn 'new'"}
     end
 
-    {_id, tui} = start_tui(cwd: cwd, env: env, workflow_editor: editor)
+    {_id, tui} = start_tui(cwd: cwd, homes: homes, workflow_editor: editor)
     inject_paste(tui, "/workflows")
     inject_key(tui, "enter")
     inject_key(tui, "g", ["ctrl"])
@@ -3703,8 +3703,8 @@ defmodule Tackle.CLI.TUITest do
   end
 
   test "test-mode workflow creation never launches a real editor" do
-    {cwd, env} = workflow_locations()
-    {_id, tui} = start_tui(cwd: cwd, env: env)
+    {cwd, homes} = workflow_locations()
+    {_id, tui} = start_tui(cwd: cwd, homes: homes)
     inject_paste(tui, "/workflows")
     inject_key(tui, "enter")
     Enum.each(String.graphemes("new-review"), &inject_key(tui, &1))
@@ -3931,7 +3931,7 @@ defmodule Tackle.CLI.TUITest do
     File.mkdir_p!(Path.join(cwd, ".tackle/workflows"))
     File.mkdir_p!(home)
     on_exit(fn -> File.rm_rf!(dir) end)
-    {cwd, %{"TACKLE_HOME" => home}}
+    {cwd, [home: home, user_home: nil]}
   end
 
   # -- helpers -------------------------------------------------------------

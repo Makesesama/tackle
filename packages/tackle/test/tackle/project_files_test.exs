@@ -176,7 +176,8 @@ defmodule Tackle.ProjectFilesTest do
 
       opts = [
         cwd: workspace,
-        env: %{"TACKLE_HOME" => Path.join(root, "home/.tackle")},
+        home: Path.join(root, "home/.tackle"),
+        user_home: nil,
         builtins: []
       ]
 
@@ -293,9 +294,8 @@ defmodule Tackle.ProjectFilesTest do
       elsewhere = ProjectFiles.new(user_home: Path.join(root, "other"))
       assert ProjectFiles.ancestors(elsewhere, nested) == [nested]
       assert ProjectFiles.ancestors(ProjectFiles.new(user_home: nil), nested) == [nested]
-      assert ProjectFiles.ancestors(ProjectFiles.new(env: %{}), nested) == [nested]
 
-      assert ProjectFiles.ancestors(ProjectFiles.new(env: %{"HOME" => root}), workspace) ==
+      assert ProjectFiles.ancestors(ProjectFiles.new(user_home: root), workspace) ==
                [workspace, root]
 
       assert ProjectFiles.ancestors(home, nested, beyond_git_root: true) ==

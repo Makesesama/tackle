@@ -31,11 +31,16 @@ defmodule Tackle.Workflows do
 
   @name_pattern ~r/\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
 
-  @typedoc "Discovery options; cwd and environment default to the current process."
+  @typedoc """
+  Discovery options: `:cwd` (default: the current directory), `:executor`
+  (default: the local executor), and `:home` and `:user_home` (default:
+  resolved from the process environment, see `Tackle.Paths.homes/1`).
+  """
   @type option ::
           {:cwd, Path.t()}
           | {:executor, Executor.t() | nil}
-          | {:env, %{optional(String.t()) => String.t()}}
+          | {:home, Path.t() | nil}
+          | {:user_home, Path.t() | nil}
   @typedoc "A skipped file or unreadable directory."
   @type warning :: %{path: Path.t(), message: String.t()}
   @typedoc "Saved workflows sorted by name, and discovery warnings."
@@ -48,13 +53,13 @@ defmodule Tackle.Workflows do
   @doc """
   Discovers flat `<name>.lua` files, with project precedence, sorted by name.
 
-  Accepts `:cwd`, `:executor`, and `:env`. Invalid names and unreadable Lua
+  Accepts the discovery options (`t:option/0`). Invalid names and unreadable Lua
   files produce warnings; non-Lua files and subdirectories are ignored.
   The description is the trimmed first line after `--`, except `--[[`.
   """
   @spec discover([option()]) :: discovery()
   def discover(opts \\ []) do
-    files = ProjectFiles.new(opts)
+    files = files(opts)
 
     {workflows, warnings} =
       Enum.reduce(sources(files, opts), {%{}, []}, fn {source, dir}, acc ->
@@ -76,7 +81,7 @@ defmodule Tackle.Workflows do
   """
   @spec fetch(String.t(), [option()]) :: {:ok, Workflow.t(), String.t()} | {:error, fetch_error()}
   def fetch(name, opts \\ []) do
-    files = ProjectFiles.new(opts)
+    files = files(opts)
 
     # Project files override user files, so the project candidate comes first.
     candidate =
@@ -104,10 +109,13 @@ defmodule Tackle.Workflows do
   Returns a live `name -> {:ok, script} | {:error, message}` loader for session context.
 
   Errors are model-readable; unknown names list available workflows, or explain
-  where to save them when none exist. Accepts the discovery options.
+  where to save them when none exist. Accepts the discovery options; homes not
+  given are resolved once, when the loader is made.
   """
   @spec loader([option()]) :: (String.t() -> {:ok, String.t()} | {:error, String.t()})
   def loader(opts \\ []) do
+    opts = Keyword.merge(opts, homes(opts))
+
     fn name ->
       case fetch(name, opts) do
         {:ok, _workflow, script} ->
@@ -147,7 +155,7 @@ defmodule Tackle.Workflows do
         do: Keyword.put(write_opts, :mode, :create),
         else: write_opts
 
-    ProjectFiles.write(ProjectFiles.new(opts), path, script, write_opts)
+    ProjectFiles.write(files(opts), path, script, write_opts)
   end
 
   @doc """
@@ -160,7 +168,7 @@ defmodule Tackle.Workflows do
   """
   @spec project_dir([option()]) :: Path.t() | nil
   def project_dir(opts \\ []) do
-    case opts |> ProjectFiles.new() |> sources(opts) |> List.keyfind(:project, 0) do
+    case opts |> files() |> sources(opts) |> List.keyfind(:project, 0) do
       {:project, dir} ->
         dir
 
@@ -209,18 +217,21 @@ defmodule Tackle.Workflows do
   defp cwd(opts), do: opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> Path.expand()
   defp valid_name?(name), do: is_binary(name) and Regex.match?(@name_pattern, name)
 
-  defp tackle_home(opts) do
-    case Paths.home(env: Keyword.get_lazy(opts, :env, &System.get_env/0)) do
-      {:ok, home} -> home
-      {:error, _reason} -> nil
-    end
+  defp files(opts) do
+    ProjectFiles.new(
+      executor: Keyword.get(opts, :executor),
+      user_home: homes(opts)[:user_home]
+    )
   end
+
+  defp tackle_home(opts), do: homes(opts)[:home]
+  defp homes(opts), do: opts |> Keyword.take([:home, :user_home]) |> Paths.homes()
 
   # A jailed agent can write only the project directory.
   defp save_location(opts) do
     user =
       cond do
-        ProjectFiles.new(opts).workspace -> nil
+        files(opts).workspace -> nil
         home = tackle_home(opts) -> Path.join(home, "workflows")
         true -> "$TACKLE_HOME/workflows"
       end

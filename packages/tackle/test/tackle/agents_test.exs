@@ -14,7 +14,7 @@ defmodule Tackle.AgentsTest do
       root: root,
       cwd: cwd,
       project: Path.join(cwd, ".tackle/agents"),
-      opts: [cwd: cwd, env: %{"TACKLE_HOME" => tackle_home}, builtins: []]
+      opts: [cwd: cwd, home: tackle_home, user_home: nil, builtins: []]
     }
   end
 
@@ -88,7 +88,8 @@ defmodule Tackle.AgentsTest do
 
       opts = [
         cwd: cwd,
-        env: %{"TACKLE_HOME" => Path.join(root, ".tackle"), "HOME" => root},
+        home: Path.join(root, ".tackle"),
+        user_home: root,
         builtins: []
       ]
 
@@ -104,15 +105,15 @@ defmodule Tackle.AgentsTest do
       put(Path.join(root, ".tackle/agents"), "planted.md", agent("planted", ""))
       cwd = Path.join(root, "scratch/work")
       File.mkdir_p!(cwd)
-      env = %{"TACKLE_HOME" => Path.join(root, "tackle-home")}
+      opts = [cwd: cwd, home: Path.join(root, "tackle-home"), user_home: nil, builtins: []]
 
-      assert Agents.discover(cwd: cwd, env: env, builtins: []).definitions == []
+      assert Agents.discover(opts).definitions == []
 
       home = Path.join(root, "scratch")
       put(Path.join(home, ".tackle/agents"), "own.md", agent("own", ""))
 
       assert [%{name: "own", source: :project}] =
-               Agents.discover(cwd: cwd, env: Map.put(env, "HOME", home), builtins: []).definitions
+               Agents.discover(Keyword.put(opts, :user_home, home)).definitions
     end
   end
 

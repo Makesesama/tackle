@@ -11,7 +11,7 @@ defmodule Tackle.WorkflowsTest do
     File.mkdir_p!(cwd)
     File.mkdir_p!(Path.join(cwd, ".git"))
     on_exit(fn -> File.rm_rf!(root) end)
-    %{root: root, cwd: cwd, home: home, opts: [cwd: cwd, env: %{"TACKLE_HOME" => home}]}
+    %{root: root, cwd: cwd, home: home, opts: [cwd: cwd, home: home, user_home: nil]}
   end
 
   test "flat discovery, sorted names, project precedence, and warnings", %{
@@ -280,8 +280,7 @@ defmodule Tackle.WorkflowsTest do
     cwd = Path.join(root, "home/notes")
     File.mkdir_p!(cwd)
     put(Path.join(tackle_home, "workflows"), "mine.lua", "-- Mine\nreturn 1")
-    env = %{"TACKLE_HOME" => tackle_home, "HOME" => Path.join(root, "home")}
-    opts = [cwd: cwd, env: env]
+    opts = [cwd: cwd, home: tackle_home, user_home: Path.join(root, "home")]
 
     assert %{workflows: [%{name: "mine", source: :user}], warnings: []} =
              Workflows.discover(opts)

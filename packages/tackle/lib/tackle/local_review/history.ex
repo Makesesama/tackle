@@ -90,13 +90,11 @@ defmodule Tackle.LocalReview.History do
   @type event :: :shown | :rejected | outcome()
 
   @typedoc """
-  Options of `open/2`: `:home` (a Tackle home directory), otherwise `:env`
-  and `:user_home` as for `Tackle.Paths.home/1`.
+  Options of `open/2`: `:home`, the Tackle home directory, `nil` when it
+  could not be resolved (as in `Tackle.Paths.homes/1`); default:
+  `Tackle.Paths.home/1` of the process environment.
   """
-  @type open_option ::
-          {:home, Path.t()}
-          | {:env, %{optional(String.t()) => String.t()}}
-          | {:user_home, String.t() | nil}
+  @type open_option :: {:home, Path.t() | nil}
 
   @typedoc "Options of `record_outcome/4`: `:run_id` and a free-text `:note`."
   @type outcome_option :: {:run_id, String.t()} | {:note, String.t()}
@@ -113,7 +111,8 @@ defmodule Tackle.LocalReview.History do
   Opens the history of the repository whose root is `root`.
 
   Fails only when the Tackle home cannot be resolved or an option is
-  invalid; files are created on the first write.
+  invalid (`{:invalid_home, value}`, or `{:invalid_option, key, value}`
+  for another option); files are created on the first write.
   """
   @spec open(Path.t(), [open_option()]) :: {:ok, t()} | {:error, term()}
   def open(root, opts \\ [])
@@ -473,10 +472,14 @@ defmodule Tackle.LocalReview.History do
   end
 
   defp home(opts) do
-    case Keyword.fetch(opts, :home) do
-      {:ok, home} when is_binary(home) and home != "" -> {:ok, Path.expand(home)}
-      {:ok, other} -> {:error, {:invalid_home, other}}
-      :error -> Paths.home(Keyword.take(opts, [:env, :user_home]))
+    case {Keyword.fetch(opts, :home), Keyword.delete(opts, :home)} do
+      {_home, [{key, value} | _rest]} -> {:error, {:invalid_option, key, value}}
+      {home, []} -> fetch_home(home)
     end
   end
+
+  defp fetch_home({:ok, home}) when is_binary(home) and home != "", do: {:ok, Path.expand(home)}
+  defp fetch_home({:ok, nil}), do: {:error, :user_home_unavailable}
+  defp fetch_home({:ok, other}), do: {:error, {:invalid_home, other}}
+  defp fetch_home(:error), do: Paths.home()
 end

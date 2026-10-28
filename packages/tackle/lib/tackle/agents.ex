@@ -32,18 +32,12 @@ defmodule Tackle.Agents do
   @spec discover(keyword()) :: discovery()
   def discover(opts \\ []) do
     cwd = opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> Path.expand()
-    env = Keyword.get_lazy(opts, :env, &System.get_env/0)
-    files = ProjectFiles.new(executor: Keyword.get(opts, :executor), env: env)
+    homes = opts |> Keyword.take([:home, :user_home]) |> Paths.homes()
+    files = ProjectFiles.new(executor: Keyword.get(opts, :executor), user_home: homes[:user_home])
     builtins = Keyword.get(opts, :builtins, [])
 
-    tackle_home =
-      case Paths.home(env: env) do
-        {:ok, home} -> home
-        {:error, _reason} -> nil
-      end
-
     sources =
-      [{:builtin, builtins} | ProjectFiles.tackle_dirs(files, cwd, tackle_home, "agents")]
+      [{:builtin, builtins} | ProjectFiles.tackle_dirs(files, cwd, homes[:home], "agents")]
 
     {definitions, warnings} =
       Enum.reduce(sources, {%{}, []}, fn

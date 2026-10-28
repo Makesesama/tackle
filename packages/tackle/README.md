@@ -303,9 +303,10 @@ the session's review settings, the user's and project's rules
 Reviews are recorded by
 `Tackle.LocalReview.History` in
 `$TACKLE_HOME/review/<project-key>/` (`runs.jsonl`, `findings.jsonl`, private
-to the current user), where the project key is the Git repository root encoded
-with `Tackle.Paths.project_key/1`, as session storage encodes project
-directories. Findings dismissed there are not reported again. A line left
+to the current user). Rules and history use the session's Tackle home, the
+one its configuration was loaded with (`Tackle.Config.homes/1`). The project
+key is the Git repository root encoded with `Tackle.Paths.project_key/1`, as
+session storage encodes project directories. Findings dismissed there are not reported again. A line left
 incomplete by a crash or a full disk is skipped, and the next write starts on a
 new line, so the lines after it are kept.
 
@@ -422,11 +423,17 @@ them when asked. There is no approval gate.
 project creation, and starter templates. Hosts enable named execution with:
 
 ```elixir
-overrides: [context: %{workflow_loader: Tackle.Workflows.loader(cwd: cwd, executor: executor)}]
+loader = Tackle.Workflows.loader([cwd: cwd, executor: executor] ++ Tackle.Paths.homes(env: env))
+overrides: [context: %{workflow_loader: loader}]
 ```
 
-The CLI supplies this automatically. All workspace reads and writes use the
-session executor, including directory creation.
+`Tackle.Paths.homes/1` resolves the Tackle home and the user's home directory
+from the environment the session's configuration is loaded with
+(`Tackle.Config.load(env: env)`), so workflows come from the same
+`$TACKLE_HOME` as the session's agents, rules, and review history; without
+`:home` and `:user_home` the loader resolves them from the process
+environment. The CLI supplies this automatically. All workspace reads and
+writes use the session executor, including directory creation.
 
 ## Durable sessions
 

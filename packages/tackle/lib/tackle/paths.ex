@@ -50,6 +50,34 @@ defmodule Tackle.Paths do
     if is_binary(home) and home != "", do: Path.expand(home)
   end
 
+  @typedoc """
+  The Tackle home (`nil` when it cannot be resolved) and the user's home
+  directory (`nil` for none), resolved once, as the `:home` and `:user_home`
+  options that project discovery (`Tackle.Agents.discover/1`,
+  `Tackle.Workflows`, `Tackle.LocalReview.Rules.discover/1`) takes.
+  """
+  @type homes :: [home: Path.t() | nil, user_home: Path.t() | nil]
+
+  @doc """
+  Resolves the Tackle home and the user's home directory together, keeping
+  those given as `:home` and `:user_home` (`nil` for none) and resolving the
+  others as `home/1` and `user_home/1` do from the same options, so
+  everything discovered for one session uses one environment.
+  """
+  @spec homes([resolve_option() | {:home, Path.t() | nil}]) :: homes()
+  def homes(opts \\ []) do
+    home =
+      case Keyword.fetch(opts, :home) do
+        {:ok, home} -> home && Path.expand(home)
+        :error -> opts |> home() |> ok_or_nil()
+      end
+
+    [home: home, user_home: user_home(opts)]
+  end
+
+  defp ok_or_nil({:ok, path}), do: path
+  defp ok_or_nil({:error, :user_home_unavailable}), do: nil
+
   @doc """
   Resolves the user-level `~/.agents` directory used by the Agent Skills standard.
 

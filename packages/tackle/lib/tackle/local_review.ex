@@ -37,15 +37,16 @@ defmodule Tackle.LocalReview do
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
 
-  @local_keys [:executor, :env, :history, :skip_outcomes]
+  @local_keys [:executor, :home, :user_home, :history, :skip_outcomes]
 
   @typedoc """
   Every `Tackle.Review.option()`, and:
 
     * `:executor` - the session executor project rules are read through;
       required unless `:rules` is given;
-    * `:env` - environment for `TACKLE_HOME` when discovering rules
-      (default: the process's);
+    * `:home` and `:user_home` - the Tackle home and the user's home
+      directory rules are discovered with (see
+      `Tackle.LocalReview.Rules.discover/1`);
     * `:history` - a `Tackle.LocalReview.History` to skip known findings with
       and to record the run in (default `nil`, no history);
     * `:skip_outcomes` - the history events whose findings are not reported
@@ -55,7 +56,8 @@ defmodule Tackle.LocalReview do
   @type option ::
           Review.option()
           | {:executor, Executor.t()}
-          | {:env, %{optional(String.t()) => String.t()}}
+          | {:home, Path.t() | nil}
+          | {:user_home, Path.t() | nil}
           | {:history, History.t() | nil}
           | {:skip_outcomes, [History.event()]}
 
@@ -167,7 +169,7 @@ defmodule Tackle.LocalReview do
           discovery =
             RuleDiscovery.discover(
               [cwd: change.cwd, executor: executor, builtin_rules: builtin_rules] ++
-                Keyword.take(local, [:env])
+                Keyword.take(local, [:home, :user_home])
             )
 
           {:ok, discovery.rules, Enum.map(discovery.warnings, &format_warning/1)}

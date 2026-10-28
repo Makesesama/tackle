@@ -454,8 +454,7 @@ defmodule Tackle.Tools.ReviewTest do
         overrides: [
           model: "tool-review/fake",
           llm_opts: [test_pid: self()],
-          retry: false,
-          context: %{review_history: [home: ctx.home]}
+          retry: false
         ]
       )
 
@@ -470,6 +469,8 @@ defmodule Tackle.Tools.ReviewTest do
     assert %{content: content} = Enum.find(state.messages, &(&1.role == :tool))
     assert content =~ "1. lib/a.ex:3 [high, correctness] Guard against a missing key"
 
+    # The session's Tackle home, from the environment the scope was loaded
+    # with, holds the history; the process's does not.
     {:ok, history} = History.open(root(ctx.repo), home: ctx.home)
     assert {:ok, [_run]} = History.runs(history)
   end

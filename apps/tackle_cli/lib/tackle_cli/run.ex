@@ -474,10 +474,14 @@ defmodule Tackle.CLI.Run do
     do:
       compose_scope(model, thinking, Keyword.get(opts, :llm_stream, false), fn -> {:ok, nil} end)
 
+  # The scope and its workflow loader find their files with the homes of one
+  # reading of the environment.
   defp compose_scope(model, thinking, llm_stream, session_fun) do
+    env = System.get_env()
+
     with {:ok, _apps} <- ensure_started(),
-         {:ok, executor} <- Tackle.CLI.Jail.ensure_started(),
-         {:ok, overrides} <- overrides(model, thinking, llm_stream, executor),
+         {:ok, executor} <- Tackle.CLI.Jail.ensure_started(env: env),
+         {:ok, overrides} <- overrides(model, thinking, llm_stream, executor, env),
          {:ok, session} <- session_fun.(),
          {:ok, mcp_tools} <- Tackle.CLI.MCP.Connections.tools(executor: executor),
          {:ok, catalog} <- Tackle.CLI.Distribution.catalog(mcp_tools),
@@ -485,6 +489,7 @@ defmodule Tackle.CLI.Run do
          {:ok, scope_spec} <-
            Tackle.Coding.scope_spec(
              [
+               env: env,
                catalog: catalog,
                builtin_skills: builtin_skills,
                overrides: overrides,
@@ -689,13 +694,14 @@ defmodule Tackle.CLI.Run do
 
   # The executor travels in the loader overrides so the root agent and every
   # subagent profile get it; Tackle.Coding builds each from the same overrides.
-  defp overrides(model, thinking, llm_stream, executor) do
+  defp overrides(model, thinking, llm_stream, executor, env) do
     overrides = if model, do: [model: model], else: []
 
-    context = %{
-      workflow_loader:
-        Tackle.Workflows.loader(cwd: project_dir(), executor: executor || Tackle.Executor.local())
-    }
+    loader_opts =
+      [cwd: project_dir(), executor: executor || Tackle.Executor.local()] ++
+        Tackle.Paths.homes(env: env)
+
+    context = %{workflow_loader: Tackle.Workflows.loader(loader_opts)}
 
     context = if executor, do: Map.put(context, :executor, executor), else: context
     overrides = Keyword.put(overrides, :context, context)

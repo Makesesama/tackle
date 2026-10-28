@@ -5,6 +5,7 @@ defmodule Tackle.LocalReview.HistoryTest do
 
   alias Tackle.Lib.Usage
   alias Tackle.LocalReview.History
+  alias Tackle.Paths
   alias Tackle.Review.{Change, Diff, Finding, Result}
   alias Tackle.Session.Storage
 
@@ -106,12 +107,15 @@ defmodule Tackle.LocalReview.HistoryTest do
     assert relative.root == File.cwd!()
   end
 
-  test "resolves the home from TACKLE_HOME and rejects invalid input", ctx do
-    assert {:ok, history} = History.open("/repo", env: %{"TACKLE_HOME" => ctx.home})
-    assert String.starts_with?(history.dir, Path.join(ctx.home, "review"))
+  test "defaults to the process's Tackle home and rejects invalid input", ctx do
+    {:ok, home} = Paths.home()
+    assert {:ok, history} = History.open("/repo")
+    assert String.starts_with?(history.dir, Path.join(home, "review"))
 
-    assert {:error, :user_home_unavailable} = History.open("/repo", env: %{}, user_home: nil)
+    env = %{"TACKLE_HOME" => ctx.home}
+    assert {:error, {:invalid_option, :env, ^env}} = History.open("/repo", env: env)
     assert {:error, {:invalid_home, 1}} = History.open("/repo", home: 1)
+    assert {:error, :user_home_unavailable} = History.open("/repo", home: nil)
     assert {:error, {:invalid_root, ""}} = History.open("")
     assert {:error, {:invalid_root, nil}} = History.open(nil)
   end
