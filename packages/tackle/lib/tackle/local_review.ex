@@ -21,8 +21,9 @@ defmodule Tackle.LocalReview do
       again, and the finished run is recorded with its shown and rejected
       findings.
 
-  History is an aid, not a requirement: when it cannot be read or written,
-  the review still runs and `result.summary.warnings` says why. The
+  History is an aid, not a requirement: `open_history/2` opens it or says
+  why it is unavailable, and when it cannot be read or written, the review
+  still runs and `result.summary.warnings` says why. The
   `{:done, result}` event is sent before the run is recorded, so a warning
   about writing the history is only in the returned result.
   """
@@ -99,6 +100,25 @@ defmodule Tackle.LocalReview do
       with {:ok, result} <- Review.run(change, review_opts) do
         {:ok, record(result, change, history)}
       end
+    end
+  end
+
+  @doc """
+  Opens the history of `change`'s repository for `run/2`, with the options
+  of `Tackle.LocalReview.History.open/2` (such as `:home`).
+
+  History is an aid: when it cannot be opened, a review runs without it, so
+  this returns `nil` and a note saying why for the caller to show, instead
+  of an error.
+  """
+  @spec open_history(Change.t(), [History.open_option()]) :: {History.t() | nil, [String.t()]}
+  def open_history(%Change{root: root}, opts \\ []) when is_list(opts) do
+    case History.open(root, opts) do
+      {:ok, history} ->
+        {history, []}
+
+      {:error, reason} ->
+        {nil, ["Review history is unavailable: #{History.format_error(reason)}"]}
     end
   end
 

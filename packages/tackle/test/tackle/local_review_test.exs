@@ -389,6 +389,16 @@ defmodule Tackle.LocalReviewTest do
       assert second.summary.verdict == :clean
     end
 
+    test "open_history/2 opens the change's history or says why it cannot" do
+      home = Tackle.Test.Runtime.tmp_home()
+      assert {%History{} = history, []} = LocalReview.open_history(change(), home: home)
+      assert history.root == "/repo"
+      assert history.dir == Path.join([home, "review", history.project_key])
+
+      assert LocalReview.open_history(change(), home: 42) ==
+               {nil, ["Review history is unavailable: {:invalid_home, 42}"]}
+    end
+
     test "an unusable history is a warning, not a failure" do
       home = Tackle.Test.Runtime.tmp_home()
       blocked = Path.join(home, "file")

@@ -342,7 +342,7 @@ defmodule Tackle.CLI.TUI.Review do
           {:ok, Result.t() | :unchanged} | {:error, term()}
   def execute(request, notify) when is_map(request) and is_function(notify, 1) do
     with {:ok, change} <- load_change(request) do
-      {history, notes} = open_history(change, request.homes[:home])
+      {history, notes} = LocalReview.open_history(change, home: request.homes[:home])
       paths = if request.previous, do: touched_paths(request.previous, change)
       notify.({:loaded, change, history, paths, notes})
 
@@ -388,16 +388,6 @@ defmodule Tackle.CLI.TUI.Review do
     case Change.load(opts) do
       {:ok, change} -> {:ok, change}
       {:error, reason} -> {:error, {:change, reason}}
-    end
-  end
-
-  defp open_history(change, home) do
-    case History.open(change.root, home: home) do
-      {:ok, history} ->
-        {history, []}
-
-      {:error, reason} ->
-        {nil, ["Review history is unavailable: #{History.format_error(reason)}"]}
     end
   end
 

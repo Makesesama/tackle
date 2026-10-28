@@ -78,7 +78,6 @@ defmodule Tackle.Tools.Review do
   alias Tackle.Executor
   alias Tackle.Lib.Tool
   alias Tackle.LocalReview
-  alias Tackle.LocalReview.History
   alias Tackle.Review.{Change, Delegation, Detector, Finding, Rank, Result, Verifier}
   alias Tackle.Review.Settings, as: ReviewSettings
   alias Tackle.Runtime
@@ -207,13 +206,7 @@ defmodule Tackle.Tools.Review do
         {nil, []}
 
       opts when is_list(opts) ->
-        case History.open(change.root, Keyword.put_new(opts, :home, home)) do
-          {:ok, history} ->
-            {history, []}
-
-          {:error, reason} ->
-            {nil, ["Review history is unavailable: #{History.format_error(reason)}"]}
-        end
+        LocalReview.open_history(change, Keyword.put_new(opts, :home, home))
 
       other ->
         {nil, ["Review history is misconfigured: #{inspect(other)}"]}

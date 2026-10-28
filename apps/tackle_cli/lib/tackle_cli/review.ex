@@ -23,7 +23,6 @@ defmodule Tackle.CLI.Review do
   alias Tackle.CLI.Run
   alias Tackle.Executor
   alias Tackle.LocalReview
-  alias Tackle.LocalReview.History
   alias Tackle.Review.{Change, Result}
 
   @blocking_status 1
@@ -114,7 +113,7 @@ defmodule Tackle.CLI.Review do
         profiles: scope_spec.profiles,
         samples: opts.samples,
         executor: executor,
-        history: history(change, homes[:home], device),
+        history: open_history(change, homes[:home], device),
         on_event: &send(parent, {tag, &1})
       ] ++ homes ++ profile_option(opts.profile) ++ Map.get(opts, :tuning, [])
 
@@ -127,15 +126,10 @@ defmodule Tackle.CLI.Review do
   defp profile_option(profile), do: [profile: profile]
 
   # History is an aid: without it the review still runs.
-  defp history(change, home, device) do
-    case History.open(change.root, home: home) do
-      {:ok, history} ->
-        history
-
-      {:error, reason} ->
-        IO.puts(device, "Review history is unavailable: #{History.format_error(reason)}")
-        nil
-    end
+  defp open_history(change, home, device) do
+    {history, notes} = LocalReview.open_history(change, home: home)
+    Enum.each(notes, &IO.puts(device, &1))
+    history
   end
 
   defp await_review(task, tag, progress, device) do
