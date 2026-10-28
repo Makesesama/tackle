@@ -1,16 +1,14 @@
 defmodule Tackle.Tools do
   @moduledoc """
-  Built-in developer tools supplied by the Tackle harness.
+  The tool sets the coding harness composes sessions and agent profiles from.
 
-  These tools operate relative to the current working directory by default. An
-  embedding host may set `:cwd` in the session context to use another working
-  directory.
-
-  The tools send filesystem and process primitives to the executor in
-  `context.executor` (see `Tackle.Executor`). The default
-  `Tackle.Executor.Local` runs them with the Tackle process's own permissions,
-  without a sandbox or confirmation boundary; `Tackle.Executor.Jailed` runs them
-  inside a jail.
+  `default/0` is a session's tools unless the host configures others: the
+  coding tools of `packages/tackle_tools` (`Tackle.Tools.Read`, `Bash`,
+  `Edit`, and `Write`, which run through the session's executor; see
+  `Tackle.Executor`). `review/0` is the code review output tools agent
+  profiles may name, and `resolve_names/2` resolves the tool names of an
+  agent profile against modules the host already trusts, so a definition
+  file can never load a module of its own.
   """
 
   alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}

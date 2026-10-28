@@ -28,6 +28,10 @@ defmodule Tackle.Coding do
   alias Tackle.Session.Spec, as: SessionSpec
   alias Tackle.Tools.{Subagent, SubagentCancel, SubagentStatus, SubagentWait}
 
+  # How many children one agent may run at once; the scope admits the root
+  # plus that many agents. The delegation prompt states the same number.
+  @max_children 4
+
   @delegation """
   ## Delegation
 
@@ -46,8 +50,8 @@ defmodule Tackle.Coding do
   and expected deliverable. Child sessions are one-shot and share this workspace;
   keep a single writer, so the parent must not edit while a background child may
   be editing. Tool restrictions are capability limits, not an operating-system
-  sandbox. Evaluate returned work before relying on it. At most four children can
-  run at once; excess requests are rejected rather than queued.
+  sandbox. Evaluate returned work before relying on it. At most #{@max_children} children
+  can run at once; excess requests are rejected rather than queued.
   """
 
   @doc """
@@ -72,7 +76,7 @@ defmodule Tackle.Coding do
   selections unavailable through the configured providers are explicit errors.
   Children have unlimited loop iterations by default and a five-minute inactivity timeout.
   Explicit root or profile iteration limits are still enforced. Scope limits
-  allow the root plus four children.
+  allow the root plus #{@max_children} children.
   """
   @spec scope_spec(keyword(), SessionSpec.t() | nil) :: {:ok, ScopeSpec.t()} | {:error, term()}
   def scope_spec(loader_opts \\ [], session \\ nil) do
@@ -296,9 +300,9 @@ defmodule Tackle.Coding do
     max_spawn_depth = if Enum.any?(definitions, & &1.allow_delegation), do: 2, else: 1
 
     [
-      max_agents_per_fleet: 5,
-      max_concurrent_turns: 5,
-      max_children_per_agent: 4,
+      max_agents_per_fleet: @max_children + 1,
+      max_concurrent_turns: @max_children + 1,
+      max_children_per_agent: @max_children,
       max_spawn_depth: max_spawn_depth,
       run_timeout: :timer.minutes(5)
     ]

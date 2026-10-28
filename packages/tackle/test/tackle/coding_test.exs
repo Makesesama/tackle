@@ -259,6 +259,11 @@ defmodule Tackle.CodingTest do
     assert spec.limits.max_agents_per_fleet == 5
     assert spec.limits.max_concurrent_turns == 5
     assert spec.limits.max_children_per_agent == 4
+
+    # The delegation prompt states the limit the scope enforces.
+    assert spec.root_spec.config.system_prompt =~
+             "At most #{spec.limits.max_children_per_agent} children\ncan run at once"
+
     assert spec.limits.max_spawn_depth == 1
 
     for config <- [spec.root_spec.config, scout.config] do
