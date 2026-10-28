@@ -91,6 +91,16 @@ defmodule Tackle.Narration.DigestTest do
     assert state["recent_tool_calls"] == ["bash make (running)"]
   end
 
+  test "strips character-set escapes and keeps the last carriage-return redraw" do
+    digest =
+      Digest.new("\e(Bbuild\e7 it")
+      |> Digest.observe(delta("10%\r50%\r100%\r\n"))
+
+    state = Digest.state(digest)
+    assert state["task"] == "build it"
+    assert state["recent_assistant_text"] == "100%"
+  end
+
   test "records the last errors once each" do
     digest =
       Enum.reduce(1..5, Digest.new(), fn i, digest ->

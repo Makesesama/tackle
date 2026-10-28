@@ -42,20 +42,20 @@ defmodule Tackle.Narrator do
 
   require Logger
 
+  import Tackle.AgentService, only: [is_tool_call_end: 1]
+
+  alias Tackle.AgentService
+  alias Tackle.AgentService.Call
   alias Tackle.Config.Narration, as: Settings
   alias Tackle.Lib.{Event, LLM, Usage}
   alias Tackle.Lib.LLM.Response
   alias Tackle.Narration.Digest
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
-  alias Tackle.Runtime.Registry
   alias Tackle.StatusRedaction
 
   @max_chars 100
-  @end_events [:tool_execution_end, :tool_end, :tool_error]
-  @subscribe_retry_ms 1_000
   @request_timeout_ms 30_000
-  @request_grace_ms 5_000
   @max_backoff_ms 60_000
   @quote_chars ["\"", "'", "`", "“", "”", "‘", "’"]
 
@@ -76,15 +76,11 @@ defmodule Tackle.Narrator do
   The selection already carries its provider's settings.
   """
   @spec start_link([option()]) :: GenServer.on_start()
-  def start_link(opts) do
-    agent_ref = Keyword.fetch!(opts, :agent_ref)
-    GenServer.start_link(__MODULE__, opts, name: Registry.service_name(agent_ref, __MODULE__))
-  end
+  def start_link(opts), do: AgentService.start_link(__MODULE__, opts)
 
   @doc "Whether a narrator is currently running for `agent_ref`."
   @spec running?(AgentRef.t()) :: boolean()
-  def running?(%AgentRef{} = agent_ref),
-    do: match?({:ok, _pid}, Registry.service(agent_ref, __MODULE__))
+  def running?(%AgentRef{} = agent_ref), do: AgentService.running?(agent_ref, __MODULE__)
 
   @doc """
   The prompt sent to the narration model for one run's digest state
@@ -139,7 +135,6 @@ defmodule Tackle.Narrator do
       task_supervisor: Keyword.fetch!(opts, :task_supervisor),
       settings: Keyword.fetch!(opts, :settings),
       llm_opts: Keyword.get(opts, :llm_opts, []),
-      subscribed?: false,
       calls: %{},
       runs: %{},
       timer: nil,
@@ -150,8 +145,8 @@ defmodule Tackle.Narrator do
       usage: nil
     }
 
-    case subscribe(state) do
-      {:ok, state} -> {:ok, state}
+    case AgentService.subscribe(state.agent_ref) do
+      :ok -> {:ok, state}
       {:error, reason} -> {:stop, {:subscribe_failed, reason}}
     end
   end
@@ -177,14 +172,14 @@ defmodule Tackle.Narrator do
 
   @impl true
   def handle_info(:subscribe, state) do
-    case subscribe(state) do
-      {:ok, state} -> {:noreply, state}
+    case AgentService.subscribe(state.agent_ref) do
+      :ok -> {:noreply, state}
       {:error, reason} -> {:stop, {:subscribe_failed, reason}, state}
     end
   end
 
   def handle_info({:tackle_event, _session_id, _turn_id, %Event{} = event}, state),
-    do: {:noreply, event |> observe(state, now()) |> schedule()}
+    do: {:noreply, event |> observe(state, AgentService.now()) |> schedule()}
 
   # Foreground runs end with the turn that waits for them; background runs
   # report their own end.
@@ -195,48 +190,16 @@ defmodule Tackle.Narrator do
   end
 
   def handle_info(:narrate, state),
-    do: {:noreply, state |> Map.put(:timer, nil) |> narrate(now()) |> schedule()}
+    do: {:noreply, state |> Map.put(:timer, nil) |> narrate(AgentService.now()) |> schedule()}
 
-  def handle_info({ref, result}, %{inflight: %{task: %Task{ref: ref}} = inflight} = state) do
-    Process.demonitor(ref, [:flush])
-    {:noreply, state |> settle(inflight) |> answered(inflight, result) |> schedule()}
-  end
+  def handle_info(message, state) do
+    case Call.match(state.inflight, message) do
+      {:ok, result} ->
+        run_id = state.inflight.meta
+        {:noreply, %{state | inflight: nil} |> answered(run_id, result) |> schedule()}
 
-  def handle_info(
-        {:DOWN, ref, :process, _pid, reason},
-        %{inflight: %{task: %Task{ref: ref}} = inflight} = state
-      ) do
-    state = state |> settle(inflight) |> answered(inflight, {:error, {:crashed, reason}})
-    {:noreply, schedule(state)}
-  end
-
-  def handle_info(
-        {:narration_timeout, ref},
-        %{inflight: %{task: %Task{ref: ref}} = inflight} = state
-      ) do
-    Task.shutdown(inflight.task, :brutal_kill)
-    state = state |> settle(inflight) |> answered(inflight, {:error, :timeout})
-    {:noreply, schedule(state)}
-  end
-
-  def handle_info(_message, state), do: {:noreply, state}
-
-  # ── Subscription ──────────────────────────────────────────────────────
-
-  defp subscribe(state) do
-    case Runtime.subscribe(state.agent_ref) do
-      {:ok, _snapshot} ->
-        {:ok, %{state | subscribed?: true}}
-
-      :ok ->
-        {:ok, %{state | subscribed?: true}}
-
-      {:error, :turn_in_progress} ->
-        Process.send_after(self(), :subscribe, @subscribe_retry_ms)
-        {:ok, state}
-
-      {:error, reason} ->
-        {:error, reason}
+      :error ->
+        {:noreply, state}
     end
   end
 
@@ -250,8 +213,8 @@ defmodule Tackle.Narrator do
     case Map.get(data, :tool_call_id) do
       id when is_binary(id) and is_map(arguments) ->
         call = %{
-          prompt: argument(arguments, "prompt", :prompt),
-          background?: argument(arguments, "background", :background) == true
+          prompt: AgentService.argument(arguments, "prompt", :prompt),
+          background?: AgentService.argument(arguments, "background", :background) == true
         }
 
         %{state | calls: Map.put(state.calls, id, call)}
@@ -264,7 +227,7 @@ defmodule Tackle.Narrator do
   # A finished foreground `subagent` call or `run_workflow` call ends every run
   # it started; background runs outlive their launching call.
   defp observe(%Event{type: type, data: %{tool_call_id: id}}, state, _now)
-       when type in @end_events and is_binary(id) do
+       when is_tool_call_end(type) and is_binary(id) do
     runs =
       Map.reject(state.runs, fn {_run_id, run} ->
         run.tool_call_id == id and not run.background?
@@ -363,11 +326,6 @@ defmodule Tackle.Narrator do
 
   defp observe_child(digest, %Event{} = event), do: Digest.observe(digest, event)
 
-  # Provider arguments are decoded JSON with string keys; accept atom keys from
-  # hosts that build calls by hand.
-  defp argument(arguments, key, atom_key),
-    do: Map.get(arguments, key, Map.get(arguments, atom_key))
-
   # ── Narration ─────────────────────────────────────────────────────────
 
   defp narrate(%{inflight: nil} = state, now) do
@@ -420,46 +378,37 @@ defmodule Tackle.Narrator do
 
     opts = LLM.request_opts(request, defaults, state.llm_opts)
 
-    task =
-      Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-        LLM.generate_with(selection, nil, opts)
-      end)
+    # The adapter enforces its receive timeout; the call reaps a request that
+    # ignores it.
+    generate = fn -> LLM.generate_with(selection, nil, opts) end
 
-    # The adapter enforces its receive timeout; the timer only reaps a request
-    # that ignores it, after a grace no longer than the timeout itself.
-    timeout = Keyword.fetch!(opts, :receive_timeout)
+    case Call.start(
+           state.task_supervisor,
+           generate,
+           Keyword.fetch!(opts, :receive_timeout),
+           run.run_id
+         ) do
+      {:ok, call} ->
+        state = update_in(state.runs[run.run_id].digest, &Digest.taken/1)
+        %{state | inflight: call}
 
-    timer =
-      Process.send_after(
-        self(),
-        {:narration_timeout, task.ref},
-        timeout + min(timeout, @request_grace_ms)
-      )
-
-    state = update_in(state.runs[run.run_id].digest, &Digest.taken/1)
-    %{state | inflight: %{task: task, timer: timer, run_id: run.run_id}}
-  catch
-    :exit, reason ->
-      failed(state, run.run_id, {:task_supervisor_unavailable, reason})
+      {:error, reason} ->
+        failed(state, run.run_id, reason)
+    end
   end
 
-  defp settle(state, inflight) do
-    Process.cancel_timer(inflight.timer)
-    %{state | inflight: nil}
-  end
-
-  defp answered(state, inflight, {:ok, %Response{} = response}) do
+  defp answered(state, run_id, {:ok, %Response{} = response}) do
     state = %{state | usage: Usage.aggregate([state.usage, response.usage])}
     state = %{state | retry_at: nil, backoff_ms: nil}
 
-    case Map.fetch(state.runs, inflight.run_id) do
+    case Map.fetch(state.runs, run_id) do
       {:ok, run} -> publish(state, run, text(response))
       # The run finished while the model answered.
       :error -> state
     end
   end
 
-  defp answered(state, inflight, {:error, reason}), do: failed(state, inflight.run_id, reason)
+  defp answered(state, run_id, {:error, reason}), do: failed(state, run_id, reason)
 
   defp text(%Response{tool_calls: [_ | _]}), do: nil
   defp text(%Response{content: content}), do: normalize(content)
@@ -467,7 +416,7 @@ defmodule Tackle.Narrator do
   # Every answer counts as the run's narration attempt, so an empty one waits
   # out the interval instead of being retried at once.
   defp publish(state, run, text) do
-    run = %{run | narrated_at: now()}
+    run = %{run | narrated_at: AgentService.now()}
 
     run =
       if is_binary(text) and text != run.digest.previous do
@@ -499,24 +448,19 @@ defmodule Tackle.Narrator do
 
   # The run's state was not narrated, so it stays due once the back-off ends.
   defp failed(state, run_id, reason) do
-    state = warn_once(state, reason)
+    state =
+      AgentService.warn_once(
+        state,
+        "narration model #{state.settings.model_ref} failed: #{StatusRedaction.reason(reason)}; " <>
+          "delegated runs will not be narrated until it answers"
+      )
+
     backoff = min((state.backoff_ms || Settings.interval_ms(state.settings)) * 2, @max_backoff_ms)
-    state = %{state | backoff_ms: backoff, retry_at: now() + backoff}
+    state = %{state | backoff_ms: backoff, retry_at: AgentService.now() + backoff}
 
     if Map.has_key?(state.runs, run_id),
       do: update_in(state.runs[run_id].digest, &Digest.changed/1),
       else: state
-  end
-
-  defp warn_once(%{warned?: true} = state, _reason), do: state
-
-  defp warn_once(state, reason) do
-    Logger.warning(
-      "narration model #{state.settings.model_ref} failed: #{StatusRedaction.reason(reason)}; " <>
-        "delegated runs will not be narrated until it answers"
-    )
-
-    %{state | warned?: true}
   end
 
   # One timer for the earliest due run; none while a request is in flight,
@@ -529,28 +473,10 @@ defmodule Tackle.Narrator do
       |> Enum.map(&due_at(state, &1))
       |> Enum.min(fn -> :infinity end)
 
-    case {due, state.timer} do
-      {:infinity, _timer} ->
-        cancel_timer(state)
-
-      {at, {_ref, at}} ->
-        state
-
-      {at, _timer} ->
-        state = cancel_timer(state)
-        ref = Process.send_after(self(), :narrate, max(at - now(), 0))
-        %{state | timer: {ref, at}}
-    end
+    %{state | timer: AgentService.schedule(state.timer, due, :narrate)}
   end
 
-  defp schedule(state), do: cancel_timer(state)
-
-  defp cancel_timer(%{timer: nil} = state), do: state
-
-  defp cancel_timer(%{timer: {ref, _at}} = state) do
-    Process.cancel_timer(ref)
-    %{state | timer: nil}
-  end
+  defp schedule(state), do: %{state | timer: AgentService.cancel(state.timer)}
 
   defp trim_quotes(text) do
     trimmed =
@@ -560,6 +486,4 @@ defmodule Tackle.Narrator do
 
     if trimmed == text, do: text, else: trim_quotes(String.trim(trimmed))
   end
-
-  defp now, do: System.monotonic_time(:millisecond)
 end

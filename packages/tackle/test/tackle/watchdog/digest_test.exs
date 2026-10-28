@@ -45,6 +45,17 @@ defmodule Tackle.Watchdog.DigestTest do
     assert Digest.state(digest, 2)["output_tail"] == "ok\n100%\ndone"
   end
 
+  test "cleans escape sequences, control characters, and invalid bytes everywhere" do
+    digest =
+      ("make \e(B\a" <> <<0xFF>> <> "all")
+      |> Digest.new(0)
+      |> Digest.append("\e7building\e8\0 " <> <<0xC3>> <> "\bok\n", 1)
+
+    state = Digest.state(digest, 2)
+    assert state["command"] == "make all"
+    assert state["output_tail"] == "building ok\n"
+  end
+
   test "repetition ignores digits so counting loops look repetitive" do
     loop = Enum.map(1..20, &"tick #{&1}")
     build = Enum.map(1..20, &"compiling module_#{<<?a + rem(&1, 26)>>}.ex")

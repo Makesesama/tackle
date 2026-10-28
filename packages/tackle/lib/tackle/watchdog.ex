@@ -39,13 +39,16 @@ defmodule Tackle.Watchdog do
 
   require Logger
 
+  import Tackle.AgentService, only: [is_tool_call_end: 1]
+
+  alias Tackle.AgentService
+  alias Tackle.AgentService.Call
   alias Tackle.Config.Watchdog, as: Settings
   alias Tackle.Lib.Decision
   alias Tackle.Lib.Decision.{Answer, Question, Result}
   alias Tackle.Lib.{Event, Usage}
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentRef
-  alias Tackle.Runtime.Registry
   alias Tackle.StatusRedaction
   alias Tackle.Watchdog.Digest
 
@@ -57,11 +60,8 @@ defmodule Tackle.Watchdog do
     "infinite_loop" => "likely infinite loop",
     "stalled" => "likely stalled"
   }
-  @end_events [:tool_execution_end, :tool_end, :tool_error]
   @max_interval_ms :timer.minutes(16)
-  @subscribe_retry_ms 1_000
   @decision_timeout_ms 60_000
-  @decision_grace_ms 5_000
 
   @type option ::
           {:agent_ref, AgentRef.t()}
@@ -78,15 +78,11 @@ defmodule Tackle.Watchdog do
   `:receive_timeout`). The selection already carries its provider's settings.
   """
   @spec start_link([option()]) :: GenServer.on_start()
-  def start_link(opts) do
-    agent_ref = Keyword.fetch!(opts, :agent_ref)
-    GenServer.start_link(__MODULE__, opts, name: Registry.service_name(agent_ref, __MODULE__))
-  end
+  def start_link(opts), do: AgentService.start_link(__MODULE__, opts)
 
   @doc "Whether a watchdog is currently running for `agent_ref`."
   @spec running?(AgentRef.t()) :: boolean()
-  def running?(%AgentRef{} = agent_ref),
-    do: match?({:ok, _pid}, Registry.service(agent_ref, __MODULE__))
+  def running?(%AgentRef{} = agent_ref), do: AgentService.running?(agent_ref, __MODULE__)
 
   @doc """
   Whether the watchdog watches a tool call with this name and arguments.
@@ -96,8 +92,8 @@ defmodule Tackle.Watchdog do
   """
   @spec watches?(String.t() | nil, term()) :: boolean()
   def watches?(@tool_name, arguments) when is_map(arguments) do
-    is_binary(argument(arguments, "command", :command)) and
-      is_nil(argument(arguments, "timeout", :timeout))
+    is_binary(AgentService.argument(arguments, "command", :command)) and
+      is_nil(AgentService.argument(arguments, "timeout", :timeout))
   end
 
   def watches?(_name, _arguments), do: false
@@ -149,7 +145,6 @@ defmodule Tackle.Watchdog do
       task_supervisor: Keyword.fetch!(opts, :task_supervisor),
       settings: Keyword.fetch!(opts, :settings),
       decision_opts: Keyword.get(opts, :decision_opts, []),
-      subscribed?: false,
       calls: %{},
       timer: nil,
       inflight: nil,
@@ -157,8 +152,8 @@ defmodule Tackle.Watchdog do
       usage: nil
     }
 
-    case subscribe(state) do
-      {:ok, state} -> {:ok, state}
+    case AgentService.subscribe(state.agent_ref) do
+      :ok -> {:ok, state}
       {:error, reason} -> {:stop, {:subscribe_failed, reason}}
     end
   end
@@ -182,8 +177,8 @@ defmodule Tackle.Watchdog do
 
   @impl true
   def handle_info(:subscribe, state) do
-    case subscribe(state) do
-      {:ok, state} -> {:noreply, state}
+    case AgentService.subscribe(state.agent_ref) do
+      :ok -> {:noreply, state}
       {:error, reason} -> {:stop, {:subscribe_failed, reason}, state}
     end
   end
@@ -198,46 +193,14 @@ defmodule Tackle.Watchdog do
   def handle_info(:check, state),
     do: {:noreply, state |> Map.put(:timer, nil) |> check() |> schedule()}
 
-  def handle_info({ref, result}, %{inflight: %{task: %Task{ref: ref}} = inflight} = state) do
-    Process.demonitor(ref, [:flush])
-    {:noreply, state |> settle(inflight) |> decided(inflight.call_id, result) |> schedule()}
-  end
+  def handle_info(message, state) do
+    case Call.match(state.inflight, message) do
+      {:ok, result} ->
+        call_id = state.inflight.meta
+        {:noreply, %{state | inflight: nil} |> decided(call_id, result) |> schedule()}
 
-  def handle_info(
-        {:DOWN, ref, :process, _pid, reason},
-        %{inflight: %{task: %Task{ref: ref}} = inflight} = state
-      ) do
-    state = state |> settle(inflight) |> decided(inflight.call_id, {:error, {:crashed, reason}})
-    {:noreply, schedule(state)}
-  end
-
-  def handle_info(
-        {:decision_timeout, ref},
-        %{inflight: %{task: %Task{ref: ref}} = inflight} = state
-      ) do
-    Task.shutdown(inflight.task, :brutal_kill)
-    state = state |> settle(inflight) |> decided(inflight.call_id, {:error, :timeout})
-    {:noreply, schedule(state)}
-  end
-
-  def handle_info(_message, state), do: {:noreply, state}
-
-  # ── Subscription ──────────────────────────────────────────────────────
-
-  defp subscribe(state) do
-    case Runtime.subscribe(state.agent_ref) do
-      {:ok, _snapshot} ->
-        {:ok, %{state | subscribed?: true}}
-
-      :ok ->
-        {:ok, %{state | subscribed?: true}}
-
-      {:error, :turn_in_progress} ->
-        Process.send_after(self(), :subscribe, @subscribe_retry_ms)
-        {:ok, state}
-
-      {:error, reason} ->
-        {:error, reason}
+      :error ->
+        {:noreply, state}
     end
   end
 
@@ -248,23 +211,23 @@ defmodule Tackle.Watchdog do
     id = Map.get(data, :tool_call_id)
 
     if is_binary(id) and watches?(name, arguments),
-      do: track(state, id, argument(arguments, "command", :command)),
+      do: track(state, id, AgentService.argument(arguments, "command", :command)),
       else: state
   end
 
   defp observe(%Event{type: :tool_progress, data: %{tool_call_id: id, delta: delta}}, state)
        when is_map_key(state.calls, id) and is_binary(delta) do
-    update_in(state.calls[id].digest, &Digest.append(&1, delta, now()))
+    update_in(state.calls[id].digest, &Digest.append(&1, delta, AgentService.now()))
   end
 
-  defp observe(%Event{type: type, data: %{tool_call_id: id}}, state) when type in @end_events,
+  defp observe(%Event{type: type, data: %{tool_call_id: id}}, state) when is_tool_call_end(type),
     do: %{state | calls: Map.delete(state.calls, id)}
 
   defp observe(%Event{}, state), do: state
 
   defp track(state, id, command) do
     interval = Settings.after_ms(state.settings)
-    now = now()
+    now = AgentService.now()
 
     call = %{
       digest: Digest.new(command, now),
@@ -275,15 +238,10 @@ defmodule Tackle.Watchdog do
     %{state | calls: Map.put(state.calls, id, call)}
   end
 
-  # Provider arguments are decoded JSON with string keys; accept atom keys from
-  # hosts that build calls by hand.
-  defp argument(arguments, key, atom_key),
-    do: Map.get(arguments, key, Map.get(arguments, atom_key))
-
   # ── Checks ────────────────────────────────────────────────────────────
 
   defp check(%{inflight: nil} = state) do
-    now = now()
+    now = AgentService.now()
 
     state.calls
     |> Enum.filter(fn {_id, call} -> call.next_check_at <= now end)
@@ -300,30 +258,14 @@ defmodule Tackle.Watchdog do
     %Settings{selection: selection} = state.settings
     opts = Keyword.put_new(state.decision_opts, :receive_timeout, @decision_timeout_ms)
 
-    task =
-      Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-        Decision.ask(selection, observed, [question()], opts)
-      end)
+    # The adapter enforces its receive timeout; the call reaps a request that
+    # ignores it.
+    ask = fn -> Decision.ask(selection, observed, [question()], opts) end
 
-    # The adapter enforces its receive timeout; the timer only reaps a request
-    # that ignores it, after a grace no longer than the timeout itself.
-    timeout = Keyword.fetch!(opts, :receive_timeout)
-
-    timer =
-      Process.send_after(
-        self(),
-        {:decision_timeout, task.ref},
-        timeout + min(timeout, @decision_grace_ms)
-      )
-
-    %{state | inflight: %{task: task, timer: timer, call_id: id}}
-  catch
-    :exit, reason -> decided(state, id, {:error, {:task_supervisor_unavailable, reason}})
-  end
-
-  defp settle(state, inflight) do
-    Process.cancel_timer(inflight.timer)
-    %{state | inflight: nil}
+    case Call.start(state.task_supervisor, ask, Keyword.fetch!(opts, :receive_timeout), id) do
+      {:ok, call} -> %{state | inflight: call}
+      {:error, reason} -> decided(state, id, {:error, reason})
+    end
   end
 
   # `Tackle.Lib.Decision.ask/4` returns only results that answer the verdict
@@ -336,7 +278,12 @@ defmodule Tackle.Watchdog do
   end
 
   defp decided(state, id, {:error, reason}) do
-    state |> warn_once(reason) |> back_off(id)
+    state
+    |> AgentService.warn_once(
+      "watchdog decision model #{state.settings.model_ref} failed: " <>
+        "#{StatusRedaction.reason(reason)}; commands will not be stopped until it answers"
+    )
+    |> back_off(id)
   end
 
   defp verdict(state, id, choice, probability) do
@@ -364,7 +311,8 @@ defmodule Tackle.Watchdog do
   end
 
   defp reschedule(state, id, interval) do
-    update_in(state.calls[id], &%{&1 | interval_ms: interval, next_check_at: now() + interval})
+    next_check_at = AgentService.now() + interval
+    update_in(state.calls[id], &%{&1 | interval_ms: interval, next_check_at: next_check_at})
   end
 
   defp stop(state, id, choice, probability) do
@@ -387,48 +335,26 @@ defmodule Tackle.Watchdog do
 
   @doc false
   @spec stop_message(Digest.t(), String.t(), number(), integer()) :: String.t()
-  def stop_message(%Digest{} = digest, choice, probability, now \\ now()) do
+  def stop_message(%Digest{} = digest, choice, probability, now \\ AgentService.now()) do
     @stop_prefix <>
       "#{format_duration(Digest.elapsed_ms(digest, now))}: " <>
       "#{Map.fetch!(@stop_verdicts, choice)} (p=#{format_probability(probability)}). " <>
       "If this is expected to run long, re-run it with an explicit timeout or in the background."
   end
 
-  defp warn_once(%{warned?: true} = state, _reason), do: state
-
-  defp warn_once(state, reason) do
-    Logger.warning(
-      "watchdog decision model #{state.settings.model_ref} failed: " <>
-        "#{StatusRedaction.reason(reason)}; " <>
-        "commands will not be stopped until it answers"
-    )
-
-    %{state | warned?: true}
-  end
-
   # One timer for the earliest due check; none while a decision is in flight,
   # because its result reschedules.
   defp schedule(%{inflight: nil} = state) do
-    state = cancel_timer(state)
+    due =
+      state.calls
+      |> Map.values()
+      |> Enum.map(& &1.next_check_at)
+      |> Enum.min(fn -> :infinity end)
 
-    case Enum.min_by(Map.values(state.calls), & &1.next_check_at, fn -> nil end) do
-      nil ->
-        state
-
-      call ->
-        delay = max(call.next_check_at - now(), 0)
-        %{state | timer: Process.send_after(self(), :check, delay)}
-    end
+    %{state | timer: AgentService.schedule(state.timer, due, :check)}
   end
 
-  defp schedule(state), do: cancel_timer(state)
-
-  defp cancel_timer(%{timer: nil} = state), do: state
-
-  defp cancel_timer(%{timer: timer} = state) do
-    Process.cancel_timer(timer)
-    %{state | timer: nil}
-  end
+  defp schedule(state), do: %{state | timer: AgentService.cancel(state.timer)}
 
   defp format_duration(ms) do
     seconds = div(ms, 1_000)
@@ -444,6 +370,4 @@ defmodule Tackle.Watchdog do
 
   defp format_probability(probability),
     do: :erlang.float_to_binary(probability / 1, decimals: 2)
-
-  defp now, do: System.monotonic_time(:millisecond)
 end

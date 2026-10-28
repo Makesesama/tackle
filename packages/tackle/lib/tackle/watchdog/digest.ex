@@ -15,12 +15,13 @@ defmodule Tackle.Watchdog.Digest do
   cleaned tail are sent.
   """
 
+  alias Tackle.PlainText
+
   @tail_bytes 4096
   @state_tail_bytes 800
   @command_bytes 400
   @repetition_lines 64
   @min_repetition_lines 4
-  @ansi ~r/\e\[[0-?]*[ -\/]*[@-~]|\e\][^\a\e]*(?:\a|\e\\)/
 
   @enforce_keys [:command, :started_at]
   defstruct [:command, :started_at, :last_output_at, tail: "", bytes: 0]
@@ -43,7 +44,7 @@ defmodule Tackle.Watchdog.Digest do
   def append(%__MODULE__{} = digest, chunk, now) when is_binary(chunk) and chunk != "" do
     %{
       digest
-      | tail: keep_tail(digest.tail <> chunk),
+      | tail: PlainText.last_bytes(digest.tail <> chunk, @tail_bytes),
         bytes: digest.bytes + byte_size(chunk),
         last_output_at: now
     }
@@ -62,13 +63,15 @@ defmodule Tackle.Watchdog.Digest do
     lines = tail_lines(digest.tail)
 
     %{
-      "command" => truncate(digest.command, @command_bytes),
+      "command" =>
+        digest.command |> PlainText.clean() |> PlainText.truncate_bytes(@command_bytes),
       "elapsed_seconds" => Float.round(elapsed_seconds, 1),
       "output_bytes" => digest.bytes,
       "output_bytes_per_second" => rate(digest.bytes, elapsed_seconds),
       "seconds_since_last_output" => silence(digest, now, elapsed_seconds),
       "output_repetition" => repetition(lines),
-      "output_tail" => lines |> collapse_repeats() |> Enum.join("\n") |> last_bytes()
+      "output_tail" =>
+        lines |> collapse_repeats() |> Enum.join("\n") |> PlainText.last_bytes(@state_tail_bytes)
     }
   end
 
@@ -97,15 +100,7 @@ defmodule Tackle.Watchdog.Digest do
   # Terminal control sequences and carriage-return redraws are noise for the
   # model: keep only what a terminal would finally show on each line.
   defp tail_lines(""), do: []
-
-  defp tail_lines(tail) do
-    tail
-    |> String.replace(@ansi, "")
-    |> String.split("\n")
-    |> Enum.map(fn line ->
-      line |> String.trim_trailing("\r") |> String.split("\r") |> List.last()
-    end)
-  end
+  defp tail_lines(tail), do: tail |> PlainText.clean() |> String.split("\n")
 
   # `yes`-style output would otherwise fill the tail with one line; the
   # repetition itself is what the model needs to see.
@@ -118,14 +113,6 @@ defmodule Tackle.Watchdog.Digest do
     end)
   end
 
-  defp last_bytes(text) when byte_size(text) <= @state_tail_bytes, do: text
-
-  defp last_bytes(text) do
-    text
-    |> binary_part(byte_size(text) - @state_tail_bytes, @state_tail_bytes)
-    |> drop_partial_character()
-  end
-
   defp rate(_bytes, elapsed_seconds) when elapsed_seconds <= 0, do: 0.0
   defp rate(bytes, elapsed_seconds), do: Float.round(bytes / elapsed_seconds, 1)
 
@@ -134,30 +121,4 @@ defmodule Tackle.Watchdog.Digest do
 
   defp silence(%__MODULE__{last_output_at: at}, now, _elapsed_seconds),
     do: Float.round(max(now - at, 0) / 1_000, 1)
-
-  defp keep_tail(tail) when byte_size(tail) <= @tail_bytes, do: tail
-
-  defp keep_tail(tail) do
-    tail
-    |> binary_part(byte_size(tail) - @tail_bytes, @tail_bytes)
-    |> drop_partial_character()
-  end
-
-  defp truncate(text, bytes) when byte_size(text) <= bytes, do: text
-
-  defp truncate(text, bytes) do
-    prefix = binary_part(text, 0, bytes)
-
-    case :unicode.characters_to_binary(prefix) do
-      {:incomplete, valid, _rest} -> valid <> "…"
-      _valid -> prefix <> "…"
-    end
-  end
-
-  # Cutting at a byte offset can split a UTF-8 character; drop its leftover
-  # continuation bytes so the tail stays valid text.
-  defp drop_partial_character(<<byte, rest::binary>>) when byte in 0x80..0xBF,
-    do: drop_partial_character(rest)
-
-  defp drop_partial_character(tail), do: tail
 end

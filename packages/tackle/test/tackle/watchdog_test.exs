@@ -345,7 +345,7 @@ defmodule Tackle.WatchdogTest do
     {:ok, snapshot} = Tackle.subscribe(scope.root_agent_ref)
     session_id = snapshot.session_id
     watchdog = watchdog_pid(scope.root_agent_ref)
-    assert :sys.get_state(watchdog).subscribed?
+    assert subscribed?(scope.root_agent_ref, watchdog)
 
     {:ok, turn_id} = Tackle.submit(scope.root_agent_ref, "go")
     assert_receive {:bash_started, "make", tool}, 5_000
@@ -360,12 +360,12 @@ defmodule Tackle.WatchdogTest do
         end
       end)
 
-    refute :sys.get_state(restarted).subscribed?
+    refute subscribed?(scope.root_agent_ref, restarted)
 
     send(tool, :release)
     assert_receive {:tackle_turn_finished, ^session_id, ^turn_id, {:ok, _state}}, 5_000
 
-    assert wait_for(fn -> :sys.get_state(restarted).subscribed? end, 3_000)
+    assert wait_for(fn -> subscribed?(scope.root_agent_ref, restarted) end, 3_000)
     assert {:ok, _session} = Tackle.Runtime.session_pid(scope.root_agent_ref)
   end
 
@@ -462,6 +462,13 @@ defmodule Tackle.WatchdogTest do
         watchdog: [model: "judge/fake", after_seconds: 0.05, threshold: 0.85]
       ]
     )
+  end
+
+  # A session monitors its subscribers.
+  defp subscribed?(agent_ref, pid) do
+    {:ok, session} = Tackle.Runtime.session_pid(agent_ref)
+    {:monitored_by, monitors} = Process.info(pid, :monitored_by)
+    session in monitors
   end
 
   defp verdict(choice, probability) do

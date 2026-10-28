@@ -21,6 +21,7 @@ defmodule Tackle.Narration.Digest do
   """
 
   alias Tackle.Lib.Event
+  alias Tackle.PlainText
 
   @task_chars 400
   @text_chars 300
@@ -30,8 +31,6 @@ defmodule Tackle.Narration.Digest do
   @max_errors 3
   @argument_keys for key <- ~w(path file_path command pattern query url profile workflow),
                      do: {key, String.to_atom(key)}
-  @ansi ~r/\e\[[0-?]*[ -\/]*[@-~]|\e\][^\a\e]*(?:\a|\e\\)|\e[@-Z\\-_]/
-  @control ~r/[\x00-\x08\x0B-\x1F\x7F]/
 
   defstruct task: nil,
             profile: nil,
@@ -72,9 +71,9 @@ defmodule Tackle.Narration.Digest do
   """
   @spec put_task(t(), String.t() | nil) :: t()
   def put_task(%__MODULE__{task: nil} = digest, task) when is_binary(task) do
-    case task |> clean() |> String.trim() do
+    case task |> PlainText.clean() |> String.trim() do
       "" -> digest
-      task -> %{digest | task: truncate(task, @task_chars)}
+      task -> %{digest | task: PlainText.truncate(task, @task_chars)}
     end
   end
 
@@ -84,7 +83,7 @@ defmodule Tackle.Narration.Digest do
   @spec put_profile(t(), String.t() | nil) :: t()
   def put_profile(%__MODULE__{profile: nil} = digest, profile)
       when is_binary(profile) and profile != "",
-      do: %{digest | profile: clean(profile)}
+      do: %{digest | profile: PlainText.clean(profile)}
 
   def put_profile(%__MODULE__{} = digest, _profile), do: digest
 
@@ -98,7 +97,7 @@ defmodule Tackle.Narration.Digest do
   def observe(%__MODULE__{} = digest, %Event{type: :tool_start, data: data}) do
     tool = %{
       id: string(Map.get(data, :tool_call_id)),
-      name: clean(string(Map.get(data, :name)) || "tool"),
+      name: PlainText.clean(string(Map.get(data, :name)) || "tool"),
       argument: argument(Map.get(data, :arguments)),
       status: :running
     }
@@ -120,7 +119,10 @@ defmodule Tackle.Narration.Digest do
   def observe(%__MODULE__{} = digest, %Event{type: :message_delta, data: data}) do
     with field when field in [nil, :content] <- Map.get(data, :field),
          delta when is_binary(delta) and delta != "" <- Map.get(data, :delta) do
-      changed(%{digest | text: last_chars(digest.text <> clean(delta), @text_chars)})
+      changed(%{
+        digest
+        | text: PlainText.last_chars(digest.text <> PlainText.clean(delta), @text_chars)
+      })
     else
       _other -> digest
     end
@@ -235,33 +237,14 @@ defmodule Tackle.Narration.Digest do
 
   defp short_line(text, chars) do
     text
-    |> clean()
+    |> PlainText.clean()
     |> String.split("\n")
     |> Enum.map(&String.trim/1)
     |> Enum.find(&(&1 != ""))
     |> case do
       nil -> nil
-      line -> truncate(line, chars)
+      line -> PlainText.truncate(line, chars)
     end
-  end
-
-  # Terminal control sequences and invalid bytes are noise for the model, and
-  # cutting them in half would leave broken text.
-  defp clean(text) do
-    text
-    |> String.replace_invalid("")
-    |> String.replace(@ansi, "")
-    |> String.replace("\r\n", "\n")
-    |> String.replace(@control, "")
-  end
-
-  defp truncate(text, chars) do
-    if String.length(text) <= chars, do: text, else: String.slice(text, 0, chars) <> "…"
-  end
-
-  defp last_chars(text, chars) do
-    length = String.length(text)
-    if length <= chars, do: text, else: String.slice(text, length - chars, chars)
   end
 
   defp string(value) when is_binary(value), do: value
