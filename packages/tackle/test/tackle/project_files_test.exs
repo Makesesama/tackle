@@ -255,21 +255,17 @@ defmodule Tackle.ProjectFilesTest do
       assert_received {:fake_jail, :stat, _path}
     end
 
-    test "nearest_project_file stops at the Git root", %{root: root, workspace: workspace} do
+    test "nearest_project_dir stops at the Git root", %{root: root, workspace: workspace} do
       nested = Path.join(workspace, "apps/cli")
       File.mkdir_p!(nested)
       File.mkdir_p!(Path.join(root, ".tackle"))
-      File.write!(Path.join(root, ".tackle/config.json"), "{}")
       files = ProjectFiles.new(user_home: root)
-
-      assert ProjectFiles.nearest_project_file(files, nested, ".tackle/config.json") ==
-               Path.join(root, ".tackle/config.json")
 
       assert ProjectFiles.nearest_project_dir(files, nested, ".tackle") ==
                Path.join(root, ".tackle")
 
       File.mkdir_p!(Path.join(workspace, ".git"))
-      assert ProjectFiles.nearest_project_file(files, nested, ".tackle/config.json") == nil
+      assert ProjectFiles.nearest_project_dir(files, nested, ".tackle") == nil
     end
 
     test "without a Git root, the search stops at the home directory or the working directory",

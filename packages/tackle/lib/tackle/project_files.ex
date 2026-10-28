@@ -141,23 +141,11 @@ defmodule Tackle.ProjectFiles do
   example `.tackle/agents`). All probes use this router.
   """
   @spec nearest_project_dir(t(), Path.t(), Path.t()) :: Path.t() | nil
-  def nearest_project_dir(files, cwd, relative_dir),
-    do: nearest(files, cwd, relative_dir, &dir?/2)
-
-  @doc """
-  Finds the nearest existing regular file at `relative_path` at or above `cwd`
-  (for example `.tackle/config.json`), with the same search bounds as
-  `nearest_project_dir/3`.
-  """
-  @spec nearest_project_file(t(), Path.t(), Path.t()) :: Path.t() | nil
-  def nearest_project_file(files, cwd, relative_path),
-    do: nearest(files, cwd, relative_path, &regular?/2)
-
-  defp nearest(files, cwd, relative_path, found?) do
+  def nearest_project_dir(files, cwd, relative_dir) do
     files
     |> ancestors(cwd)
-    |> Enum.map(&Path.join(&1, relative_path))
-    |> Enum.find(&found?.(files, &1))
+    |> Enum.map(&Path.join(&1, relative_dir))
+    |> Enum.find(&dir?(files, &1))
   end
 
   @doc """
