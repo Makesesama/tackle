@@ -165,8 +165,7 @@ defmodule Tackle.WorkflowsTest do
     assert_received {:fake_jail, :read, ^path}
     assert {:error, :eexist} = Workflows.create("report", "return 2", opts)
 
-    assert {:error, :eexist} =
-             Workflows.save(path, "return 2", Keyword.put(opts, :exclusive, true))
+    assert {:error, :eexist} = Workflows.save(path, "return 2", Keyword.put(opts, :mode, :create))
 
     assert :ok = Workflows.save(path, "return 3", opts)
     outside = Path.join(home, "workflows/user.lua")

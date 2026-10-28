@@ -143,19 +143,11 @@ defmodule Tackle.Workflows do
 
   Accepts discovery options plus executor write options `:mode` (default
   `:replace`, or `:create` for exclusive creation) and `:mkdir_p` (default false).
-  `:exclusive` set to true is shorthand for `mode: :create`.
   """
   @spec save(Path.t(), String.t(), keyword()) :: :ok | {:error, Executor.reason()}
   def save(path, script, opts \\ []) do
     path = Path.expand(path, cwd(opts))
-    write_opts = Keyword.take(opts, [:mode, :mkdir_p])
-
-    write_opts =
-      if Keyword.get(opts, :exclusive, false),
-        do: Keyword.put(write_opts, :mode, :create),
-        else: write_opts
-
-    ProjectFiles.write(files(opts), path, script, write_opts)
+    ProjectFiles.write(files(opts), path, script, Keyword.take(opts, [:mode, :mkdir_p]))
   end
 
   @doc """
