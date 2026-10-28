@@ -74,7 +74,8 @@ defmodule Tackle.Watchdog do
   Options are `:agent_ref`, `:task_supervisor` (the agent's service
   `Task.Supervisor`), `:settings` (`Tackle.Config.Watchdog`), and
   `:request_timeout`, the milliseconds a decision request may take (60 seconds
-  by default). The selection already carries its provider's settings.
+  by default). The selection already carries its provider's settings, and
+  requests carry the harness credential store (`Tackle.Auth`).
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts), do: AgentService.start_link(__MODULE__, opts)
@@ -253,7 +254,11 @@ defmodule Tackle.Watchdog do
 
   defp start_decision(state, id, observed) do
     %Settings{selection: selection} = state.settings
-    opts = [receive_timeout: state.request_timeout]
+
+    opts = [
+      credential_store: Tackle.Auth.credential_store(),
+      receive_timeout: state.request_timeout
+    ]
 
     # The adapter enforces its receive timeout; the call reaps a request that
     # ignores it.

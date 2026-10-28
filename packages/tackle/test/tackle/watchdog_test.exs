@@ -33,7 +33,8 @@ defmodule Tackle.WatchdogTest do
     def decision_models, do: ["fake"]
 
     @impl Tackle.Lib.Decision
-    def decide(request, _opts) do
+    def decide(request, opts) do
+      send(:tackle_watchdog_test_judge, {:judge_opts, opts})
       send(:tackle_watchdog_test_judge, {:judge_called, self(), request, now()})
 
       receive do
@@ -120,6 +121,11 @@ defmodule Tackle.WatchdogTest do
     assert request.state["command"] == "yes"
     assert request.state["output_tail"] =~ "line 1"
     assert [%{name: "verdict", type: :choice}] = request.questions
+
+    # Decision models that need a stored API key find it.
+    assert_received {:judge_opts, opts}
+    assert opts[:credential_store] == Tackle.Auth.credential_store()
+    assert opts[:receive_timeout] == 60_000
 
     send(judge, {:judge_reply, verdict("infinite_loop", 0.93)})
 
