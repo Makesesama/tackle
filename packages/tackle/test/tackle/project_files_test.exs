@@ -181,10 +181,8 @@ defmodule Tackle.ProjectFilesTest do
         builtins: []
       ]
 
-      assert [%{path: _path}] = Agents.discover(opts).warnings
-
-      assert %{definitions: [], warnings: []} =
-               Agents.discover([executor: FakeJail.new(workspace)] ++ opts)
+      assert {:error, {:invalid_agent_definitions, [%{path: _path}]}} = Agents.discover(opts)
+      assert {:ok, []} = Agents.discover([executor: FakeJail.new(workspace)] ++ opts)
     end
   end
 

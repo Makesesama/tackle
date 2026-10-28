@@ -234,9 +234,11 @@ the root agent does not have (other than the review output tools) fail startup
 explicitly. Built-in profiles instead drop the tools a host did not configure,
 so a host that restricts its tools restricts them too.
 
-Default profiles are implemented as modules conforming to
-`Tackle.Agents.Default`; each returns an inert `Tackle.Agents.Definition`.
-User and project files can override these defaults by name.
+`Tackle.Agents.discover/1` returns `{:ok, definitions}` or, when any file
+fails, `{:error, {:invalid_agent_definitions, problems}}` with each file's path
+and message. The default profiles are plain `Tackle.Agents.Definition` data
+in `Tackle.Agents.Default.definitions/0`. User and project files can override
+these defaults by name.
 
 Agent files are inert configuration. Tool names resolve only against modules
 already selected by trusted harness code; they cannot load modules or arbitrary

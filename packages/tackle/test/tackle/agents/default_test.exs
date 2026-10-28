@@ -4,7 +4,7 @@ defmodule Tackle.Agents.DefaultTest do
   alias Tackle.Agents.Default
   alias Tackle.Agents.Definition
 
-  test "default agent modules implement the definition behaviour" do
+  test "ships scout, reviewer, worker, and the review stages as built-in definitions" do
     definitions = Default.definitions()
 
     assert Enum.map(definitions, & &1.name) ==

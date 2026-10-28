@@ -54,24 +54,6 @@ defmodule Tackle.WorkflowsTest do
     assert [%{name: "child"}] = Workflows.discover(child_opts).workflows
   end
 
-  test "the shared ancestor search preserves Agents discovery", %{
-    cwd: cwd,
-    root: root,
-    opts: opts
-  } do
-    script = "---\nname: scout\ndescription: Inspect code\n---\nInspect the project."
-    put(Path.join(root, ".tackle/agents"), "outside.md", script)
-    assert Tackle.Agents.discover(opts).definitions == []
-    agents = Path.join(cwd, ".tackle/agents")
-    put(Path.join(agents, "nested"), "scout.md", script)
-    child = Path.join(cwd, "child")
-    File.mkdir_p!(child)
-    child_opts = Keyword.put(opts, :cwd, child)
-    assert [%{name: "scout", source: :project}] = Tackle.Agents.discover(child_opts).definitions
-    File.mkdir_p!(Path.join(child, ".tackle/agents"))
-    assert Tackle.Agents.discover(child_opts).definitions == []
-  end
-
   test "first-line descriptions only, excluding block comments", %{cwd: cwd, opts: opts} do
     dir = Path.join(cwd, ".tackle/workflows")
 

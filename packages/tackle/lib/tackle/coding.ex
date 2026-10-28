@@ -82,8 +82,7 @@ defmodule Tackle.Coding do
          {:ok, config} <- Config.from_sources(sources),
          :ok <- validate_root_tools(Keyword.get(loader_opts, :root_tools, [])),
          :ok <- validate_catalog_tool_conflicts(loader_opts, config),
-         discovery <- discover(config, sources),
-         :ok <- validate_discovery(discovery),
+         {:ok, definitions} <- discover(config, sources),
          root_tools =
            Enum.uniq(
              config.tools ++
@@ -91,10 +90,10 @@ defmodule Tackle.Coding do
                catalog_tools ++ [Subagent, SubagentStatus, SubagentWait, SubagentCancel]
            ),
          {:ok, profiles} <-
-           discovery.definitions
+           definitions
            |> Enum.map(&apply_agent_settings(&1, config.agents))
            |> build_profiles(config.tools, root_tools, sources),
-         {:ok, root_config} <- root_config(discovery.definitions, root_tools, sources),
+         {:ok, root_config} <- root_config(definitions, root_tools, sources),
          {:ok, root_spec} <-
            AgentSpec.new(
              name: "root",
@@ -105,7 +104,7 @@ defmodule Tackle.Coding do
         backend: Tackle.Runtime.RootBackend,
         root_spec: root_spec,
         session: session,
-        limits: limits(discovery.definitions),
+        limits: limits(definitions),
         profiles: profiles
       )
     end
@@ -175,12 +174,6 @@ defmodule Tackle.Coding do
       user_home: sources.user_home,
       builtins: Default.definitions()
     )
-  end
-
-  defp validate_discovery(%{warnings: []}), do: :ok
-
-  defp validate_discovery(%{warnings: warnings}) do
-    {:error, {:invalid_agent_definitions, warnings}}
   end
 
   # `config.json` `agents` settings replace a profile's own model and thinking,

@@ -26,32 +26,64 @@ defmodule Tackle.Agents do
   @name_pattern ~r/^[a-z0-9]+(?:-[a-z0-9]+)*$/
   @max_timeout :timer.minutes(5)
 
-  @type warning :: %{path: Path.t(), message: String.t()}
-  @type discovery :: %{definitions: [Definition.t()], warnings: [warning()]}
+  @typedoc "A definition file that could not be loaded, and why."
+  @type problem :: %{path: Path.t(), message: String.t()}
 
-  @spec discover(keyword()) :: discovery()
+  @typedoc """
+  `discover/1` options:
+
+    * `:cwd` - the working directory the project search starts from
+      (default: the current directory);
+    * `:executor` - the session executor workspace files are read through
+      (see `Tackle.ProjectFiles`; default: the local executor);
+    * `:home` and `:user_home` - the Tackle home holding the user profiles
+      and the user's home directory bounding the project search, `nil` for
+      none (default: resolved from the process environment, see
+      `Tackle.Paths.homes/1`);
+    * `:builtins` - the host's built-in definitions, lowest precedence
+      (default: none; `Tackle.Coding` passes `Tackle.Agents.Default.definitions/0`).
+  """
+  @type option ::
+          {:cwd, Path.t()}
+          | {:executor, Tackle.Executor.t() | nil}
+          | {:home, Path.t() | nil}
+          | {:user_home, Path.t() | nil}
+          | {:builtins, [Definition.t()]}
+
+  @doc """
+  Discovers the built-in, user, and project definitions (see the module
+  documentation), sorted by name.
+
+  Every file must load: a file that cannot be read, malformed front matter,
+  an unknown or invalid field, or a name defined twice in one source is a
+  problem, and any problem is `{:error, {:invalid_agent_definitions,
+  problems}}`, so a session never starts with a profile silently missing.
+  """
+  @spec discover([option()]) ::
+          {:ok, [Definition.t()]} | {:error, {:invalid_agent_definitions, [problem()]}}
   def discover(opts \\ []) do
     cwd = opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> Path.expand()
     homes = opts |> Keyword.take([:home, :user_home]) |> Paths.homes()
     files = ProjectFiles.new(executor: Keyword.get(opts, :executor), user_home: homes[:user_home])
-    builtins = Keyword.get(opts, :builtins, [])
 
-    sources =
-      [{:builtin, builtins} | ProjectFiles.tackle_dirs(files, cwd, homes[:home], "agents")]
-
-    {definitions, warnings} =
-      Enum.reduce(sources, {%{}, []}, fn
-        {_source, definitions}, acc when is_list(definitions) ->
-          merge_definitions(definitions, acc)
-
-        {source, dir}, acc ->
-          load_directory(files, dir, source, acc)
+    loaded =
+      files
+      |> ProjectFiles.tackle_dirs(cwd, homes[:home], "agents")
+      |> Enum.flat_map(fn {source, dir} ->
+        Enum.map(markdown_files(files, dir), &load_file(files, &1, source))
       end)
 
-    %{
-      definitions: definitions |> Map.values() |> Enum.sort_by(& &1.name),
-      warnings: Enum.reverse(warnings)
-    }
+    {definitions, problems} =
+      opts
+      |> Keyword.get(:builtins, [])
+      |> Enum.map(&{:ok, &1})
+      |> Enum.concat(loaded)
+      |> Enum.reduce({%{}, []}, &merge/2)
+
+    case problems do
+      [] -> {:ok, definitions |> Map.values() |> Enum.sort_by(& &1.name)}
+      problems -> {:error, {:invalid_agent_definitions, Enum.reverse(problems)}}
+    end
   end
 
   @doc "Renders advertised profiles for the root agent's prompt."
@@ -78,42 +110,21 @@ defmodule Tackle.Agents do
     end
   end
 
-  defp load_directory(files, dir, source, {definitions, warnings}) do
-    files
-    |> markdown_files(dir)
-    |> Enum.reduce({definitions, warnings}, fn path, {definitions, warnings} ->
-      case load_file(files, path, source) do
-        {:ok, definition} ->
-          merge_definition(definition, source, path, definitions, warnings)
-
-        {:error, message} ->
-          {definitions, [warning(path, message) | warnings]}
-      end
-    end)
-  end
-
-  defp merge_definition(definition, source, path, definitions, warnings) do
+  # A later source replaces an earlier definition of the same name; a file
+  # source defining a name twice is a problem.
+  defp merge({:ok, definition}, {definitions, problems}) do
     case Map.get(definitions, definition.name) do
-      %Definition{source: ^source, path: previous_path} ->
-        warning =
-          warning(
-            path,
-            "agent name #{definition.name} is already defined in #{previous_path}"
-          )
-
-        {definitions, [warning | warnings]}
+      %Definition{source: source, path: previous}
+      when source == definition.source and source != :builtin ->
+        message = "agent name #{definition.name} is already defined in #{previous}"
+        {definitions, [problem(definition.path, message) | problems]}
 
       _other ->
-        {Map.put(definitions, definition.name, definition), warnings}
+        {Map.put(definitions, definition.name, definition), problems}
     end
   end
 
-  defp merge_definitions(new_definitions, {definitions, warnings}) do
-    Enum.reduce(new_definitions, {definitions, warnings}, fn definition,
-                                                             {definitions, warnings} ->
-      {Map.put(definitions, definition.name, definition), warnings}
-    end)
-  end
+  defp merge({:error, problem}, {definitions, problems}), do: {definitions, [problem | problems]}
 
   defp markdown_files(files, dir) do
     if ProjectFiles.dir?(files, dir),
@@ -152,10 +163,10 @@ defmodule Tackle.Agents do
       {:ok, definition}
     else
       {:error, reason} when is_atom(reason) ->
-        {:error, "malformed frontmatter (#{inspect(reason)})"}
+        {:error, problem(path, "malformed frontmatter (#{inspect(reason)})")}
 
       {:error, message} ->
-        {:error, message}
+        {:error, problem(path, message)}
     end
   end
 
@@ -301,7 +312,7 @@ defmodule Tackle.Agents do
 
   defp normalize_space(value), do: value |> String.split(~r/\s+/u, trim: true) |> Enum.join(" ")
 
-  defp warning(path, message), do: %{path: path, message: message}
+  defp problem(path, message), do: %{path: path, message: message}
 
   defp escape(value) do
     value
