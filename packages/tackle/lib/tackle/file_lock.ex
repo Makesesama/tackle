@@ -179,6 +179,9 @@ defmodule Tackle.FileLock do
           :exit_status,
           :use_stdio,
           :stderr_to_stdout,
+          # `flock` parses `--timeout` with the locale's decimal separator, so
+          # `60.000` fails under a locale such as `de_DE`.
+          env: [{~c"LC_ALL", ~c"C"}],
           args:
             ["--exclusive"] ++
               wait_args(wait) ++
