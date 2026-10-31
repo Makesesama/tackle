@@ -48,11 +48,19 @@ defmodule Tackle.Runtime.AgentBackend do
   acceptance or failure. Hosts without a mailbox return
   `{:error, {:unsupported_agent_operation, :deliver}}`.
 
-  Delegated requests call `:subscribe` before `:submit` to observe progress for
-  inactivity timeouts, independently of caller event callbacks. Backends must
-  deliver child events to the subscribing process as `{:tackle_runtime_event,
-  event}` (or the host's `{:tackle_event, session_id, turn_id, event}` form).
-  Subscription failure is a request setup error.
+  `:subscribe` returns `{:ok, snapshot}` (the snapshot's shape is the
+  backend's) or `{:error, reason}`, and then delivers the agent's events to
+  the subscribing process as `{:tackle_event, session_id, turn_id, event}`,
+  with `turn_id` `nil` for events outside a turn. Delegated requests call
+  `:subscribe` before `:submit` to observe progress for inactivity timeouts,
+  independently of caller event callbacks; subscription failure is a request
+  setup error.
+
+  `:cancel` receives `[reason]` and requests cooperative cancellation of the
+  agent's active turn. It is the only way the runtime cancels an agent: a
+  request's own cancellation and a cancelled branch or parent both call it,
+  the latter from a short-lived process so the scope coordinator never waits
+  on an agent.
 
   Backends own capacity,
   projection, and wake-up policy; they must not acknowledge dropped messages.

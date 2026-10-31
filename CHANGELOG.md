@@ -84,6 +84,7 @@ These removals are breaking; each names what replaces it. The behaviour changes 
 
 ### Changed
 
+- **Breaking (runtime backends):** `Tackle.Runtime.AgentBackend` has one event shape and one cancellation path. Subscribers receive events only as `{:tackle_event, session_id, turn_id, event}` (`turn_id` is `nil` outside a turn); `{:tackle_runtime_event, event}` is gone, and `Tackle.Runtime.LoopAgent` now sends the 4-tuple. `:subscribe` must return `{:ok, snapshot}` or `{:error, reason}`; a bare `:ok` is now a setup error. The runtime cancels agents only through the backend's `:cancel` operation: the scope coordinator calls it from a short-lived process for cancelled branches and parents instead of sending `{:runtime_cancel, reason}`, and a request no longer sends that message besides calling `:cancel`. `Tackle.Session`, `LoopAgent`, and the test backends lose their `:runtime_cancel` handlers, and `Tackle.Phoenix.Bridge` accepts only the 4-tuple.
 The agent library (`packages/tackle_lib`) was reworked for a smaller, stricter core. The changes are grouped by area below, each described in its final state; most are breaking, and the APIs removed outright are listed under Removed.
 
 #### Agent loop and state (`tackle_lib`)

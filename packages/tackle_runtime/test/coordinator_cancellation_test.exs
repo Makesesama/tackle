@@ -15,8 +15,12 @@ defmodule Tackle.AgentScope.CoordinatorCancellationTest do
     @impl true
     def child_spec(_spec, _context), do: {Task, fn -> :ok end}
 
+    # The test process registers itself as the agent.
     @impl true
-    def call(_pid, _operation, _args), do: :ok
+    def call(pid, operation, args) do
+      send(pid, {:backend_call, self(), operation, args})
+      :ok
+    end
   end
 
   setup do
@@ -81,7 +85,9 @@ defmodule Tackle.AgentScope.CoordinatorCancellationTest do
              Coordinator.admit_agent(coordinator, root_ref, child_spec)
 
     assert :ok = Coordinator.cancel_branch(coordinator, branch)
-    assert_receive {:runtime_cancel, :cancelled}
+    # Through the backend, from a process other than the coordinator.
+    assert_receive {:backend_call, caller, :cancel, [:cancelled]}
+    assert caller != coordinator
     assert {:error, :cancelled} = Coordinator.acquire_turn(coordinator, branch)
     assert {:error, :cancelled} = Coordinator.register_agent(coordinator, pending, self())
 

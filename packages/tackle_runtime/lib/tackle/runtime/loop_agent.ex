@@ -32,12 +32,13 @@ defmodule Tackle.Runtime.LoopAgent do
     * `:submit` and `:continue` start a turn and return `{:ok, turn_id}`, or
       `{:error, :turn_in_progress}` while one runs.
     * `:cancel` requests cooperative cancellation of the active turn; the
-      runtime's scope cancellation reaches it too.
+      runtime also uses it for cancelled branches and requests.
     * `:cancel_tool_call` cancels one tool call of the active turn
       (`{:error, :no_active_turn}` when idle).
     * `:subscribe` returns `{:ok, snapshot}` and delivers every event as
-      `{:tackle_runtime_event, event}` until `:unsubscribe` or the subscriber
-      exits; `:publish_event` sends an auxiliary event to the subscribers.
+      `{:tackle_event, session_id, turn_id, event}` until `:unsubscribe` or
+      the subscriber exits; `:publish_event` sends an auxiliary event to the
+      subscribers, with `turn_id` `nil`.
     * `:snapshot` returns `%{agent_state: state, active_turn: turn_id | nil}`.
     * `:reconfigure` changes an idle agent's `:model` or `:thinking`.
 
@@ -217,7 +218,7 @@ defmodule Tackle.Runtime.LoopAgent do
 
   def handle_call({:publish_event, [%Event{} = event]}, _from, state) do
     if Event.auxiliary?(event) do
-      publish(state, event)
+      publish(state, nil, event)
       {:reply, :ok, state}
     else
       {:reply, {:error, {:invalid_event, event}}, state}
@@ -229,7 +230,7 @@ defmodule Tackle.Runtime.LoopAgent do
 
   @impl GenServer
   def handle_info({:turn_event, turn_id, %Event{} = event}, %{turn: %{id: turn_id}} = state) do
-    publish(state, event)
+    publish(state, turn_id, event)
     {:noreply, state}
   end
 
@@ -255,9 +256,6 @@ defmodule Tackle.Runtime.LoopAgent do
 
     {:noreply, %{state | subscribers: subscribers}}
   end
-
-  # The scope coordinator cancels branches with this message.
-  def handle_info({:runtime_cancel, reason}, state), do: {:noreply, cancel(state, reason)}
 
   # The turn task's exit signal; its result or `:DOWN` settles the turn.
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
@@ -306,7 +304,7 @@ defmodule Tackle.Runtime.LoopAgent do
   # The conversation stays as it was before the turn; the views learn that
   # the turn is over from `:turn_end`.
   defp crash(state, reason) do
-    publish(state, Event.turn_end(state.agent_state.session_id, :error))
+    publish(state, state.turn.id, Event.turn_end(state.agent_state.session_id, :error))
     outcome = Outcome.new(:runtime_error, reason: reason, agent_ref: state.context.agent_ref)
     finish(state, outcome)
   end
@@ -329,10 +327,9 @@ defmodule Tackle.Runtime.LoopAgent do
     state
   end
 
-  defp publish(state, %Event{} = event) do
-    Enum.each(state.subscribers, fn {pid, _monitor} ->
-      send(pid, {:tackle_runtime_event, event})
-    end)
+  defp publish(state, turn_id, %Event{} = event) do
+    message = {:tackle_event, state.agent_state.session_id, turn_id, event}
+    Enum.each(state.subscribers, fn {pid, _monitor} -> send(pid, message) end)
   end
 
   defp snapshot(state) do

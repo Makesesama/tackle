@@ -360,10 +360,9 @@ README for console configuration.
   options (including `:credential_store`), and step limit.
 - One process per agent that runs one `Tackle.Lib.run/3` turn at a time in a
   task, forwards the loop's events to subscribers as
-  `{:tackle_runtime_event, event}`, reports a delegated run's outcome to
-  `context.terminal`, cancels through a `Tackle.Lib.Cancellation` signal on
-  `:cancel` and `{:runtime_cancel, reason}`, and answers `:snapshot` with
-  `%{agent_state: state}`.
+  `{:tackle_event, session_id, turn_id, event}`, reports a delegated run's
+  outcome to `context.terminal`, cancels through a `Tackle.Lib.Cancellation`
+  signal on `:cancel`, and answers `:snapshot` with `%{agent_state: state}`.
 - `prepare_child/2`, `select_model/2`, `model_ref/1`, and the review
   callbacks `configure/2`, `describe/1`, `llm/1`, `outcome/2`.
 - Nothing is persisted for review runs; the review result is what is kept.

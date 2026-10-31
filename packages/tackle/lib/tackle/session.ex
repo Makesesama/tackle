@@ -709,10 +709,6 @@ defmodule Tackle.Session do
     begin_terminal_persist(state, {:runtime_error, reason}, state.agent_state)
   end
 
-  def handle_info({:runtime_cancel, reason}, state) do
-    {:noreply, cancel_running(state, reason)}
-  end
-
   # A generated title is already committed through the journal's metadata
   # path, so the projection, catalog, and every frontend pick it up.
   def handle_info({ref, result}, %{title: {:pending, %TurnTask{ref: ref} = task}} = state) do

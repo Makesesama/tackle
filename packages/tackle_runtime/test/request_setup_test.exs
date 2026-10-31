@@ -61,7 +61,7 @@ defmodule Tackle.Runtime.RequestSetupTest do
     end
 
     def handle_call({:progress, [event]}, _from, state) do
-      send(state.subscriber, {:tackle_runtime_event, event})
+      send(state.subscriber, {:tackle_event, "session", "turn", event})
       {:reply, :ok, state}
     end
 
@@ -94,9 +94,6 @@ defmodule Tackle.Runtime.RequestSetupTest do
       result = if state.mode == :delivery_raise, do: :raise_backend, else: :ok
       {:reply, result, state}
     end
-
-    @impl true
-    def handle_info({:runtime_cancel, _reason}, state), do: {:noreply, state}
   end
 
   for {mode, reason} <- [
@@ -261,7 +258,7 @@ defmodule Tackle.Runtime.RequestSetupTest do
     :ok = Backend.call(child, :finish, [])
     assert_eventually(fn -> :sys.get_state(request).outcome != nil end)
     send(request, {:timeout, current_timer, {:request_timeout, :idle}})
-    send(request, {:tackle_runtime_event, Event.new(:message_delta, %{})})
+    send(request, {:tackle_event, "session", "turn", Event.new(:message_delta, %{})})
     assert {:ok, {:completed, %{status: :ok}}} = Request.status(run_ref)
     assert :sys.get_state(request).idle_timer == nil
     assert %{status: :ok} = Request.collect(run_ref)

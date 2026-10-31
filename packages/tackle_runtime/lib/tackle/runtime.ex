@@ -180,8 +180,12 @@ defmodule Tackle.Runtime do
     with_agent(agent_ref, :abandon_turn, [])
   end
 
-  @doc "Subscribes the caller to an agent's correlated events and terminal outcomes."
-  @spec subscribe(AgentRef.t()) :: {:ok, term()} | :ok | {:error, term()}
+  @doc """
+  Subscribes the caller to an agent's events and returns the snapshot they
+  start from. Events arrive as `{:tackle_event, session_id, turn_id, event}`
+  (`Tackle.Runtime.AgentBackend`); the snapshot's shape is the backend's.
+  """
+  @spec subscribe(AgentRef.t()) :: {:ok, term()} | {:error, term()}
   def subscribe(%AgentRef{} = agent_ref) do
     with_agent(agent_ref, :subscribe, [])
   end

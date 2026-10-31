@@ -339,10 +339,6 @@ defmodule Tackle.Runtime.Request do
     {:noreply, child_event(state, event)}
   end
 
-  def handle_info({:tackle_runtime_event, %Event{} = event}, state) do
-    {:noreply, child_event(state, event)}
-  end
-
   def handle_info({:tackle_runtime_terminal, run_id, result}, state) do
     if run_id == state.run_ref.run_id do
       outcome = AgentBackend.outcome(state.backend, result, state.agent_ref)
@@ -378,10 +374,6 @@ defmodule Tackle.Runtime.Request do
         state = %{state | awaiters: awaiters}
         {:noreply, disarm_await_timer_if_idle(state)}
     end
-  end
-
-  def handle_info({:runtime_cancel, reason}, state) do
-    {:noreply, cancel_child(state, reason)}
   end
 
   def handle_info({:timeout, timer, {:request_timeout, :idle}}, %{idle_timer: timer} = state)
@@ -478,7 +470,6 @@ defmodule Tackle.Runtime.Request do
   defp subscribe_to_child_events(%{session_pid: pid} = state) do
     case AgentBackend.call(state.backend, pid, :subscribe, []) do
       {:ok, _snapshot} -> {:ok, state}
-      :ok -> {:ok, state}
       {:error, reason} -> {:error, {:event_subscription_failed, reason}, state}
       other -> {:error, {:event_subscription_failed, {:invalid_result, other}}, state}
     end
@@ -687,7 +678,6 @@ defmodule Tackle.Runtime.Request do
   defp safe_session_cancel(backend, pid, reason) do
     if is_pid(pid) and Process.alive?(pid) do
       AgentBackend.call(backend, pid, :cancel, [reason])
-      send(pid, {:runtime_cancel, reason})
     end
 
     :ok

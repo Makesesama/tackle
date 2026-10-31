@@ -17,14 +17,14 @@ defmodule Tackle.Phoenix.BridgeTest do
     :ok
   end
 
-  test "relays events in both runtime delivery forms to the topic" do
+  test "relays the agent's events to the topic" do
     {scope, agent} = start_agent()
     start_bridge!(scope.root_agent_ref)
 
     start = Event.message_start(id: "answer")
     delta = Event.new(:message_delta, %{delta: "Hi"}, id: "answer")
-    send(agent, {:emit, :runtime, start})
-    send(agent, {:emit, :session, delta})
+    send(agent, {:emit, start})
+    send(agent, {:emit, delta})
 
     assert_receive {:agent_event, ^start}
     assert_receive {:agent_event, ^delta}
@@ -106,7 +106,7 @@ defmodule Tackle.Phoenix.BridgeTest do
 
   # The bridge has relayed an event once the topic carries it.
   defp emit(agent, event) do
-    send(agent, {:emit, :runtime, event})
+    send(agent, {:emit, event})
     assert_receive {:agent_event, ^event}
   end
 

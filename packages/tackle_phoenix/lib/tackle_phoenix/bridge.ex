@@ -104,20 +104,14 @@ defmodule Tackle.Phoenix.Bridge do
   defp subscribe(agent_ref) do
     case Runtime.subscribe(agent_ref) do
       {:ok, _snapshot} -> :ok
-      :ok -> :ok
       {:error, reason} -> {:error, {:subscribe_failed, reason}}
-      other -> {:error, {:subscribe_failed, other}}
     end
   end
 
   @impl true
   def handle_call(:streaming, _from, state), do: {:reply, state.streaming, state}
 
-  # Backends deliver events in one of two forms (`Tackle.Runtime.AgentBackend`).
   @impl true
-  def handle_info({:tackle_runtime_event, %Event{} = event}, state),
-    do: {:noreply, relay(state, event)}
-
   def handle_info({:tackle_event, _session_id, _turn_id, %Event{} = event}, state),
     do: {:noreply, relay(state, event)}
 

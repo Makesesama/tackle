@@ -36,7 +36,7 @@ defmodule Tackle.Runtime.AgentServicesTest do
       {:reply, :ok, state}
     end
 
-    def handle_call({:subscribe, []}, _from, state), do: {:reply, :ok, state}
+    def handle_call({:subscribe, []}, _from, state), do: {:reply, {:ok, %{}}, state}
     def handle_call({:submit, [_prompt]}, _from, state), do: {:reply, {:ok, "turn"}, state}
 
     def handle_call({:cancel, [reason]}, _from, %{context: %{terminal: terminal}} = state)
@@ -52,9 +52,6 @@ defmodule Tackle.Runtime.AgentServicesTest do
     end
 
     def handle_call({:cancel, [_reason]}, _from, state), do: {:reply, :ok, state}
-
-    @impl true
-    def handle_info({:runtime_cancel, _reason}, state), do: {:noreply, state}
   end
 
   defmodule Service do

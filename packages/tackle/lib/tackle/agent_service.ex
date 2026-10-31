@@ -63,9 +63,6 @@ defmodule Tackle.AgentService do
       {:ok, _snapshot} ->
         :ok
 
-      :ok ->
-        :ok
-
       {:error, :turn_in_progress} ->
         Process.send_after(self(), :subscribe, @subscribe_retry_ms)
         :ok

@@ -24,7 +24,7 @@ defmodule Tackle.Runtime.Bench.Backend do
 
   @impl true
   def handle_call({:subscribe, []}, {caller, _tag}, state) do
-    {:reply, :ok, %{state | subscriber: caller}}
+    {:reply, {:ok, %{}}, %{state | subscriber: caller}}
   end
 
   def handle_call({:submit, [_prompt]}, _from, state) do
@@ -50,14 +50,12 @@ defmodule Tackle.Runtime.Bench.Backend do
     {:noreply, state}
   end
 
-  def handle_info({:runtime_cancel, _reason}, state), do: {:noreply, state}
-
   defp emit(nil, _count), do: :ok
   defp emit(_subscriber, 0), do: :ok
 
   defp emit(subscriber, count) do
     event = Tackle.Lib.Event.new(:message_delta, %{delta: "synthetic chunk"})
-    send(subscriber, {:tackle_runtime_event, event})
+    send(subscriber, {:tackle_event, "bench-session", "bench-turn", event})
     emit(subscriber, count - 1)
   end
 end

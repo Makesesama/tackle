@@ -16,6 +16,7 @@ defmodule Tackle.AgentScope.Coordinator do
 
   use GenServer, restart: :temporary
 
+  alias Tackle.Runtime.AgentBackend
   alias Tackle.Runtime.AgentRef
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.ID
@@ -393,10 +394,18 @@ defmodule Tackle.AgentScope.Coordinator do
     Enum.reduce(children, state, fn child_id, acc -> cancel_agent(acc, child_id, reason) end)
   end
 
+  # An agent may be calling the coordinator while it is cancelled, so the
+  # backend's `:cancel` runs in its own short-lived process instead of here.
+  # It is best-effort: the call returns an error tuple when the agent has
+  # already exited.
+  defp request_cancel(backend, pid, reason) do
+    Task.start(fn -> AgentBackend.call(backend, pid, :cancel, [reason]) end)
+  end
+
   defp cancel_agent(state, agent_id, reason) do
     case Map.fetch(state.agents, agent_id) do
       {:ok, entry} ->
-        if entry.pid, do: send(entry.pid, {:runtime_cancel, reason})
+        if entry.pid, do: request_cancel(state.spec.backend, entry.pid, reason)
 
         state = update_agent(state, entry.ref, &%{&1 | cancelled: true})
         cancel_children(state, entry.children, reason)

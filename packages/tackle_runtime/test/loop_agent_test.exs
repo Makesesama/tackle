@@ -111,7 +111,9 @@ defmodule Tackle.Runtime.LoopAgentTest do
       scope = scope(spec(script, tools: [EchoTool], hooks: [TurnHook]))
       root = scope.root_agent_ref
 
-      assert {:ok, %{agent_state: %{messages: []}, active_turn: nil}} = Runtime.subscribe(root)
+      assert {:ok, %{agent_state: %{messages: [], session_id: session_id}, active_turn: nil}} =
+               Runtime.subscribe(root)
+
       assert {:ok, turn_id} = Runtime.submit(root, "Hi")
       assert is_binary(turn_id)
 
@@ -120,7 +122,8 @@ defmodule Tackle.Runtime.LoopAgentTest do
       {:ok, agent} = Runtime.session_pid(root)
       assert tool_pid != agent
 
-      assert_receive {:tackle_runtime_event,
+      # Every event of the turn names the session and the turn.
+      assert_receive {:tackle_event, ^session_id, ^turn_id,
                       %Event{type: :turn_end, data: %{status: :completed}}},
                      2_000
 
@@ -137,7 +140,7 @@ defmodule Tackle.Runtime.LoopAgentTest do
       {:ok, _snapshot} = Runtime.subscribe(root)
 
       assert {:ok, _turn} = Runtime.continue(root)
-      assert_receive {:tackle_runtime_event, %Event{type: :turn_end}}, 2_000
+      assert_receive {:tackle_event, _session_id, _turn_id, %Event{type: :turn_end}}, 2_000
       assert {:ok, %{agent_state: state}} = Runtime.session_snapshot(root)
       assert [%Message{role: :assistant, content: "again"}] = state.messages
     end
@@ -156,7 +159,7 @@ defmodule Tackle.Runtime.LoopAgentTest do
 
       assert :ok = Runtime.cancel_turn(root)
 
-      assert_receive {:tackle_runtime_event,
+      assert_receive {:tackle_event, _session_id, _turn_id,
                       %Event{type: :turn_end, data: %{status: :cancelled}}},
                      2_000
 
@@ -166,10 +169,10 @@ defmodule Tackle.Runtime.LoopAgentTest do
 
       assert {:ok, _turn} = Runtime.submit(root, "wait again")
       assert_receive {:model_call, _pid, nil, _opts}, 2_000
-      {:ok, pid} = Runtime.session_pid(root)
-      send(pid, {:runtime_cancel, :scope_cancelled})
+      # A cancelled branch reaches the agent through its `:cancel` operation.
+      assert :ok = Runtime.cancel(root, :scope_cancelled)
 
-      assert_receive {:tackle_runtime_event,
+      assert_receive {:tackle_event, _session_id, _turn_id,
                       %Event{type: :turn_end, data: %{status: :cancelled}}},
                      2_000
     end
@@ -193,11 +196,12 @@ defmodule Tackle.Runtime.LoopAgentTest do
       root = scope.root_agent_ref
       {:ok, _snapshot} = Runtime.subscribe(root)
 
-      assert {:ok, _turn} = Runtime.submit(root, "wait")
+      assert {:ok, turn_id} = Runtime.submit(root, "wait")
       assert_receive {:model_call, task, nil, _opts}, 2_000
       Process.exit(task, :kill)
 
-      assert_receive {:tackle_runtime_event, %Event{type: :turn_end, data: %{status: :error}}},
+      assert_receive {:tackle_event, _session_id, ^turn_id,
+                      %Event{type: :turn_end, data: %{status: :error}}},
                      2_000
 
       assert {:ok, %{agent_state: %{messages: []}, active_turn: nil}} =
@@ -241,7 +245,7 @@ defmodule Tackle.Runtime.LoopAgentTest do
 
       narration = Event.new(:narration, %{text: "working", auxiliary: true})
       assert :ok = Runtime.publish_event(root, narration)
-      assert_receive {:tackle_runtime_event, ^narration}
+      assert_receive {:tackle_event, _session_id, nil, ^narration}
 
       assert {:error, {:invalid_event, _event}} =
                LoopAgent.call(pid, :publish_event, [Event.new(:narration, %{text: "x"})])

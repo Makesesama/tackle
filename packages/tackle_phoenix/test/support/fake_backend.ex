@@ -2,8 +2,7 @@ defmodule Tackle.Phoenix.FakeBackend do
   @moduledoc false
 
   # Minimal `Tackle.Runtime.AgentBackend` for bridge tests. The agent runs no
-  # turns: a test makes it publish events with `{:emit, form, event}`, in
-  # either of the two delivery forms the runtime allows.
+  # turns: a test makes it publish an event with `{:emit, event}`.
 
   @behaviour Tackle.Runtime.AgentBackend
 
@@ -49,14 +48,8 @@ defmodule Tackle.Phoenix.FakeAgent do
     do: {:reply, {:error, {:unsupported_agent_operation, operation}}, state}
 
   @impl true
-  def handle_info({:emit, form, event}, state) do
-    message =
-      case form do
-        :runtime -> {:tackle_runtime_event, event}
-        :session -> {:tackle_event, "session", "turn", event}
-      end
-
-    Enum.each(state.subscribers, &send(&1, message))
+  def handle_info({:emit, event}, state) do
+    Enum.each(state.subscribers, &send(&1, {:tackle_event, "session", "turn", event}))
     {:noreply, state}
   end
 end

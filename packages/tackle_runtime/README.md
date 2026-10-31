@@ -98,8 +98,8 @@ scope_spec =
 ```
 
 It supports `:submit`, `:continue`, `:cancel`, `:cancel_tool_call`,
-`:subscribe` (events arrive as `{:tackle_runtime_event, event}`; subscribers
-are monitored), `:unsubscribe`, `:snapshot` (`%{agent_state:, active_turn:}`),
+`:subscribe` (events arrive as `{:tackle_event, session_id, turn_id, event}`;
+subscribers are monitored), `:unsubscribe`, `:snapshot` (`%{agent_state:, active_turn:}`),
 `:publish_event`, and `:reconfigure`, plus `prepare_child/2`,
 `select_model/2`, `configure/2`, `describe/1`, and `llm/1`, so it runs
 subagents, workflows, and code reviews. Models resolve only against the
@@ -158,10 +158,17 @@ Auxiliary events, whose data carries `auxiliary: true` (for example notices from
 agent services), are still forwarded but do not renew the interval.
 The subagent tool's `timeout_ms` override likewise sets an inactivity window.
 
-Backends must support `:subscribe` before `:submit` and deliver child events to
-the subscribing request, even when no caller event callback is provided.
-Subscription failure settles the request as a setup error; events are transient,
-not retained. Explicit `await/2` wait timeouts remain absolute and are separate
+Backends must support `:subscribe` before `:submit`: it returns
+`{:ok, snapshot}` or `{:error, reason}` and then delivers the agent's events
+to the subscribing request as `{:tackle_event, session_id, turn_id, event}`
+(`turn_id` is `nil` outside a turn), even when no caller event callback is
+provided. Subscription failure settles the request as a setup error; events
+are transient, not retained.
+
+The runtime cancels an agent only through the backend's `:cancel` operation:
+a request's cancellation calls it directly, and a cancelled branch, run, or
+parent calls it from a short-lived process so the scope coordinator never
+waits on an agent. Backends need no other cancellation entry point. Explicit `await/2` wait timeouts remain absolute and are separate
 from the delegated inactivity timer. Workflows have no runtime limit.
 
 ## Process layout
