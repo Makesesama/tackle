@@ -99,19 +99,40 @@ scope_spec =
 
 It supports `:submit`, `:continue`, `:cancel`, `:cancel_tool_call`,
 `:subscribe` (events arrive as `{:tackle_event, session_id, turn_id, event}`;
-subscribers are monitored), `:unsubscribe`, `:snapshot` (`%{agent_state:, active_turn:}`),
+subscribers are monitored), `:unsubscribe`, `:snapshot` (`%{agent_state:, active_turn:}`;
+during a turn its transcript already holds the messages the turn has settled),
 `:publish_event`, and `:reconfigure`, plus `prepare_child/2`,
 `select_model/2`, `configure/2`, `describe/1`, and `llm/1`, so it runs
 subagents, workflows, and code reviews. Models resolve only against the
 configuration's own providers, and a `:credential_store` handle stays in
 every model call's options. A crashed turn task publishes `:turn_end` with
-status `:error`, keeps the conversation from before the turn, and reports a
-`:runtime_error` outcome.
+status `:error`, keeps the messages the turn settled before the crash, and
+reports a `:runtime_error` outcome.
 
 It persists nothing and has no inbox (`:deliver` is unsupported). A host
 gates turns before submitting them and puts persistence or billing in
 `Tackle.Lib.Hook`s, or writes its own backend when it needs durable sessions
 or message delivery.
+
+To resume a conversation the host saved, for example with an
+`after_message/3` hook, the host loads it and passes it in; the runtime
+stores and looks up nothing:
+
+```elixir
+Tackle.Runtime.LoopAgent.Config.new(
+  providers: providers,
+  model: "provider/model",
+  hooks: [MyApp.PersistenceHook],
+  # The host's saved transcript, in order (or `tree:` for a branching host).
+  messages: MyApp.Chats.load_messages(conversation),
+  # Only a label: keeps `state.session_id` and the events' session id the
+  # same as before, so hooks keyed on it keep writing to this conversation.
+  session_id: conversation.session_id
+)
+```
+
+The agent starts from that transcript; tool calls a crash left unanswered are
+repaired when the next turn starts.
 
 ## Per-request model selection
 

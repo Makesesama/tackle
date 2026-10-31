@@ -71,6 +71,12 @@ scope_spec =
 agent_ref = scope.root_agent_ref
 ```
 
+To continue a conversation your app saved (for example from the
+persistence hook), load it and add `messages: saved_messages` and
+`session_id: saved_session_id` to the configuration. The runtime stores
+nothing; the session id only keeps the agent's id stable for your hooks and
+events.
+
 See the [runtime README](../tackle_runtime/README.md) for the backend
 contract, subagents, and limits. The runtime's Registry is node-local: a
 clustered host needs sticky routing or its own ownership layer.

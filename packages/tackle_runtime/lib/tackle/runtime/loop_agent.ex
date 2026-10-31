@@ -20,7 +20,9 @@ defmodule Tackle.Runtime.LoopAgent do
         )
 
   Each agent keeps its conversation in memory and runs one turn at a time in
-  a linked task, with the agent's tool supervisor. It persists nothing and
+  a linked task, with the agent's tool supervisor. It starts empty, or from a
+  saved conversation (`:session_id` with `:messages` or `:tree` in the
+  configuration) after a restart. It persists nothing and
   enforces no policy: a host gates turns before it submits them, and puts
   persistence or billing in `Tackle.Lib.Hook`s (`:hooks` in the
   configuration), for example `after_message/3` for messages and
@@ -40,6 +42,9 @@ defmodule Tackle.Runtime.LoopAgent do
       the subscriber exits; `:publish_event` sends an auxiliary event to the
       subscribers, with `turn_id` `nil`.
     * `:snapshot` returns `%{agent_state: state, active_turn: turn_id | nil}`.
+      During a turn, the state's transcript already holds the messages the
+      turn has settled (each `:message_end`), so a view that joins mid-turn
+      starts from what the earlier subscribers have seen.
     * `:reconfigure` changes an idle agent's `:model` or `:thinking`.
 
   Other operations, including `:deliver`, return
@@ -47,10 +52,13 @@ defmodule Tackle.Runtime.LoopAgent do
 
   ## Turn ends
 
-  The loop ends every turn it completes with a `:turn_end` event. When the
-  turn task itself crashes, the agent keeps its conversation from before the
-  turn, publishes `:turn_end` with status `:error`, and reports a
-  `:runtime_error` outcome to a delegated request. Stopping the agent cancels
+  The loop ends every turn it completes with a `:turn_end` event, and the
+  agent then takes the state the turn returned. When the turn task itself
+  crashes, the agent keeps the messages the turn settled before the crash
+  (the ones its subscribers and `after_message/3` hooks have seen), publishes
+  `:turn_end` with status `:error`, and reports a `:runtime_error` outcome to
+  a delegated request. A tool call the crash left unanswered is repaired when
+  the next turn starts. Stopping the agent cancels
   its turn and kills the task after a short grace period, even when the
   adapter ignores cancellation.
   """
@@ -60,8 +68,10 @@ defmodule Tackle.Runtime.LoopAgent do
 
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
+  alias Tackle.Lib.Message
   alias Tackle.Lib.State
   alias Tackle.Lib.Thinking
+  alias Tackle.Lib.Tree
   alias Tackle.Runtime.AgentContext
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.ID
@@ -157,6 +167,8 @@ defmodule Tackle.Runtime.LoopAgent do
 
   defp new_state(config, context) do
     Tackle.Lib.new(
+      session_id: config.session_id,
+      tree: config.tree,
       llm: config.llm,
       tools: config.tools,
       hooks: config.hooks,
@@ -230,6 +242,7 @@ defmodule Tackle.Runtime.LoopAgent do
 
   @impl GenServer
   def handle_info({:turn_event, turn_id, %Event{} = event}, %{turn: %{id: turn_id}} = state) do
+    state = record_settled_message(state, event)
     publish(state, turn_id, event)
     {:noreply, state}
   end
@@ -301,8 +314,8 @@ defmodule Tackle.Runtime.LoopAgent do
 
   defp settle(state, other), do: crash(state, {:unexpected_turn_result, other})
 
-  # The conversation stays as it was before the turn; the views learn that
-  # the turn is over from `:turn_end`.
+  # The messages the turn settled stay; the views learn that the turn is over
+  # from `:turn_end`.
   defp crash(state, reason) do
     publish(state, state.turn.id, Event.turn_end(state.agent_state.session_id, :error))
     outcome = Outcome.new(:runtime_error, reason: reason, agent_ref: state.context.agent_ref)
@@ -319,6 +332,19 @@ defmodule Tackle.Runtime.LoopAgent do
 
     %{state | turn: nil}
   end
+
+  # The snapshot follows the turn's settled messages; the turn's own result
+  # replaces it when the turn ends.
+  defp record_settled_message(state, %Event{type: :message_end, data: %{message: message}})
+       when is_struct(message, Message) do
+    agent_state = state.agent_state
+
+    if Tree.contains?(agent_state.tree, message.id),
+      do: state,
+      else: %{state | agent_state: State.add_message(agent_state, message)}
+  end
+
+  defp record_settled_message(state, %Event{}), do: state
 
   defp cancel(%{turn: nil} = state, _reason), do: state
 

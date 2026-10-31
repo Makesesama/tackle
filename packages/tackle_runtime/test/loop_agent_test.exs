@@ -4,6 +4,7 @@ defmodule Tackle.Runtime.LoopAgentTest do
   alias Tackle.Lib.Cancellation
   alias Tackle.Lib.Event
   alias Tackle.Lib.Message
+  alias Tackle.Lib.Tree
   alias Tackle.Runtime
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.LoopAgent
@@ -152,7 +153,12 @@ defmodule Tackle.Runtime.LoopAgentTest do
 
       assert {:ok, turn_id} = Runtime.submit(root, "wait")
       assert_receive {:model_call, _pid, nil, opts}, 2_000
-      assert {:ok, %{active_turn: ^turn_id}} = Runtime.session_snapshot(root)
+
+      # The snapshot already holds the turn's settled user message.
+      assert {:ok,
+              %{active_turn: ^turn_id, agent_state: %{messages: [%Message{content: "wait"}]}}} =
+               Runtime.session_snapshot(root)
+
       assert {:error, :turn_in_progress} = Runtime.submit(root, "again")
       assert {:error, :turn_in_progress} = Runtime.continue(root)
       assert {:error, :turn_in_progress} = Runtime.reconfigure(root, thinking: "high")
@@ -191,7 +197,7 @@ defmodule Tackle.Runtime.LoopAgentTest do
       :ok = Runtime.cancel_turn(root)
     end
 
-    test "a crashed turn keeps the conversation and publishes turn_end with an error" do
+    test "a crashed turn keeps its settled messages and publishes turn_end with an error" do
       scope = scope(spec(&ScriptedLLM.block/2))
       root = scope.root_agent_ref
       {:ok, _snapshot} = Runtime.subscribe(root)
@@ -204,7 +210,11 @@ defmodule Tackle.Runtime.LoopAgentTest do
                       %Event{type: :turn_end, data: %{status: :error}}},
                      2_000
 
-      assert {:ok, %{agent_state: %{messages: []}, active_turn: nil}} =
+      assert {:ok,
+              %{
+                agent_state: %{messages: [%Message{role: :user, content: "wait"}]},
+                active_turn: nil
+              }} =
                Runtime.session_snapshot(root)
 
       assert {:ok, pid} = Runtime.session_pid(root)
@@ -219,6 +229,92 @@ defmodule Tackle.Runtime.LoopAgentTest do
       monitor = Process.monitor(task)
       assert :ok = Runtime.stop_scope(scope.scope_ref)
       assert_receive {:DOWN, ^monitor, :process, ^task, _reason}, 3_000
+    end
+  end
+
+  describe "resuming a saved conversation" do
+    test "starts from the saved transcript and session id" do
+      saved = [
+        Message.user("What is 2 + 2?", id: "m1"),
+        Message.assistant(content: "4", id: "m2")
+      ]
+
+      scope =
+        scope(
+          spec(fn _, opts -> ScriptedLLM.answer(opts, "6") end,
+            session_id: "saved-session",
+            messages: saved
+          )
+        )
+
+      root = scope.root_agent_ref
+
+      assert {:ok, %{agent_state: state}} = Runtime.subscribe(root)
+      assert state.session_id == "saved-session"
+      assert state.messages == saved
+
+      assert {:ok, turn_id} = Runtime.submit(root, "And 3 + 3?")
+      assert_receive {:model_call, _pid, nil, opts}, 2_000
+
+      assert ["What is 2 + 2?", "4", "And 3 + 3?"] =
+               Enum.map(opts[:messages], & &1.content)
+
+      assert_receive {:tackle_event, "saved-session", ^turn_id, %Event{type: :turn_end}}, 2_000
+
+      assert {:ok, %{agent_state: state}} = Runtime.session_snapshot(root)
+      assert Enum.take(state.messages, 2) == saved
+      assert Tackle.Lib.last_answer(state) == "6"
+    end
+
+    test "repairs a turn that stopped with unanswered tool calls" do
+      saved = [
+        Message.user("Look it up", id: "m1"),
+        Message.assistant(
+          id: "m2",
+          tool_calls: [%{"id" => "call-1", "name" => "echo", "arguments" => %{}}]
+        )
+      ]
+
+      scope =
+        scope(
+          spec(fn _, opts -> ScriptedLLM.answer(opts) end,
+            session_id: "interrupted",
+            messages: saved,
+            tools: [EchoTool]
+          )
+        )
+
+      assert {:ok, _turn} = Runtime.submit(scope.root_agent_ref, "Try again")
+      assert_receive {:model_call, _pid, nil, opts}, 2_000
+
+      assert [:user, :assistant, :tool, :user] = Enum.map(opts[:messages], & &1.role)
+      assert %{tool_call_id: "call-1"} = Enum.at(opts[:messages], 2)
+    end
+
+    test "takes a whole tree for hosts that keep branches" do
+      {:ok, tree, _entry} = Tree.append_message(Tree.new(), Message.user("Hi", id: "m1"))
+      scope = scope(spec(&ScriptedLLM.block/2, session_id: "tree", tree: tree))
+
+      assert {:ok, %{agent_state: %{session_id: "tree", messages: [%Message{id: "m1"}]}}} =
+               Runtime.session_snapshot(scope.root_agent_ref)
+    end
+
+    test "rejects a conversation it cannot rebuild" do
+      base = [providers: [ScriptedLLM], model: "scripted/small"]
+      user = Message.user("Hi", id: "m1")
+
+      assert {:error, {:invalid_messages, _reason}} = Config.new(base ++ [messages: [user, user]])
+
+      assert {:error, {:invalid_messages, {:not_a_message, %{}}}} =
+               Config.new(base ++ [messages: [%{}]])
+
+      assert {:error, {:invalid_messages, :none}} = Config.new(base ++ [messages: :none])
+      assert {:error, {:invalid_tree, :none}} = Config.new(base ++ [tree: :none])
+
+      assert {:error, :messages_and_tree} =
+               Config.new(base ++ [messages: [], tree: Tree.new()])
+
+      assert {:error, :invalid_session_id} = Config.new(base ++ [session_id: ""])
     end
   end
 

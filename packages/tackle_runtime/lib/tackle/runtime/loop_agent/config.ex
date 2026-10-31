@@ -10,7 +10,9 @@ defmodule Tackle.Runtime.LoopAgent.Config do
 
   alias Tackle.Lib.Hook
   alias Tackle.Lib.LLM
+  alias Tackle.Lib.Message
   alias Tackle.Lib.Thinking
+  alias Tackle.Lib.Tree
 
   @enforce_keys [:providers, :model_ref, :llm]
   defstruct [
@@ -18,6 +20,8 @@ defmodule Tackle.Runtime.LoopAgent.Config do
     :model_ref,
     :llm,
     credential_store: nil,
+    session_id: nil,
+    tree: nil,
     tools: [],
     hooks: [],
     system_prompt: "",
@@ -31,6 +35,8 @@ defmodule Tackle.Runtime.LoopAgent.Config do
           model_ref: String.t(),
           llm: term(),
           credential_store: Tackle.Lib.CredentialStore.handle() | nil,
+          session_id: String.t() | nil,
+          tree: Tree.t() | nil,
           tools: [module()],
           hooks: [module()],
           system_prompt: String.t(),
@@ -50,6 +56,14 @@ defmodule Tackle.Runtime.LoopAgent.Config do
   `:llm_opts`, `:thinking`, `:max_steps`, and `:credential_store`. A
   credential store handle is put into the adapter options of every model call
   and cannot be replaced through `configure/2`.
+
+  To resume a saved conversation, pass `:session_id` (the conversation's
+  stable id, which events and hooks report) and either `:messages`, the
+  saved transcript in order, or `:tree`, a whole `Tackle.Lib.Tree` for a
+  host that keeps branches. The agent starts from that conversation instead
+  of an empty one; a turn the previous agent left with unanswered tool calls
+  is repaired by the loop when the next turn starts. Without them the agent
+  starts empty with a new session id.
   """
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
   def new(opts) when is_list(opts) do
@@ -57,12 +71,15 @@ defmodule Tackle.Runtime.LoopAgent.Config do
          {:ok, model} <- fetch(opts, :model),
          {:ok, llm} <- LLM.select(providers, model),
          {:ok, llm_opts} <- fetch_llm_opts(opts),
-         {:ok, llm_opts} <- thinking(llm_opts, opts[:thinking]) do
+         {:ok, llm_opts} <- thinking(llm_opts, opts[:thinking]),
+         {:ok, tree} <- conversation(opts) do
       config = %__MODULE__{
         providers: providers,
         model_ref: llm.ref,
         llm: llm,
         credential_store: Keyword.get(opts, :credential_store),
+        session_id: Keyword.get(opts, :session_id),
+        tree: tree,
         tools: Keyword.get(opts, :tools, []),
         hooks: Keyword.get(opts, :hooks, []),
         system_prompt: Keyword.get(opts, :system_prompt, ""),
@@ -83,6 +100,32 @@ defmodule Tackle.Runtime.LoopAgent.Config do
       :error -> {:error, {:missing_option, key}}
     end
   end
+
+  defp conversation(opts) do
+    case {Keyword.fetch(opts, :messages), Keyword.fetch(opts, :tree)} do
+      {:error, :error} -> {:ok, nil}
+      {{:ok, messages}, :error} -> tree_from_messages(messages)
+      {:error, {:ok, %Tree{} = tree}} -> {:ok, tree}
+      {:error, {:ok, tree}} -> {:error, {:invalid_tree, tree}}
+      {{:ok, _messages}, {:ok, _tree}} -> {:error, :messages_and_tree}
+    end
+  end
+
+  # Appending checks what a tree needs, such as unique message ids.
+  defp tree_from_messages(messages) when is_list(messages) do
+    Enum.reduce_while(messages, {:ok, Tree.new()}, fn
+      %Message{} = message, {:ok, tree} ->
+        case Tree.append_message(tree, message) do
+          {:ok, tree, _entry} -> {:cont, {:ok, tree}}
+          {:error, reason} -> {:halt, {:error, {:invalid_messages, reason}}}
+        end
+
+      other, _acc ->
+        {:halt, {:error, {:invalid_messages, {:not_a_message, other}}}}
+    end)
+  end
+
+  defp tree_from_messages(messages), do: {:error, {:invalid_messages, messages}}
 
   defp fetch_llm_opts(opts) do
     llm_opts = Keyword.get(opts, :llm_opts, [])
@@ -111,6 +154,12 @@ defmodule Tackle.Runtime.LoopAgent.Config do
       not is_binary(config.system_prompt) ->
         {:error, :invalid_system_prompt}
 
+      not valid_session_id?(config.session_id) ->
+        {:error, :invalid_session_id}
+
+      not (is_nil(config.tree) or is_struct(config.tree, Tree)) ->
+        {:error, :invalid_tree}
+
       not valid_steps?(config.max_steps) ->
         {:error, :invalid_max_steps}
 
@@ -122,6 +171,9 @@ defmodule Tackle.Runtime.LoopAgent.Config do
   def validate(config), do: {:error, {:invalid_agent_config, config}}
 
   defp module_list?(modules), do: is_list(modules) and Enum.all?(modules, &is_atom/1)
+
+  defp valid_session_id?(nil), do: true
+  defp valid_session_id?(id), do: is_binary(id) and id != ""
 
   defp valid_steps?(nil), do: true
   defp valid_steps?(steps), do: is_integer(steps) and steps > 0
