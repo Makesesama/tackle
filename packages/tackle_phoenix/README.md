@@ -18,6 +18,9 @@ LiveView ──Tackle.Runtime.submit / cancel_turn(agent_ref)──▶ agent
 | `Tackle.Phoenix.EventReducer` | Turns streamed `Tackle.Lib.Event`s into an incrementally rendered LiveView stream |
 | `Tackle.Phoenix.MessageView` | Host behaviour: message grouping and the shape of a streaming message |
 
+For a complete app with saved conversations, idle agents, and restarts, see
+the guide [Conversations with Ecto](guides/conversations_with_ecto.md).
+
 ## Installation
 
 This package is distributed from this Git monorepo, not Hex. Add the following
@@ -75,7 +78,10 @@ To continue a conversation your app saved (for example from the
 persistence hook), load it and add `messages: saved_messages` and
 `session_id: saved_session_id` to the configuration. The runtime stores
 nothing; the session id only keeps the agent's id stable for your hooks and
-events.
+events. Add `idle_timeout: :timer.minutes(30)` to stop the scope of a
+conversation nobody uses; the next message starts it again from what you
+saved. The [Ecto guide](guides/conversations_with_ecto.md) puts these
+together.
 
 See the [runtime README](../tackle_runtime/README.md) for the backend
 contract, subagents, and limits. The runtime's Registry is node-local: a
@@ -99,7 +105,9 @@ conversation identity you already authorize:
 ```
 
 The bridge is `restart: :transient`. It stops normally after broadcasting
-`{:agent_down, reason}` when the agent exits. A backend may also return the
+`{:agent_down, reason}` when the agent exits, so a bridge registered by name
+(as above) leaves the registry with its agent, and `Bridge.agent_ref/1`
+finds the agent of a registered bridge. A backend may also return the
 bridge's child spec from `services/2`, so it starts and stops with its agent.
 
 Subscribers receive:

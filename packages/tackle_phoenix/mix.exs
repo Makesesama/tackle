@@ -8,7 +8,7 @@ defmodule Tackle.Phoenix.MixProject do
       description: "Phoenix PubSub and LiveView integration for Tackle runtime agents",
       source_url: "https://github.com/Makesesama/tackle",
       package: [licenses: ["MIT"], links: %{"GitHub" => "https://github.com/Makesesama/tackle"}],
-      docs: [main: "readme", extras: ["README.md"]],
+      docs: [main: "readme", extras: ["README.md", "guides/conversations_with_ecto.md"]],
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,

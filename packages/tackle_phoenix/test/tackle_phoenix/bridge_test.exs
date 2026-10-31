@@ -30,6 +30,26 @@ defmodule Tackle.Phoenix.BridgeTest do
     assert_receive {:agent_event, ^delta}
   end
 
+  test "reports its agent, also when found by a registered name" do
+    {scope, _agent} = start_agent()
+    registry = __MODULE__.Registry
+    start_supervised!({Registry, keys: :unique, name: registry})
+    name = {:via, Registry, {registry, "conversation-1"}}
+
+    bridge =
+      start_supervised!(
+        {Bridge, agent_ref: scope.root_agent_ref, pubsub: @pubsub, topic: @topic, name: name}
+      )
+
+    assert [{^bridge, nil}] = Registry.lookup(registry, "conversation-1")
+    assert Bridge.agent_ref(name) == scope.root_agent_ref
+
+    # The registration goes away with the agent.
+    :ok = Runtime.stop_scope(scope.scope_ref)
+    assert_receive {:agent_down, _reason}
+    assert :ok = eventually(fn -> Registry.lookup(registry, "conversation-1") == [] end)
+  end
+
   test "keeps only visible in-flight text until the message settles" do
     {scope, agent} = start_agent()
     bridge = start_bridge!(scope.root_agent_ref)
@@ -102,6 +122,18 @@ defmodule Tackle.Phoenix.BridgeTest do
 
     assert {:error, {:missing_option, :pubsub}} =
              Bridge.start_link(agent_ref: scope.root_agent_ref, topic: @topic)
+  end
+
+  defp eventually(fun, attempts \\ 100)
+  defp eventually(_fun, 0), do: :timeout
+
+  defp eventually(fun, attempts) do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(10)
+      eventually(fun, attempts - 1)
+    end
   end
 
   # The bridge has relayed an event once the topic carries it.

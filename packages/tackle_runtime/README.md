@@ -134,6 +134,13 @@ Tackle.Runtime.LoopAgent.Config.new(
 The agent starts from that transcript; tool calls a crash left unanswered are
 repaired when the next turn starts.
 
+With `idle_timeout: milliseconds`, a root agent stops its whole scope once it
+has run no turn and served no operation other than `:publish_event` for that
+long, and no delegated agent is left in the scope (a delegated run's agent
+stays until its result is collected). Subscribers' monitors report it down;
+the host starts the conversation again from what it saved when it is next
+needed. Delegated agents ignore the option.
+
 ## Per-request model selection
 
 `Tackle.Runtime.request_agent/4` accepts `model: "provider/model"` to override a

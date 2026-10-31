@@ -318,6 +318,92 @@ defmodule Tackle.Runtime.LoopAgentTest do
     end
   end
 
+  describe "idle timeout" do
+    test "an idle root agent stops its scope" do
+      scope = scope(spec(&ScriptedLLM.block/2, idle_timeout: 50))
+      {:ok, monitor} = Runtime.monitor_agent(scope.root_agent_ref)
+
+      assert_receive {:DOWN, ^monitor, :process, _pid, _reason}, 2_000
+
+      assert :ok = eventually(fn -> scope_gone?(scope.scope_ref) end)
+    end
+
+    test "operations start the count again, auxiliary events do not" do
+      scope = scope(spec(&ScriptedLLM.block/2, idle_timeout: 300))
+      root = scope.root_agent_ref
+      {:ok, monitor} = Runtime.monitor_agent(root)
+
+      for _ <- 1..6 do
+        Process.sleep(50)
+        {:ok, _snapshot} = Runtime.session_snapshot(root)
+      end
+
+      refute_received {:DOWN, ^monitor, :process, _pid, _reason}
+
+      narration = Event.new(:narration, %{text: "still here", auxiliary: true})
+
+      for _ <- 1..6 do
+        Process.sleep(50)
+        Runtime.publish_event(root, narration)
+      end
+
+      assert_receive {:DOWN, ^monitor, :process, _pid, _reason}, 2_000
+    end
+
+    test "a running turn is never idle" do
+      scope = scope(spec(&ScriptedLLM.block/2, idle_timeout: 50))
+      root = scope.root_agent_ref
+      {:ok, monitor} = Runtime.monitor_agent(root)
+
+      assert {:ok, _turn} = Runtime.submit(root, "wait")
+      assert_receive {:model_call, _pid, nil, _opts}, 2_000
+      refute_receive {:DOWN, ^monitor, :process, _pid, _reason}, 250
+
+      :ok = Runtime.cancel_turn(root)
+      assert_receive {:DOWN, ^monitor, :process, _pid, _reason}, 2_000
+    end
+
+    test "a delegated agent at work keeps the scope" do
+      scope = scope(spec(&ScriptedLLM.block/2, idle_timeout: 50))
+      root = scope.root_agent_ref
+      {:ok, monitor} = Runtime.monitor_agent(root)
+
+      child = spec(&ScriptedLLM.block/2, name: "child", idle_timeout: 50)
+      assert {:ok, run} = Runtime.request_agent(root, child, "Work")
+      assert_receive {:model_call, _pid, nil, _opts}, 2_000
+      refute_receive {:DOWN, ^monitor, :process, _pid, _reason}, 250
+
+      # The run's agent stays until its result is collected.
+      :ok = Runtime.cancel(run)
+      refute_receive {:DOWN, ^monitor, :process, _pid, _reason}, 250
+      assert %Outcome{status: :cancelled} = Runtime.await(run, 2_000)
+      assert_receive {:DOWN, ^monitor, :process, _pid, _reason}, 2_000
+    end
+
+    test "an agent that is stopping refuses new work but still answers" do
+      scope = scope(spec(&ScriptedLLM.block/2))
+      root = scope.root_agent_ref
+      {:ok, pid} = Runtime.session_pid(root)
+      :sys.replace_state(pid, &%{&1 | stopping: true})
+
+      assert {:error, :agent_stopping} = Runtime.submit(root, "Hi")
+      assert {:error, :agent_stopping} = Runtime.continue(root)
+      assert {:error, :agent_stopping} = Runtime.reconfigure(root, thinking: "high")
+      assert {:ok, %{active_turn: nil}} = Runtime.session_snapshot(root)
+      assert :ok = Runtime.cancel_turn(root)
+    end
+
+    test "rejects a timeout that is not a positive integer or :infinity" do
+      base = [providers: [ScriptedLLM], model: "scripted/small"]
+
+      for timeout <- [0, -1, 1.5, :never] do
+        assert {:error, :invalid_idle_timeout} = Config.new(base ++ [idle_timeout: timeout])
+      end
+
+      assert {:ok, %Config{idle_timeout: :infinity}} = Config.new(base)
+    end
+  end
+
   describe "subscribers and events" do
     test "drops subscribers that unsubscribe or exit and publishes only auxiliary events" do
       scope = scope(spec(&ScriptedLLM.block/2))
@@ -440,6 +526,13 @@ defmodule Tackle.Runtime.LoopAgentTest do
     Runtime.stop_scope(ref)
   catch
     :exit, _reason -> :ok
+  end
+
+  # A scope that is shutting down exits callers until it is gone.
+  defp scope_gone?(scope_ref) do
+    Runtime.scope_snapshot(scope_ref) == {:error, :scope_not_found}
+  catch
+    :exit, _reason -> false
   end
 
   defp flush_model_calls do

@@ -65,6 +65,14 @@ defmodule Tackle.Phoenix.Bridge do
   end
 
   @doc """
+  Returns the agent the bridge relays. A host that registers bridges by
+  conversation (`:name` with a `Registry` via tuple) finds the agent this
+  way; the bridge, and so its registration, goes away with the agent.
+  """
+  @spec agent_ref(GenServer.server()) :: AgentRef.t()
+  def agent_ref(server), do: GenServer.call(server, :agent_ref)
+
+  @doc """
   Returns the visible text of messages still being streamed, as
   `%{message_id => %{content: text}}`.
   """
@@ -110,6 +118,7 @@ defmodule Tackle.Phoenix.Bridge do
 
   @impl true
   def handle_call(:streaming, _from, state), do: {:reply, state.streaming, state}
+  def handle_call(:agent_ref, _from, state), do: {:reply, state.agent_ref, state}
 
   @impl true
   def handle_info({:tackle_event, _session_id, _turn_id, %Event{} = event}, state),

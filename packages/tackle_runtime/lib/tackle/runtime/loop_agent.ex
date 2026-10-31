@@ -50,6 +50,18 @@ defmodule Tackle.Runtime.LoopAgent do
   Other operations, including `:deliver`, return
   `{:error, {:unsupported_agent_operation, operation}}`.
 
+  ## Idle conversations
+
+  With `:idle_timeout` in a root agent's configuration, the agent stops its
+  whole scope once it has run no turn and served no operation other than
+  `:publish_event` for that long, and no delegated agent is left in the
+  scope (a delegated run's agent stays until its result is collected). From
+  then on it refuses `:submit`, `:continue`, and `:reconfigure` with
+  `{:error, :agent_stopping}` until it is gone; its subscribers' monitors
+  then report it down. The runtime keeps
+  nothing, so the host starts the conversation again from what it saved
+  (`:messages` and `:session_id`) when it is next needed.
+
   ## Turn ends
 
   The loop ends every turn it completes with a `:turn_end` event, and the
@@ -72,6 +84,7 @@ defmodule Tackle.Runtime.LoopAgent do
   alias Tackle.Lib.State
   alias Tackle.Lib.Thinking
   alias Tackle.Lib.Tree
+  alias Tackle.Runtime
   alias Tackle.Runtime.AgentContext
   alias Tackle.Runtime.AgentSpec
   alias Tackle.Runtime.ID
@@ -161,8 +174,11 @@ defmodule Tackle.Runtime.LoopAgent do
        context: context,
        agent_state: new_state(config, context),
        subscribers: %{},
-       turn: nil
-     }}
+       turn: nil,
+       idle_timer: nil,
+       stopping: false
+     }
+     |> arm_idle_timer()}
   end
 
   defp new_state(config, context) do
@@ -180,33 +196,47 @@ defmodule Tackle.Runtime.LoopAgent do
   end
 
   @impl GenServer
-  def handle_call({:subscribe, []}, {pid, _tag}, state) do
+  def handle_call({operation, _args} = request, from, state) do
+    {:reply, reply, state} = operation(request, from, state)
+
+    # Auxiliary events report on the agent; they are not activity.
+    state = if operation == :publish_event, do: state, else: arm_idle_timer(state)
+    {:reply, reply, state}
+  end
+
+  defp operation({:subscribe, []}, {pid, _tag}, state) do
     subscribers = Map.put_new_lazy(state.subscribers, pid, fn -> Process.monitor(pid) end)
     {:reply, {:ok, snapshot(state)}, %{state | subscribers: subscribers}}
   end
 
-  def handle_call({:unsubscribe, []}, {pid, _tag}, state) do
+  defp operation({:unsubscribe, []}, {pid, _tag}, state) do
     {monitor, subscribers} = Map.pop(state.subscribers, pid)
     if monitor, do: Process.demonitor(monitor, [:flush])
     {:reply, :ok, %{state | subscribers: subscribers}}
   end
 
-  def handle_call({:snapshot, []}, _from, state), do: {:reply, snapshot(state), state}
+  defp operation({:snapshot, []}, _from, state), do: {:reply, snapshot(state), state}
 
-  def handle_call({operation, _args}, _from, %{turn: turn} = state)
-      when operation in [:submit, :continue, :reconfigure] and turn != nil,
-      do: {:reply, {:error, :turn_in_progress}, state}
+  # The agent has asked for its scope to stop: work started now would be
+  # killed with it.
+  defp operation({operation, _args}, _from, %{stopping: true} = state)
+       when operation in [:submit, :continue, :reconfigure],
+       do: {:reply, {:error, :agent_stopping}, state}
 
-  def handle_call({:submit, [input]}, _from, state) when is_binary(input),
+  defp operation({operation, _args}, _from, %{turn: turn} = state)
+       when operation in [:submit, :continue, :reconfigure] and turn != nil,
+       do: {:reply, {:error, :turn_in_progress}, state}
+
+  defp operation({:submit, [input]}, _from, state) when is_binary(input),
     do: start_turn(state, &Tackle.Lib.run(&1, input, &2))
 
-  def handle_call({:submit, [input]}, _from, state),
+  defp operation({:submit, [input]}, _from, state),
     do: {:reply, {:error, {:invalid_input, input}}, state}
 
-  def handle_call({:continue, []}, _from, state),
+  defp operation({:continue, []}, _from, state),
     do: start_turn(state, &Tackle.Lib.continue(&1, &2))
 
-  def handle_call({:reconfigure, [opts]}, _from, state) when is_list(opts) do
+  defp operation({:reconfigure, [opts]}, _from, state) when is_list(opts) do
     case Config.update(state.config, Keyword.take(opts, [:model, :thinking])) do
       {:ok, config} ->
         agent_state = %{state.agent_state | llm: config.llm, llm_opts: Config.llm_opts(config)}
@@ -218,17 +248,17 @@ defmodule Tackle.Runtime.LoopAgent do
     end
   end
 
-  def handle_call({:cancel, [reason]}, _from, state), do: {:reply, :ok, cancel(state, reason)}
+  defp operation({:cancel, [reason]}, _from, state), do: {:reply, :ok, cancel(state, reason)}
 
-  def handle_call({:cancel_tool_call, [_call_id, _reason]}, _from, %{turn: nil} = state),
+  defp operation({:cancel_tool_call, [_call_id, _reason]}, _from, %{turn: nil} = state),
     do: {:reply, {:error, :no_active_turn}, state}
 
-  def handle_call({:cancel_tool_call, [call_id, reason]}, _from, state) do
+  defp operation({:cancel_tool_call, [call_id, reason]}, _from, state) do
     state.turn.signal |> Cancellation.for_call(call_id) |> Cancellation.cancel(reason)
     {:reply, :ok, state}
   end
 
-  def handle_call({:publish_event, [%Event{} = event]}, _from, state) do
+  defp operation({:publish_event, [%Event{} = event]}, _from, state) do
     if Event.auxiliary?(event) do
       publish(state, nil, event)
       {:reply, :ok, state}
@@ -237,7 +267,7 @@ defmodule Tackle.Runtime.LoopAgent do
     end
   end
 
-  def handle_call({operation, _args}, _from, state),
+  defp operation({operation, _args}, _from, state),
     do: {:reply, {:error, {:unsupported_agent_operation, operation}}, state}
 
   @impl GenServer
@@ -269,6 +299,23 @@ defmodule Tackle.Runtime.LoopAgent do
 
     {:noreply, %{state | subscribers: subscribers}}
   end
+
+  def handle_info({:idle_timeout, timer}, %{idle_timer: timer, turn: nil} = state) do
+    scope_ref = state.context.scope_ref
+
+    case Runtime.scope_snapshot(scope_ref) do
+      # Stopping the scope stops this agent, so another process asks for it.
+      {:ok, %{agent_count: 1}} ->
+        Task.start(fn -> Runtime.stop_scope(scope_ref) end)
+        {:noreply, %{state | idle_timer: nil, stopping: true}}
+
+      # Delegated agents are still at work.
+      _other ->
+        {:noreply, arm_idle_timer(state)}
+    end
+  end
+
+  def handle_info({:idle_timeout, _timer}, state), do: {:noreply, state}
 
   # The turn task's exit signal; its result or `:DOWN` settles the turn.
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
@@ -304,7 +351,8 @@ defmodule Tackle.Runtime.LoopAgent do
 
     agent_state = state.agent_state
     task = Task.async(fn -> run.(agent_state, opts) end)
-    {:reply, {:ok, turn_id}, %{state | turn: %{id: turn_id, task: task, signal: signal}}}
+    state = %{state | turn: %{id: turn_id, task: task, signal: signal}}
+    {:reply, {:ok, turn_id}, arm_idle_timer(state)}
   end
 
   defp settle(state, {status, %State{} = agent_state} = result)
@@ -330,7 +378,7 @@ defmodule Tackle.Runtime.LoopAgent do
       send(terminal.destination, {:tackle_runtime_terminal, terminal.run_id, result})
     end
 
-    %{state | turn: nil}
+    arm_idle_timer(%{state | turn: nil})
   end
 
   # The snapshot follows the turn's settled messages; the turn's own result
@@ -345,6 +393,26 @@ defmodule Tackle.Runtime.LoopAgent do
   end
 
   defp record_settled_message(state, %Event{}), do: state
+
+  # Only an idle root agent counts down: a turn, or an operation other than
+  # `:publish_event`, starts the count again. Delegated agents end with their
+  # run.
+  defp arm_idle_timer(state) do
+    if state.idle_timer, do: Process.cancel_timer(state.idle_timer)
+
+    timer =
+      case {state.config.idle_timeout, state.context.kind, state.turn} do
+        {timeout, :root, nil} when is_integer(timeout) ->
+          ref = make_ref()
+          Process.send_after(self(), {:idle_timeout, ref}, timeout)
+          ref
+
+        _no_countdown ->
+          nil
+      end
+
+    %{state | idle_timer: timer}
+  end
 
   defp cancel(%{turn: nil} = state, _reason), do: state
 

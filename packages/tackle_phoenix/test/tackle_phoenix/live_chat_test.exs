@@ -138,6 +138,29 @@ defmodule Tackle.Phoenix.LiveChatTest do
     assert {:error, _reason} = Runtime.submit(chat.agent_ref, "Hello?")
   end
 
+  test "an idle conversation stops and the view learns" do
+    chat = start_chat(idle_timeout: 100)
+    view = mount(chat)
+    bridge = Process.monitor(chat.bridge)
+
+    :ok = LiveHarness.event(view, "submit", %{"input" => "Hi"})
+    assert_receive {:model_call, llm}, 2_000
+    send(llm, {:finish, "Hello"})
+    assert_eventually(view, &(not &1.processing and contents(&1) == ["Hi", "Hello"]))
+
+    # A turn and the view's own calls count as activity; then nothing does.
+    assert_receive {:DOWN, ^bridge, :process, _pid, :normal}, 2_000
+    assert_eventually(view, &(&1.agent_error != nil))
+    assert :ok = eventually(fn -> scope_gone?(chat.scope_ref) end)
+  end
+
+  # A scope that is shutting down exits callers until it is gone.
+  defp scope_gone?(scope_ref) do
+    Runtime.scope_snapshot(scope_ref) == {:error, :scope_not_found}
+  catch
+    :exit, _reason -> false
+  end
+
   defp start_chat(opts \\ []) do
     {:ok, config} =
       LoopAgent.Config.new(

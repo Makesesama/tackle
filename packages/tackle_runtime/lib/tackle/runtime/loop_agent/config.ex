@@ -22,6 +22,7 @@ defmodule Tackle.Runtime.LoopAgent.Config do
     credential_store: nil,
     session_id: nil,
     tree: nil,
+    idle_timeout: :infinity,
     tools: [],
     hooks: [],
     system_prompt: "",
@@ -37,6 +38,7 @@ defmodule Tackle.Runtime.LoopAgent.Config do
           credential_store: Tackle.Lib.CredentialStore.handle() | nil,
           session_id: String.t() | nil,
           tree: Tree.t() | nil,
+          idle_timeout: pos_integer() | :infinity,
           tools: [module()],
           hooks: [module()],
           system_prompt: String.t(),
@@ -64,6 +66,13 @@ defmodule Tackle.Runtime.LoopAgent.Config do
   of an empty one; a turn the previous agent left with unanswered tool calls
   is repaired by the loop when the next turn starts. Without them the agent
   starts empty with a new session id.
+
+  `:idle_timeout` (milliseconds, default `:infinity`) stops a root agent's
+  whole scope once the agent has run no turn and served no operation other
+  than `:publish_event` for that long, and no delegated agent is left in the
+  scope (a delegated run's agent stays until its result is collected).
+  Delegated agents ignore it; their run ends them. The host starts the
+  conversation again, from what it saved, when it is next needed.
   """
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
   def new(opts) when is_list(opts) do
@@ -80,6 +89,7 @@ defmodule Tackle.Runtime.LoopAgent.Config do
         credential_store: Keyword.get(opts, :credential_store),
         session_id: Keyword.get(opts, :session_id),
         tree: tree,
+        idle_timeout: Keyword.get(opts, :idle_timeout, :infinity),
         tools: Keyword.get(opts, :tools, []),
         hooks: Keyword.get(opts, :hooks, []),
         system_prompt: Keyword.get(opts, :system_prompt, ""),
@@ -160,6 +170,9 @@ defmodule Tackle.Runtime.LoopAgent.Config do
       not (is_nil(config.tree) or is_struct(config.tree, Tree)) ->
         {:error, :invalid_tree}
 
+      not valid_idle_timeout?(config.idle_timeout) ->
+        {:error, :invalid_idle_timeout}
+
       not valid_steps?(config.max_steps) ->
         {:error, :invalid_max_steps}
 
@@ -174,6 +187,9 @@ defmodule Tackle.Runtime.LoopAgent.Config do
 
   defp valid_session_id?(nil), do: true
   defp valid_session_id?(id), do: is_binary(id) and id != ""
+
+  defp valid_idle_timeout?(:infinity), do: true
+  defp valid_idle_timeout?(timeout), do: is_integer(timeout) and timeout > 0
 
   defp valid_steps?(nil), do: true
   defp valid_steps?(steps), do: is_integer(steps) and steps > 0
