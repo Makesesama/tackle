@@ -31,8 +31,8 @@ defmodule Tackle.Lib.Decision do
   ## Local adapters
 
   An adapter whose decision models run on hardware the user controls, such as
-  a self-hosted Ollama server, may export the optional `local?/1` (per provider
-  settings) or `local?/0` callback returning `true`. Its selections carry
+  a self-hosted Ollama server, may export the optional `c:local?/1` (per provider
+  settings) or `c:local?/0` callback returning `true`. Its selections carry
   `local: true`, so a host can leave their usage out of token budgets that
   bound paid spend. Adapters that export neither are treated as remote.
 
@@ -76,7 +76,7 @@ defmodule Tackle.Lib.Decision do
   """
   @callback local?() :: boolean()
 
-  @doc "Like `local?/0`, for one provider's settings. Preferred when exported."
+  @doc "Like `c:local?/0`, for one provider's settings. Preferred when exported."
   @callback local?(settings :: Provider.settings()) :: boolean()
 
   @optional_callbacks decision_models: 0, decision_models: 1, local?: 0, local?: 1
@@ -89,7 +89,7 @@ defmodule Tackle.Lib.Decision do
   without decision support may be listed, but selecting one returns
   `{:error, {:unsupported_decision_adapter, provider_id}}`. A model missing from
   the decision models returns `{:error, {:unknown_decision_model, ref}}`. The
-  selection's `local` flag comes from the optional `local?/1` or `local?/0`; a
+  selection's `local` flag comes from the optional `c:local?/1` or `c:local?/0`; a
   non-boolean answer returns `{:error, {:invalid_local_flag, provider_id, value}}`.
   """
   @spec select([Provider.source()], String.t()) :: {:ok, Selection.t()} | {:error, term()}

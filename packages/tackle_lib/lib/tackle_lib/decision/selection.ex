@@ -6,7 +6,7 @@ defmodule Tackle.Lib.Decision.Selection do
   adapter-local `model` is sent in each request, while `ref` preserves the
   canonical `provider_id/model` identifier for configuration and auditing.
   `local` is `true` when the provider declares its decision models local
-  through the optional `Tackle.Lib.Decision.local?/1` or `local?/0` callback.
+  through the optional `c:Tackle.Lib.Decision.local?/1` or `c:Tackle.Lib.Decision.local?/0` callback.
   """
 
   alias Tackle.Lib.LLM.Provider

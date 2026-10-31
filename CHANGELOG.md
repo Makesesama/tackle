@@ -1,8 +1,28 @@
 # Changelog
 
-Notable changes to Tackle are recorded here. This repository contains separate Mix projects under `packages/` and `apps/`; the entries below describe the repository as a whole. A version in a Mix project is not, by itself, a published package or a tagged release.
+Notable changes to Tackle are recorded here. This repository contains separate Mix projects under `packages/` and `apps/`; the entries below describe the repository as a whole. A version in a Mix project is not, by itself, a published package or a tagged release: each release names the packages it covers.
 
 ## Unreleased
+
+## 0.1.0 — 2026-10-31
+
+The first release of the core libraries, tagged `v0.1.0`:
+
+- `tackle_lib` (`:tackle_lib`, `Tackle.Lib.*`): the provider-independent agent loop, messages and conversation trees, tools, hooks, events, cancellation, compaction, and the `Tackle.Lib.LLM` adapter contract.
+- `tackle_runtime` (`:tackle_runtime`, `Tackle.Runtime.*`): scoped OTP supervision, subagents, limits, cancellation, the `Tackle.Runtime.AgentBackend` contract, and `Tackle.Runtime.LoopAgent`, a ready-made backend with resumable conversations and an idle timeout.
+- `tackle_phoenix` (`:tackle_phoenix`, `Tackle.Phoenix.*`): `Tackle.Phoenix.Bridge`, which relays any runtime agent's events over Phoenix PubSub, the `Tackle.Phoenix.EventReducer` LiveView stream reducer, and `Tackle.Phoenix.MessageView`, with the guide `guides/conversations_with_ecto.md`.
+
+They are installed from Git, not Hex, at the tag, with `subdir: "packages/<name>"`; sibling packages resolve from the same checkout, so `tackle_phoenix` brings the other two. Provider adapters are not part of the release: implement `Tackle.Lib.LLM`, or use an adapter package from the repository at your own risk. The other packages and apps in the repository (the harness, tools, exec-server, adapters, review, workflows, MCP, SDK, CLI, hub, and others) are at the tag but not released; the entries below describe the whole repository.
+
+Verified for the release: the three packages' test suites pass with Elixir 1.20 / OTP 29 and Elixir 1.18.4 / OTP 27, compile without warnings on both, and build their documentation without warnings; `tackle_phoenix` passes with Phoenix LiveView 1.1.33 and 1.2.13; and a new Mix project installs `tackle_phoenix` through `git:` with `subdir:` and runs a turn through `LoopAgent` and the bridge.
+
+Known limits:
+
+- 0.x: the APIs may still change in breaking ways, in particular the `AgentBackend` contract, `LoopAgent`, and `tackle_phoenix`, which reached their current form shortly before the release.
+- The runtime is node-local; a cluster must route each conversation to one node.
+- `Tackle.Runtime.scope_snapshot/1` exits, instead of returning an error, while a scope is shutting down.
+- `tackle_phoenix`'s end-to-end tests drive LiveView callbacks without rendering HTML (`Phoenix.LiveViewTest` needs `lazy_html`, which is not a dependency), and the database code of the Ecto guide is not tested.
+- Hooks do not run when a turn's task crashes; `LoopAgent` reports it with `:turn_end` and status `:error`.
 
 ### Added
 
@@ -269,11 +289,7 @@ The agent library (`packages/tackle_lib`) was reworked for a smaller, stricter c
 - Review runs no longer spend a model call on a closing answer. A detector run is stopped as soon as its last `report_findings` call recorded every finding it carried (`Tackle.Review.Tools.ReportFindings.complete?/2`), and a verifier run once every finding has its verdict; in traced reviews that closing call took 3 to 9 seconds per run, on the critical path for the last detector and its verifier. `Tackle.Review.Delegation.run/4` gained a `:done?` option that checks the run's transcript after each tool result and stops the run (`Tackle.Runtime.cancel_run/3`) once it holds, returning `{:ok, state}`. Such runs appear as cancelled among the scope's tasks.
 - A failed delegated run no longer costs a review the findings it already made. Review detectors now report findings as they confirm them (`report_findings` takes `done: false` while a run keeps reviewing), and whatever a detector or verifier run reported before an agent error, the step limit, a timeout, a crash, or its own cancellation is kept: `Tackle.Review.Delegation` mirrors a run's finished messages from its events, so a timed-out run's transcript is no longer lost. Units whose runs stopped early after reporting are listed in the new `Result.summary.incomplete_units` (also in the tool result, the CLI's text and JSON output, the TUI's notes, and review history); `failed_units` now holds only units whose runs reported nothing. A delegated run cancelled on its own is a failed run (`:run_cancelled`) instead of cancelling the whole review; cancelling the requester's branch or scope still cancels it. `Delegation.run/4` now returns `{:error, reason, messages}` for every run that started and failed, and `ReportFindings.reported?/2` became `finished?/2`.
 
-### Release preparation
-
-- The initial `0.1.0` release has not been tagged. Installation instructions, supported distribution paths, and release validation are still to be finalized.
-
-## Initial development (unreleased)
+## Initial development
 
 - Split the reusable agent library into `packages/tackle_lib` (`:tackle_lib`, `Tackle.Lib.*`) and introduced `packages/tackle` for the developer harness. This is a breaking change for users of the former `:tackle` library identity: update package paths, module references, and application configuration to `:tackle_lib`.
 - Added `packages/tackle_runtime` for scoped OTP orchestration, including subagents.

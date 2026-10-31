@@ -18,16 +18,17 @@ runtime agent over PubSub and rendering it in LiveView, also read
 
 ## Status and installation
 
-Tackle.Lib is available from this Git monorepo, not Hex. Add this dependency
-to your application's `mix.exs`, replacing `REF` with a published tag or commit
-SHA (do not use a floating branch for a reproducible build):
+Tackle.Lib is released from this Git monorepo, not Hex, together with
+`tackle_runtime` and `tackle_phoenix` under one tag. Add this dependency to
+your application's `mix.exs` (pin a tag or commit SHA, not a floating branch,
+for a reproducible build):
 
 ```elixir
 defp deps do
   [
     {:tackle_lib,
      git: "https://github.com/Makesesama/tackle.git",
-     ref: "REF",
+     tag: "v0.1.0",
      subdir: "packages/tackle_lib"}
   ]
 end

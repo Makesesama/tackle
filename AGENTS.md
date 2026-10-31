@@ -161,7 +161,7 @@ Burrito, or lint commands for tooling that has not been wired up.
   `Tackle.Elixir.CompileGate` hook compiles the projects a turn changed
   before the turn ends; the harness depends on the package and turns the gate
   on in `Tackle.Config.load/1`.
-- `packages/tackle_phoenix/`: existing Phoenix LiveView (`~> 1.1.33`) and
+- `packages/tackle_phoenix/`: existing Phoenix LiveView (`>= 1.1.33 and < 1.3.0`) and
   PubSub (`~> 2.1`) integration, with its own Mix project and tests. It owns no
   agent process: `Tackle.Phoenix.Bridge` relays any `Tackle.Runtime` agent's
   events over PubSub, and `Tackle.Phoenix.EventReducer` renders them.

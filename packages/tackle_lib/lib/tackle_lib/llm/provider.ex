@@ -30,7 +30,8 @@ defmodule Tackle.Lib.LLM.Provider do
   instance-aware versions of the optional catalog callbacks, which take
   precedence over their arity-zero versions: `models/1` and `model_info/2`
   of `Tackle.Lib.LLM`, and, for adapters that also implement
-  `Tackle.Lib.Decision`, its `decision_models/1` and `local?/1`.
+  `Tackle.Lib.Decision`, its `c:Tackle.Lib.Decision.decision_models/1` and
+  `c:Tackle.Lib.Decision.local?/1`.
 
   Adapters read conventional settings with the helpers below:
   `string_setting/3`, `put_base_url/2` (`"base_url"`), and `api_key/3`
@@ -169,7 +170,8 @@ defmodule Tackle.Lib.LLM.Provider do
   @doc """
   Whether the provider's decision models run on hardware the user controls.
 
-  Adapters without `local?/1` or `local?/0` are remote.
+  Adapters without `c:Tackle.Lib.Decision.local?/1` or
+  `c:Tackle.Lib.Decision.local?/0` are remote.
   """
   @spec local?(t()) :: {:ok, boolean()} | {:error, term()}
   def local?(%__MODULE__{adapter: adapter} = provider) do

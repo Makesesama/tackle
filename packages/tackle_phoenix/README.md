@@ -23,16 +23,16 @@ the guide [Conversations with Ecto](guides/conversations_with_ecto.md).
 
 ## Installation
 
-This package is distributed from this Git monorepo, not Hex. Add the following
-dependency to your application's `mix.exs`, replacing `REF` with the same
-published tag or commit SHA for all Tackle packages:
+This package is released from this Git monorepo, not Hex, together with
+`tackle_lib` and `tackle_runtime` under one tag. Add the following dependency
+to your application's `mix.exs`:
 
 ```elixir
 defp deps do
   [
     {:tackle_phoenix,
      git: "https://github.com/Makesesama/tackle.git",
-     ref: "REF",
+     tag: "v0.1.0",
      subdir: "packages/tackle_phoenix"}
   ]
 end
@@ -44,8 +44,9 @@ separate top-level Git dependencies for them unless you need them directly;
 Mix will report diverging dependencies unless explicitly overridden. Mix's
 `:subdir` option requires Elixir 1.13 or newer.
 
-`Tackle.Phoenix` requires Elixir `~> 1.18`, Phoenix LiveView `~> 1.1.33`, and
-Phoenix PubSub `~> 2.1`.
+`Tackle.Phoenix` requires Elixir `~> 1.18`, Phoenix LiveView 1.1.33 or a
+later 1.1 or 1.2 release (`>= 1.1.33 and < 1.3.0`; tested with 1.1.33 and
+1.2.13), and Phoenix PubSub `~> 2.1`.
 
 ## 1. Run the agent under a runtime scope
 

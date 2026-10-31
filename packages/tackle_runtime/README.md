@@ -14,6 +14,21 @@ tackle_runtime
 tackle   tackle_phoenix
 ```
 
+## Installation
+
+`tackle_runtime` is released from this Git monorepo, not Hex, together with
+`tackle_lib` and `tackle_phoenix` under one tag; its `tackle_lib` dependency
+resolves from the same checkout:
+
+```elixir
+{:tackle_runtime,
+ git: "https://github.com/Makesesama/tackle.git",
+ tag: "v0.1.0",
+ subdir: "packages/tackle_runtime"}
+```
+
+It requires Elixir `~> 1.18`.
+
 ## Performance benchmarks
 
 Repository-only Benchee suites cover delegated lifecycles, retained

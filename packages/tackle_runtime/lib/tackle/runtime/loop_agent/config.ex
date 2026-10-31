@@ -195,7 +195,7 @@ defmodule Tackle.Runtime.LoopAgent.Config do
   defp valid_steps?(steps), do: is_integer(steps) and steps > 0
 
   @doc """
-  Applies `Tackle.Runtime.AgentBackend.configure_option/0` values in order:
+  Applies `t:Tackle.Runtime.AgentBackend.configure_option/0` values in order:
   `:model`, `:thinking`, `:max_steps`, `:context` (merged), and `:llm_opts`
   (merged). Each value is checked; the rest of the configuration is trusted
   to be valid already.

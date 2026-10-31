@@ -166,28 +166,27 @@ references, and library configuration from `:tackle`/`Tackle.*` to
 
 ## Git installation
 
-The reusable packages are available as Git dependencies from this
-monorepo. For example, add `tackle_phoenix` to your `mix.exs` with
-`git: "https://github.com/Makesesama/tackle.git"`, a published `ref:
-"REF"`, and `subdir: "packages/tackle_phoenix"`, then run `mix
-deps.get`. Its sibling packages resolve from the same checkout. See
-the
-[`tackle_lib`](packages/tackle_lib/README.md#status-and-installation)
-and [`tackle_phoenix`](packages/tackle_phoenix/README.md#installation)
-installation guides for complete examples.
+The core libraries `tackle_lib`, `tackle_runtime`, and `tackle_phoenix` are
+released together as `v0.1.0`, a tag of this monorepo; they are not on Hex.
+Depend on the package you need at that tag; its sibling packages resolve from
+the same checkout, so `tackle_phoenix` brings `tackle_lib` and
+`tackle_runtime`:
 
-An example to include `tackle_lib`, `tackle_runtime` and `tackle_phoenix`
-into you application:
 ```elixir
 defp deps do
   [
     {:tackle_phoenix,
      git: "https://github.com/Makesesama/tackle.git",
-     ref: "COMMIT_SHA",
+     tag: "v0.1.0",
      subdir: "packages/tackle_phoenix"}
   ]
 end
 ```
+
+Use `subdir: "packages/tackle_lib"` or `"packages/tackle_runtime"` for those
+alone. The other packages and apps in the repository are not part of the
+release; see the [changelog](CHANGELOG.md) for what 0.1.0 contains and its
+known limits.
 
 
 ## CLI during development
