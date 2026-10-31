@@ -97,7 +97,10 @@ defmodule Tackle.Phoenix.EventReducer do
     Component.assign(socket, :streaming_messages, %{})
   end
 
-  @doc "Restores in-flight content from a Runner snapshot after loading the transcript."
+  @doc """
+  Restores in-flight content after loading the transcript, for example from
+  `Tackle.Phoenix.Bridge.streaming/1` (`%{message_id => %{content: text}}`).
+  """
   def restore_streaming_messages(socket, messages) when is_map(messages) do
     view = socket.assigns.tackle_message_view
 
@@ -118,35 +121,6 @@ defmodule Tackle.Phoenix.EventReducer do
   def messages_from_block({:internal, messages}), do: messages
   def messages_from_block(messages) when is_list(messages), do: messages
   def messages_from_block(_), do: []
-
-  @doc "Projects in-flight answer text for snapshots without a LiveView socket."
-  def project_streaming(messages, %Event{} = event) when is_map(messages) do
-    id = extract_message_id(event.data, event)
-
-    case event do
-      %Event{type: :message_start, data: data} ->
-        if assistant_message?(data) and is_binary(id),
-          do: Map.put_new(messages, id, %{content: ""}),
-          else: messages
-
-      %Event{type: :message_delta, data: data} ->
-        if content_delta?(data) and is_binary(id) do
-          delta = delta_text(data)
-
-          Map.update(messages, id, %{content: delta}, fn entry ->
-            %{entry | content: entry.content <> delta}
-          end)
-        else
-          messages
-        end
-
-      %Event{type: type} when type in [:retry_scheduled, :message_end] ->
-        Map.delete(messages, id)
-
-      _ ->
-        messages
-    end
-  end
 
   @doc "Consumes a stream-related event and updates its LiveView socket."
   def handle_tackle_event(socket, %Event{type: :message_start, data: data} = event) do
@@ -199,6 +173,10 @@ defmodule Tackle.Phoenix.EventReducer do
     |> settle_streaming_message(message.id, agent_state)
   end
 
+  # A finished turn, whatever its status, leaves no message in flight.
+  def handle_tackle_event(socket, %Event{type: :turn_end}),
+    do: clear_streaming_messages(socket)
+
   def handle_tackle_event(socket, _event), do: socket
 
   # ── MessageView seam ──────────────────────────────────────────────────────
@@ -212,20 +190,20 @@ defmodule Tackle.Phoenix.EventReducer do
             "(a module implementing Tackle.Phoenix.MessageView)"
   end
 
-  # ── Internals (extracted verbatim from the host's AgentEventHandler) ────────
+  # ── Internals ───────────────────────────────────────────────────────────────
+  #
+  # Library events are normalized (`Tackle.Lib.Event.normalize/2`): their data
+  # has atom keys, and message events carry the message id as the event id.
 
-  defp assistant_message?(data) when is_map(data) do
-    role = Map.get(data, :role, Map.get(data, "role", :assistant))
-    role in [:assistant, "assistant"]
-  end
+  defp assistant_message?(data) when is_map(data),
+    do: Map.get(data, :role, :assistant) == :assistant
 
   defp assistant_message?(_), do: true
 
   defp content_delta?(data) when is_map(data) do
-    case Map.get(data, :field, Map.get(data, "field")) do
+    case Map.get(data, :field) do
       nil -> true
       :content -> true
-      "content" -> true
       _ -> false
     end
   end
@@ -299,9 +277,7 @@ defmodule Tackle.Phoenix.EventReducer do
     cond do
       is_binary(event.id) && event.id != "" -> event.id
       is_binary(Map.get(data, :id)) -> Map.get(data, :id)
-      is_binary(Map.get(data, "id")) -> Map.get(data, "id")
       is_binary(Map.get(data, :message_id)) -> Map.get(data, :message_id)
-      is_binary(Map.get(data, "message_id")) -> Map.get(data, "message_id")
       true -> nil
     end
   end
@@ -311,9 +287,6 @@ defmodule Tackle.Phoenix.EventReducer do
   defp delta_text(data) when is_map(data) do
     cond do
       is_binary(Map.get(data, :delta)) -> Map.get(data, :delta)
-      is_binary(Map.get(data, "delta")) -> Map.get(data, "delta")
-      is_binary(Map.get(data, :text)) -> Map.get(data, :text)
-      is_binary(Map.get(data, "text")) -> Map.get(data, "text")
       true -> ""
     end
   end

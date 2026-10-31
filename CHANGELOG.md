@@ -44,6 +44,7 @@ Notable changes to Tackle are recorded here. This repository contains separate M
 
 ### Removed
 
+- **Breaking:** `tackle_phoenix` no longer runs agents. `Tackle.Phoenix.Runner`, `Tackle.Phoenix.Store`, `Tackle.Phoenix.RuntimeBackend`, `Tackle.Phoenix.RuntimeSpec`, `Tackle.Phoenix.PubSub`, and the `Tackle.Phoenix.Chat` scaffold are gone, along with the `[:tackle, :phoenix, :turn, *]` telemetry and the `agent:session:*` topics. The agent now runs under a `Tackle.Runtime` scope through any `Tackle.Runtime.AgentBackend`, which owns gating, persistence, and billing (the package README has a guide for multi-tenant hosts). The new `Tackle.Phoenix.Bridge` subscribes to one agent through `Tackle.Runtime.subscribe/1` and broadcasts `{:agent_event, event}` and `{:agent_down, reason}` on a topic the host chooses, keeping the visible in-flight answer text for views that join mid-turn (`Bridge.streaming/1`, which replaces the Runner snapshot's `:streaming_messages`). LiveViews submit and cancel through `Tackle.Runtime.submit/2` and `cancel_turn/1`; a turn ends with the library's `:turn_end` event instead of `{:agent_turn_done, _}`/`{:agent_turn_failed, _}`. `Tackle.Phoenix.EventReducer` clears in-flight messages on `:turn_end`, no longer has `project_streaming/2`, and reads only normalized, atom-keyed event data.
 #### Agent library (`tackle_lib`)
 
 These removals are breaking; each names what replaces it. The behaviour changes that came with them are under Changed.

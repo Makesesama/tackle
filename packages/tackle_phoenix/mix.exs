@@ -5,7 +5,7 @@ defmodule Tackle.Phoenix.MixProject do
     [
       app: :tackle_phoenix,
       version: "0.1.0",
-      description: "Phoenix and LiveView integration for Tackle agents",
+      description: "Phoenix PubSub and LiveView integration for Tackle runtime agents",
       source_url: "https://github.com/Makesesama/tackle",
       package: [licenses: ["MIT"], links: %{"GitHub" => "https://github.com/Makesesama/tackle"}],
       docs: [main: "readme", extras: ["README.md"]],
@@ -27,10 +27,10 @@ defmodule Tackle.Phoenix.MixProject do
 
   defp deps do
     [
-      # The framework-free agent core (Tackle.Lib.*) this layer drives.
+      # Events and state (Tackle.Lib.*) and the agents the bridge subscribes to.
       {:tackle_lib, path: "../tackle_lib"},
       {:tackle_runtime, path: "../tackle_runtime"},
-      # Phoenix runtime + LiveView UI glue (Runner/EventReducer/Chat/PubSub).
+      # PubSub relay and LiveView stream glue (Bridge/EventReducer).
       {:phoenix_live_view, ">= 1.1.33 and < 1.3.0"},
       {:phoenix_pubsub, "~> 2.1"},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false}

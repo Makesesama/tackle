@@ -47,8 +47,8 @@ correlated with a turn and tool call, and `:completion` envelopes that may wake
 an idle agent. Hosts own queueing, presentation, and capacity: the root harness
 bounds ordinary text separately from deferred envelopes and returns an error
 on overflow. Envelopes are transient unless the host persists them. A host
-without an inbox rejects `:deliver`; the Phoenix backend currently does so
-instead of acknowledging an undelivered message.
+without an inbox rejects `:deliver` instead of acknowledging an undelivered
+message.
 
 Implement `Tackle.Runtime.AgentBackend`, put trusted opaque configuration in an
 `AgentSpec`, and select the backend in the `ScopeSpec`:
@@ -70,9 +70,8 @@ scope_spec = Tackle.Runtime.ScopeSpec.new!(
 ```
 
 The root harness provides `Tackle.Runtime.RootBackend` for `Tackle.Session`.
-`Tackle.Phoenix` provides `Tackle.Phoenix.RuntimeBackend`, which executes every
-root and child turn through `Tackle.Phoenix.Runner` and the host's
-`Tackle.Phoenix.Store` callbacks.
+`Tackle.Phoenix` provides no backend: its `Tackle.Phoenix.Bridge` relays any
+backend's agent events over Phoenix PubSub.
 
 ## Per-request model selection
 
@@ -83,8 +82,7 @@ argument. The runtime checks it is a non-empty string and passes it, after
 must resolve it only against the child's trusted configuration. Backends that
 do not implement `select_model/2` refuse such requests with
 `{:error, {:model_selection_unsupported, model}}` before admission.
-`Tackle.Runtime.RootBackend` implements it; `Tackle.Phoenix.RuntimeBackend`
-currently does not.
+`Tackle.Runtime.RootBackend` implements it.
 
 ## Configuring trusted specs
 
@@ -107,8 +105,7 @@ by name, as a delegated request does, and `Tackle.Runtime.prepare_spec/2`
 applies `prepare_child/2` to a spec, both without starting a run. Backends without a callback return
 `{:error, {:unsupported_backend_callback, name}}`, and a raising callback
 returns `{:error, {:agent_backend_failed, message}}`.
-`Tackle.Runtime.RootBackend` implements all three;
-`Tackle.Phoenix.RuntimeBackend` currently does not.
+`Tackle.Runtime.RootBackend` implements all three.
 
 ## Delegated inactivity timeouts
 

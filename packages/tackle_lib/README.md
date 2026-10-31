@@ -12,8 +12,8 @@ This document has two goals:
    application.
 
 For scoped agents and subagents, read
-[`../tackle_runtime/README.md`](../tackle_runtime/README.md). For Phoenix turns,
-PubSub, and LiveView stream support, also read
+[`../tackle_runtime/README.md`](../tackle_runtime/README.md). For relaying a
+runtime agent over PubSub and rendering it in LiveView, also read
 [`../tackle_phoenix/README.md`](../tackle_phoenix/README.md).
 
 ## Status and installation
@@ -50,9 +50,8 @@ no MCP dependency.
 | CLI command, Oban job, test, or one synchronous turn | `tackle_lib` |
 | Your application already owns processes and persistence | `tackle_lib` |
 | Scoped agents, subagents, and limits | `tackle_lib` + `tackle_runtime` |
-| Supervised background turns with cancellation and PubSub | `tackle_lib` + `tackle_phoenix` |
-| Phoenix subagents | `tackle_lib` + `tackle_runtime` + `tackle_phoenix` |
-| Incrementally rendered LiveView chat | `tackle_lib` + `tackle_phoenix` |
+| Supervised background turns, subagents, and cancellation | `tackle_lib` + `tackle_runtime` (with an `AgentBackend`) |
+| Incrementally rendered LiveView chat over PubSub | `tackle_lib` + `tackle_runtime` + `tackle_phoenix` |
 | Expose the same tools through Anubis MCP | `tackle_anubis` (brings `tackle_lib`) |
 
 ## Architecture
@@ -213,8 +212,9 @@ end
 ```
 
 `Tackle.Lib.run/3` is synchronous. A host that needs a long-lived or cancellable UI
-turn should run it in a supervised process; `tackle_phoenix` provides that
-runtime.
+turn should run it in a supervised process, for example under a
+`tackle_runtime` scope through an `AgentBackend`; `tackle_phoenix` relays such
+an agent's events to LiveView.
 
 ## What is possible with Tackle.Lib?
 
@@ -1091,8 +1091,7 @@ history remain in provider order. UIs should update the same row by call ID when
 both progress and settlement arrive.
 
 Event callbacks should be fast. Send events to another process or PubSub rather
-than doing slow database work in the callback; use hooks or the Phoenix Store
-settlement seam for durable work.
+than doing slow database work in the callback; use hooks or the host's turn settlement for durable work.
 
 ## Provider retries
 
@@ -1185,8 +1184,9 @@ Cancellation is cooperative, not preemptive. Tackle.Lib cannot interrupt code th
 ignores the signal. The first cancellation wins: cancelling a cancelled signal
 keeps its original reason, and a `nil` reason is stored as `:cancelled`. Delete
 signals after terminal settlement with `Tackle.Lib.Cancellation.delete/1`, which
-also deletes every per-call signal derived from the signal;
-`Tackle.Phoenix.Runner` manages this lifecycle automatically.
+also deletes every per-call signal derived from the signal. The process that
+owns the turn (for example a `tackle_runtime` backend agent) manages this
+lifecycle.
 
 The cancellation store is configurable:
 
@@ -1460,8 +1460,9 @@ output tokens or trigger automatic compaction.
 
 Adapters own price cards because provider/model prices change independently of
 the core. Tackle.Lib does not interpret subscriptions, credits, or tenants;
-hosts must enforce quota **before** a turn starts. `Tackle.Phoenix.Store.before_turn/2`
-and `settle_turn/4` are designed for that split.
+hosts must enforce quota **before** a turn starts and settle usage after it
+ends, typically in the backend that runs the agent (see the Phoenix README's
+SaaS guide).
 
 ## Telemetry
 
@@ -1486,9 +1487,6 @@ Metadata is deliberately bounded. Tool names are reported only when the host
 places the allowed names under `state.context.telemetry.tool_names`; other names
 become `"other"`. Do not put prompts, tool arguments, results, or raw errors in
 telemetry metadata.
-
-`Tackle.Phoenix.Runner` additionally emits turn telemetry; see the Phoenix
-README.
 
 ## JSON
 
@@ -1567,11 +1565,11 @@ Two supported persistence approaches are:
 
 1. **Hooks in a core-only host.** Persist finalized messages in
    `after_message/3` and settle the session in `after_turn/2`.
-2. **`Tackle.Phoenix.Store`.** Let the generic Runner own process lifecycle while
-   the Store gates, enriches, persists, bills, and recovers the turn.
+2. **In the process that owns the turn.** A `tackle_runtime` backend agent
+   gates, enriches, persists, bills, and recovers each turn around the loop.
 
-A production host can combine incremental hook persistence with Store-level
-write-ahead pending assistant rows and terminal recovery. That is a host
+A production host can combine incremental hook persistence with write-ahead
+pending assistant rows and terminal recovery in its backend. That is a host
 reliability policy, not a requirement of core Tackle.Lib.
 
 ## Example host architecture
@@ -1587,10 +1585,10 @@ The following generic layout illustrates where each concern belongs:
 | Tool registry | `lib/my_app/agent/tools.ex` | Build explicit surface/role-specific allowlists |
 | Concrete tools | `lib/my_app/agent/tools/` | Put tenant checks in host tools |
 | Core-only persistence hook | `lib/my_app/agent/hooks/persistence.ex` | Persist finalized messages idempotently |
-| OTP/Phoenix facade | `lib/my_app/agent/session.ex` | Hide Runner config behind a host API |
-| Persistence/quota/billing | `lib/my_app/agent/session_store.ex` | Implement `Tackle.Phoenix.Store` |
+| OTP facade | `lib/my_app/agent/session.ex` | Start scopes and bridges behind a host API |
+| Persistence/quota/billing | `lib/my_app/agent/backend.ex` | Implement a `Tackle.Runtime.AgentBackend` that gates and settles turns |
 | Ecto session/message mapping | `lib/my_app/agent/sessions.ex` | Rebuild state from durable ordered messages |
-| LiveView rendering | `lib/my_app_web/live/agent_panel_live.ex` and `agent_sessions_live/show.ex` | Subscribe to PubSub and reduce events |
+| LiveView rendering | `lib/my_app_web/live/agent_panel_live.ex` and `agent_sessions_live/show.ex` | Subscribe to the `Tackle.Phoenix.Bridge` topic and reduce events |
 | Message presentation | `lib/my_app_web/components/agent_chat.ex` | Implement `Tackle.Phoenix.MessageView` |
 | MCP tool reuse | `lib/my_app_web/mcp/registry.ex` | Expose an explicit safe subset |
 | OpenTelemetry bridge | `lib/my_app/telemetry/open_telemetry/agent_workflow.ex` | Export bounded generic telemetry |
@@ -1600,30 +1598,31 @@ The following generic layout illustrates where each concern belongs:
 
 1. A LiveView derives `current_scope`, tenant, permissions, locale, and current
    page context.
-2. `MyApp.Agent.Session.run_turn/4` loads or reuses the per-user/session Runner.
-3. `SessionStore.before_turn/2` re-authorizes a persisted session and checks the
+2. `MyApp.Agent.Session` finds or starts the conversation's runtime scope and
+   `Tackle.Phoenix.Bridge`, then calls `Tackle.Runtime.submit/2`.
+3. The host backend re-authorizes the persisted session and checks the
    tenant's quota before provider work.
-4. `SessionStore.enrich_state/3` injects trusted persistence, authorization, and
-   telemetry context.
-5. The Runner writes the user message, creates a cancellation signal, and starts
-   `MyApp.Agent.continue/2` under `Task.Supervisor.async_nolink`.
+4. It injects trusted persistence, authorization, and telemetry context into
+   the state.
+5. It writes the user message, creates a cancellation signal, and runs the
+   loop in a supervised task.
 6. Tackle.Lib calls `MyApp.AI.TackleAdapter`, which lowers structured messages
    and native tool definitions to the selected provider.
-7. Domain tools query through the permission context. The Runner broadcasts
-   normalized events and aggregates usage.
+7. Domain tools query through the permission context. The backend publishes
+   normalized events to its subscribers and aggregates usage; the bridge
+   broadcasts them over PubSub.
 8. The LiveView uses `Tackle.Phoenix.EventReducer` and the host MessageView to
    render streaming and finalized messages.
-9. `SessionStore.settle_turn/4` persists final messages, marks interrupted rows
-   when needed, charges usage, and settles child-agent state.
-10. The Runner broadcasts the terminal result and cleans up the cancellation
-    signal.
+9. When the turn ends, the backend persists final messages, marks interrupted
+   rows when needed, charges usage, and settles child-agent state.
+10. The backend publishes `:turn_end` and cleans up the cancellation signal.
 
 ### What to copy and what to redesign
 
 Copy the **boundaries**, not the example application's domain code:
 
 - copy/adapt the `Tackle.Lib.LLM`, `Tackle.Lib.Tool`, `Tackle.Lib.Hook`, and
-  `Tackle.Phoenix.Store` patterns;
+  `Tackle.Runtime.AgentBackend` patterns;
 - keep your own user/tenant scope, persistence schemas, quotas, and billing;
 - expose separate tool lists per surface and role;
 - reconstruct authorization from trusted identity on every resumed session;
@@ -1648,8 +1647,7 @@ Tackle.Lib does **not** provide:
 - built-in parent/child orchestration (use the optional `tackle_runtime` package); or
 - a complete chat UI.
 
-`Tackle.Phoenix.Chat` is currently a documented scaffold, not a working LiveView
-mixin. Use `Tackle.Phoenix.EventReducer` directly as shown in the Phoenix README.
+For LiveView, use `Tackle.Phoenix.EventReducer` as shown in the Phoenix README.
 
 ## Performance benchmarks
 

@@ -41,7 +41,7 @@ The first implementation uses these defaults:
 - A busy ephemeral child rejects additional work. General-purpose agent inboxes and queues are deferred.
 - Fleet concurrency overflow is rejected explicitly in the initial implementation rather than queued.
 - Scoped runtime processes are never restarted. Lost in-memory state is not reconstructed.
-- Subagents, scripted workflows, scopes, and fleets belong to the optional `:tackle_runtime` package and its `:tackle_workflow` client. `Tackle.Lib` remains unaware of them. Hosts supply a `Tackle.Runtime.AgentBackend`; the root harness adapts `Tackle.Session`, while `Tackle.Phoenix` adapts `Runner`/`Store`. The runtime supplies one dedicated tool supervisor per agent.
+- Subagents, scripted workflows, scopes, and fleets belong to the optional `:tackle_runtime` package and its `:tackle_workflow` client. `Tackle.Lib` remains unaware of them. Hosts supply a `Tackle.Runtime.AgentBackend`; the root harness adapts `Tackle.Session`, and `Tackle.Phoenix` relays any backend's agent events over PubSub without owning an agent. The runtime supplies one dedicated tool supervisor per agent.
 
 ## 2. Current foundation
 
@@ -204,7 +204,7 @@ Cancellation signals live in `Tackle.Lib`'s default store, whose ETS table is ow
 
 `Tackle.AgentSupervisor` owns root-agent scopes rather than every agent directly. All agents enter through a scope; there is no unscoped runtime fallback.
 
-Each concrete agent runs under `Tackle.Runtime.AgentSupervisor`, which owns the agent's dedicated tool `Task.Supervisor` and one backend child. The backend child is `Tackle.Session` in the root harness and `Tackle.Phoenix.Runner` in Phoenix/SaaS hosts. This keeps supervision reusable while leaving persistence, authorization, billing, and host delivery semantics in adapters.
+Each concrete agent runs under `Tackle.Runtime.AgentSupervisor`, which owns the agent's dedicated tool `Task.Supervisor` and one backend child. The backend child is `Tackle.Session` in the root harness and the host's own agent process elsewhere (for example `Tackle.Hub.AgentBackend`). This keeps supervision reusable while leaving persistence, authorization, billing, and host delivery semantics in adapters.
 
 `WorkSupervisor` accepts heterogeneous temporary child specifications. It owns descendant agent subtrees, trusted work children, request helpers, and turn/awaiter Tasks. There is exactly one tool supervisor per agent, so a child never shares tool tasks with its parent and subtree termination cleans up every in-flight tool task for that agent.
 
@@ -349,7 +349,7 @@ This migration is intentionally breaking and retains no compatibility wrapper:
 - `allow_recursion` is renamed `allow_delegation` throughout the root runtime;
 - `Tackle.Session.start_child/1`, the unscoped `start_turn_task(nil, fun)` fallback, and the global `Tackle.SessionSupervisor` and `Tackle.TaskSupervisor` are removed.
 
-A root `Tackle.Session` without scoped runtime ownership is an initialization error rather than an implicit global-supervisor fallback. `Tackle.Phoenix.Runner` may still run standalone, or it may run under the scope through `Tackle.Phoenix.RuntimeBackend`.
+A root `Tackle.Session` without scoped runtime ownership is an initialization error rather than an implicit global-supervisor fallback.
 
 ### 5.3 Trusted profiles versus model-selected names
 
@@ -407,7 +407,7 @@ envelope wakes an idle agent. These envelopes have separate bounded capacity
 (128 in the root harness); overflow returns an error that the request helper
 logs, rather than silently dropping a completion. Envelopes are transient if
 the scope/session stops. Host backends without a mailbox must reject `:deliver`
-explicitly; the Phoenix backend currently does so. Correlated terminal outcomes
+explicitly. Correlated terminal outcomes
 and observational events remain separate from model-facing messages. Durable
 mailboxes, free-form autonomous chat, and reconstruction of queued messages
 after process or BEAM failure remain deferred.

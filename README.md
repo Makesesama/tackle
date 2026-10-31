@@ -23,7 +23,7 @@ reusable library on its own or add scoped orchestration and integrations.
 | Scripted multi-agent flows ("scout, then plan, then review") | [`tackle_workflow`](packages/tackle_workflow/README.md) (`Tackle.Workflow.*`): sandboxed Lua workflows driving the runtime's delegated runs, plus an opt-in `run_workflow` tool for an agent. |
 | Code review of a change, in your own host | [`tackle_review`](packages/tackle_review/README.md) (`Tackle.Review.*`): ranked, line-anchored findings from detector and verifier agents on the runtime. It stores nothing; your host passes in rules, settings, and known findings. |
 | A ready-to-compose developer harness | [`tackle`](packages/tackle) (`Tackle.*`): configuration, coding tools, credentials, and a facade over the scoped runtime. See the [harness guide](packages/tackle/README.md). |
-| A Phoenix host integration | [`tackle_phoenix`](packages/tackle_phoenix/README.md): supervised turns, PubSub, and LiveView support. |
+| A Phoenix host integration | [`tackle_phoenix`](packages/tackle_phoenix/README.md): relays a runtime agent's events over PubSub and renders them in a LiveView stream, with any backend. |
 | A terminal frontend | [`tackle_cli`](apps/tackle_cli/README.md): the CLI built on the harness, not an agent engine to embed. |
 | An Emacs frontend | [`etackle`](apps/etackle/README.md): the first client for the Tackle SDK, driving `tackle sdk` over its stdio JSON-RPC protocol. |
 | A pull request review bot (in progress) | [`tackle_hub`](apps/tackle_hub/README.md): a Phoenix/Ash app that will review forge pull requests with `tackle_review`; receives GitHub webhooks and runs jailed reviews, storing runs and findings (phases 1–4 of [the plan](docs/TACKLE_HUB_PLAN.md)); forge posting is next. |
@@ -113,8 +113,9 @@ and unfinished integrations:
   `Tackle.Executor.Jailed`, and the CLI uses it when `TACKLE_EXEC_LAUNCHER` is
   set (see [jailed execution](#jailed-execution-on-linux)).
 - [`packages/tackle_phoenix`](packages/tackle_phoenix/README.md) contains the
-  Phoenix integration and a runtime backend that preserves Store lifecycle
-  hooks for root and delegated agents; it is not the intended CLI foundation.
+  Phoenix integration: a PubSub bridge for any `Tackle.Runtime` agent and a
+  LiveView event reducer. It owns no agent process and is not the intended CLI
+  foundation.
 - The library carries no MCP code or dependency. The inherited Anubis MCP bridge
   was extracted into [`packages/tackle_anubis`](packages/tackle_anubis/README.md)
   (`:tackle_anubis` / `Tackle.Anubis.*`), a breaking rename of the former

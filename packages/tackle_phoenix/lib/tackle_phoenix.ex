@@ -1,44 +1,21 @@
 defmodule Tackle.Phoenix do
   @moduledoc """
-  Tackle.Phoenix — the Phoenix runtime + UI glue for Tackle.Lib.
+  Tackle.Phoenix — Phoenix PubSub and LiveView glue for `Tackle.Runtime` agents.
 
-  `Tackle.Lib` is the stateless, framework-free agent core (loop, cancellation,
-  events, state). `Tackle.Phoenix` is the thin layer that runs that core inside
-  an OTP/Phoenix application: it owns the long-lived turn process, the
-  cancellation signal, PubSub fan-out of `Tackle.Lib.Event`s, turn settlement, and
-  the LiveView stream that renders the conversation.
+  The agent process belongs to a `Tackle.Runtime.AgentBackend`; this package
+  owns none. It relays an agent's events to Phoenix and renders them, so it
+  works with any backend, and LiveViews submit and cancel turns through the
+  runtime (`Tackle.Runtime.submit/2`, `Tackle.Runtime.cancel_turn/1`).
 
-  It deliberately owns *no* persistence, *no* billing/quota, *no* org scoping,
-  and *no* opinion about how a message looks. Those stay host-side behind small
-  behaviours, exactly where multi-tenant/billing logic belongs. This keeps
-  `Tackle.Phoenix` adoptable: a host wires its repo/pubsub/registry and a couple
-  of callbacks, and gets the generic runtime for free.
-
-  ## What Tackle.Phoenix provides
-
-    * `Tackle.Phoenix.Runner` — a GenServer that supervises one agent turn
-      (`Task.Supervisor.async_nolink`), owns the cancellation signal, fans
-      `Tackle.Lib.Event`s out over PubSub, and settles the turn
-      (`:ok` / `:error` / `:cancelled` → `:agent_turn_done`, crash →
-      `:agent_turn_failed`).
-    * `Tackle.Phoenix.RuntimeBackend` and `RuntimeSpec` — optional adapters that
-      let `Tackle.Runtime` supervise Phoenix root and child agents without
-      bypassing the host Store lifecycle.
-    * `Tackle.Phoenix.EventReducer` — a pure LiveView stream reducer that turns
+    * `Tackle.Phoenix.Bridge` — subscribes to one agent and broadcasts its
+      `Tackle.Lib.Event`s on a host-chosen `Phoenix.PubSub` topic, keeping the
+      in-flight answer text for views that join mid-turn.
+    * `Tackle.Phoenix.EventReducer` — a LiveView stream reducer that turns
       streamed `Tackle.Lib.Event`s into incrementally rendered messages.
-    * `Tackle.Phoenix.Chat` — a scaffold for a future LiveView mixin; use
-      `Tackle.Phoenix.EventReducer` directly for now.
-    * `Tackle.Phoenix.PubSub` — topic naming + dual-topic broadcast/subscribe.
+    * `Tackle.Phoenix.MessageView` — the host behaviour that decides how
+      messages are grouped and how a streaming message looks.
 
-  ## What the host provides
-
-    * A `Tackle.Phoenix.Store` implementation for persistence, enrichment,
-      quota and billing (org-scoped — never bypassed by this library).
-    * A `Tackle.Phoenix.MessageView` implementation for message grouping and
-      transient streaming-message rendering.
-    * Infrastructure modules (Registry, DynamicSupervisor, Task.Supervisor,
-      `Phoenix.PubSub`) supplied via config to the Runner.
-
-  See `Tackle.Lib` for the agent core this layer drives.
+  Authorization, persistence, quota, and billing stay with the host and its
+  backend.
   """
 end

@@ -1,24 +1,22 @@
 # Tackle.Phoenix
 
-`Tackle.Phoenix` runs the framework-free [`Tackle.Lib`](../tackle_lib/README.md) agent
-core inside an OTP/Phoenix application. It supplies a generic per-session
-Runner, cooperative cancellation ownership, PubSub fan-out, usage settlement,
-and a LiveView event reducer. The host still owns persistence, authorization,
-tenant scoping, quotas, billing, and message presentation.
+`Tackle.Phoenix` connects [`Tackle.Runtime`](../tackle_runtime/README.md)
+agents to Phoenix: it relays an agent's events over `Phoenix.PubSub` and
+renders them incrementally in a LiveView stream. It owns no agent process.
+The agent runs under a `Tackle.Runtime` scope through any
+`Tackle.Runtime.AgentBackend`, and the host keeps authorization, persistence,
+quota, billing, and message presentation.
 
-## Current status
+```text
+any AgentBackend agent ──Tackle.Runtime.subscribe──▶ Tackle.Phoenix.Bridge ──PubSub──▶ LiveViews
+LiveView ──Tackle.Runtime.submit / cancel_turn(agent_ref)──▶ agent
+```
 
-The reusable pieces are:
-
-- `Tackle.Phoenix.Runner`
-- `Tackle.Phoenix.Store`
-- `Tackle.Phoenix.PubSub`
-- `Tackle.Phoenix.EventReducer`
-- `Tackle.Phoenix.MessageView`
-
-`Tackle.Phoenix.Chat` is currently a **scaffold only**. Its moduledoc describes
-a future `use`-able LiveView mixin, but it does not inject mount or message
-handlers yet. Integrate the EventReducer manually as shown below.
+| Module | Purpose |
+|---|---|
+| `Tackle.Phoenix.Bridge` | Subscribes to one agent and broadcasts its events on a host-chosen topic; keeps in-flight answer text for views that join mid-turn |
+| `Tackle.Phoenix.EventReducer` | Turns streamed `Tackle.Lib.Event`s into an incrementally rendered LiveView stream |
+| `Tackle.Phoenix.MessageView` | Host behaviour: message grouping and the shape of a streaming message |
 
 ## Installation
 
@@ -43,402 +41,76 @@ separate top-level Git dependencies for them unless you need them directly;
 Mix will report diverging dependencies unless explicitly overridden. Mix's
 `:subdir` option requires Elixir 1.13 or newer.
 
-For local development, work from the repository checkout; its sibling
-packages are already present.
-
 `Tackle.Phoenix` requires Elixir `~> 1.18`, Phoenix LiveView `~> 1.1.33`, and
 Phoenix PubSub `~> 2.1`.
 
-## Responsibility split
+## 1. Run the agent under a runtime scope
 
-| Concern | Owner |
-|---|---|
-| LLM loop, messages, tools, events | `Tackle.Lib` |
-| Optional scopes, subagents, limits, fan-out | `Tackle.Runtime` |
-| Turn process, supervised task, cancellation token | `Tackle.Phoenix.Runner` |
-| PubSub topic and event/terminal broadcast | `Tackle.Phoenix.PubSub` |
-| Usage collection and terminal settlement ordering | `Tackle.Phoenix.Runner` |
-| Permission/quota gate | host `Tackle.Phoenix.Store` |
-| Trusted tenant/context enrichment | host `Tackle.Phoenix.Store` |
-| Session/message persistence and recovery | host `Tackle.Phoenix.Store` |
-| Pricing and billing | host `Tackle.Phoenix.Store` |
-| Message grouping and rendering shape | host `Tackle.Phoenix.MessageView` |
-| LiveView domain events and templates | host LiveView |
-
-The Runner has no permissive built-in Store. That is intentional: a production
-host cannot accidentally bypass tenant or billing policy by accepting a default.
-
-## Runtime architecture
-
-```text
-LiveView/API/job
-  │ run_turn
-  ▼
-host session facade
-  ▼
-Tackle.Phoenix.Runner (temporary GenServer, one user/session key)
-  ├── Store.before_turn              authorization/quota gate
-  ├── Store.enrich_state             trusted host context
-  ├── Store.persist_user_message     write-ahead user message
-  ├── Task.Supervisor.async_nolink
-  │     └── host agent.continue
-  │           └── Tackle.Lib loop + LLM + tools
-  ├── receive Tackle.Lib.Event
-  │     ├── optional pending assistant persistence
-  │     ├── usage/stat aggregation
-  │     └── Phoenix.PubSub broadcast
-  ├── Store.settle_turn              persistence + billing
-  ├── Store.after_turn               follow-up work
-  └── broadcast terminal result
-```
-
-The Runner appends and broadcasts the user message before starting the task,
-then calls `config.agent.continue/2`. It does not call `run/3`, because doing so
-would append the user message twice. The loop puts the turn's `event_callback`
-into every tool's context, so tools can emit progress and subagent events
-through the same Runner/PubSub path. The Runner does not add a
-`runtime_turn_id` to the tool context or background launch-envelope
-delivery: the Phoenix runtime backend currently rejects
-`:deliver`, so background inbox notifications do not have the root Session's
-turn-origin/hold-until-settled behavior.
-
-## 1. Start the OTP infrastructure
-
-Add a unique Registry, DynamicSupervisor, and Task.Supervisor. Reuse your
-application's existing Phoenix PubSub when possible.
+The agent is whatever your `Tackle.Runtime.AgentBackend` starts. Start one
+scope per conversation, with a trusted root spec your host built after
+authorizing the user:
 
 ```elixir
-# lib/my_app/application.ex
-children = [
-  {Phoenix.PubSub, name: MyApp.PubSub},
-  {Registry, keys: :unique, name: MyApp.AgentRegistry},
-  {DynamicSupervisor,
-   name: MyApp.AgentSessionSupervisor,
-   strategy: :one_for_one,
-   max_restarts: 5,
-   max_seconds: 60},
-  {Task.Supervisor, name: MyApp.AgentTaskSupervisor}
-]
+scope_spec =
+  Tackle.Runtime.ScopeSpec.new!(
+    backend: MyApp.AgentBackend,
+    root_spec: Tackle.Runtime.AgentSpec.new!(name: "root", config: trusted_config)
+  )
+
+{:ok, scope} = Tackle.Runtime.start_scope(scope_spec)
+agent_ref = scope.root_agent_ref
 ```
 
-Each Runner uses `restart: :temporary` and stops after 30 minutes of inactivity.
-Runners are started on demand and should reload state from the host Store/facade
-when recreated.
+See the [runtime README](../tackle_runtime/README.md) for the backend
+contract, subagents, and limits. The runtime's Registry is node-local: a
+clustered host needs sticky routing or its own ownership layer.
 
-The built-in Registry is node-local. If requests for one conversation can land
-on multiple cluster nodes, add sticky routing or a distributed ownership layer
-in the host; neither `Tackle.Phoenix` nor `Tackle.Runtime` provides cluster-wide
-process discovery.
+## 2. Start a bridge
 
-### Optional scoped runtime and subagents
-
-Use `Tackle.Phoenix.RuntimeBackend` when a Phoenix/SaaS host needs the reusable
-scope, subagent, or fan-out layer. Build a trusted
-`Tackle.Phoenix.RuntimeSpec` for the root and every allowlisted child profile,
-then create a `Tackle.Runtime.ScopeSpec` with
-`backend: Tackle.Phoenix.RuntimeBackend`.
-
-Each runtime-owned Runner receives a dedicated tool `Task.Supervisor`. Every
-child still executes the complete `Tackle.Phoenix.Store` lifecycle, including
-`before_turn/2`, persistence, settlement, and billing. Child profiles should
-use distinct host state/session identities; the runtime never invents tenant or
-persistence policy.
-
-## 2. Provide an agent module
-
-The Runner expects `config.agent.continue(state, opts)`. A thin host facade is
-recommended because it centralizes defaults and authorization checks:
+Start one bridge per agent you want to show, with a topic derived from the
+conversation identity you already authorize:
 
 ```elixir
-defmodule MyApp.Agent do
-  def new(opts \\ []) do
-    tools = Keyword.get(opts, :tools, MyApp.Agent.Tools.default())
-    context = Keyword.get(opts, :context, %{})
-
-    {:ok, llm} = Tackle.Lib.LLM.select(MyApp.AI.adapters(), Keyword.fetch!(opts, :model))
-
-    Tackle.Lib.new(
-      llm: llm,
-      tools: tools,
-      context: context,
-      system_prompt: MyApp.Agent.Prompt.build(tools, context),
-      hooks: Keyword.get(opts, :hooks, []),
-      llm_opts: Keyword.get(opts, :llm_opts, [])
-    )
-  end
-
-  def continue(%Tackle.Lib.State{} = state, opts) do
-    Tackle.Lib.continue(state, Keyword.put_new(opts, :llm_stream, true))
-  end
-end
+{:ok, _bridge} =
+  DynamicSupervisor.start_child(
+    MyApp.BridgeSupervisor,
+    {Tackle.Phoenix.Bridge,
+     agent_ref: agent_ref,
+     pubsub: MyApp.PubSub,
+     topic: "conversation:#{conversation.id}",
+     name: {:via, Registry, {MyApp.BridgeRegistry, conversation.id}}}
+  )
 ```
 
-`agent: Tackle.Lib` also satisfies `continue/2`, but a host facade is the right place
-to select tools, prompts, model defaults, and any fail-closed authorization
-checks.
+The bridge is `restart: :transient`. It stops normally after broadcasting
+`{:agent_down, reason}` when the agent exits. A backend may also return the
+bridge's child spec from `services/2`, so it starts and stops with its agent.
 
-## 3. Implement the Store
-
-`Tackle.Phoenix.Store` is the main host integration boundary. The following
-sample is deliberately minimal and suitable only for an ephemeral/local proof
-of concept:
+Subscribers receive:
 
 ```elixir
-defmodule MyApp.AgentStore do
-  @behaviour Tackle.Phoenix.Store
-
-  @impl true
-  def before_turn(_host_state, _opts), do: :ok
-
-  @impl true
-  def enrich_state(host_state, state, opts) do
-    trusted_context = %{
-      actor_id: host_state.actor_id,
-      tenant_id: host_state.tenant_id,
-      scope: host_state.scope,
-      turn_metadata: Keyword.get(opts, :turn_metadata, %{})
-    }
-
-    %{state | context: Map.merge(state.context, trusted_context)}
-  end
-
-  @impl true
-  def persist_user_message(host_state, _state, _message), do: host_state
-
-  @impl true
-  def settle_turn(host_state, _result, _usage, _opts), do: host_state
-
-  @impl true
-  def current_session_id(host_state), do: host_state.session_id
-
-  @impl true
-  def handle_turn_failed(host_state, _reason, _opts), do: {host_state, nil}
-end
+{:agent_event, %Tackle.Lib.Event{}}   # every event, auxiliary ones included
+{:agent_down, reason}                 # the agent process exited
 ```
 
-A production Store should implement these phases:
+A turn ends with a `:turn_end` event whose `data.status` is `:completed`,
+`:error`, or `:cancelled`. A turn task that crashes without the backend
+publishing `:turn_end` is only reported once the agent exits, so backends
+should publish one for every turn they start.
 
-### `before_turn(host_state, turn_opts)`
+## 3. Implement MessageView
 
-Run before any provider work. Re-authorize the persisted session identity and
-check quota/credits/rate limits here. Return `:ok` or `{:error, reason}`. Any
-other value fails closed as `:turn_rejected`.
-
-Do not trust `organization_id`, `tenant_id`, or permissions merely because they
-appear in caller options. Resolve them from authenticated or persisted identity.
-
-### `enrich_state(host_state, agent_state, turn_opts)`
-
-Return `%Tackle.Lib.State{}` with trusted host context. This is the right place for
-scope, permissions, persisted session identity, correlation metadata, telemetry
-configuration, and additional hooks.
-
-The Runner treats context as opaque and only Tackle.Lib/tools/hooks read it.
-
-### `persist_user_message(host_state, agent_state, message)`
-
-Persist the user message before starting provider work and return updated host
-state. When the host has already performed a durable write, call `run_turn` with
-both `user_message_id:` and `pre_persisted_message?: true` to avoid inserting it
-again.
-
-### `persist_pending_message(host_state, data, turn_opts)` (optional)
-
-Called best-effort on assistant `:message_start`. A host can create an in-flight
-row before deltas arrive, then finalize it after `:message_end` or at settlement.
-The three-argument callback is preferred; a legacy two-argument callback is
-also accepted.
-
-### `settle_turn(host_state, result, usage, turn_opts)`
-
-Called for `{:ok, state}`, `{:error, state}`, and `{:cancelled, state}` after the
-supervised task returns. Persist final messages/session status and apply billing
-using the already aggregated `%Tackle.Lib.Usage{}`.
-
-Charge actual usage on error/cancel when the provider already consumed tokens.
-Keep settlement idempotent because process failure and recovery can revisit
-unfinished records.
-
-### `after_turn(host_state, result, turn_opts)` (optional)
-
-Run host follow-ups after settlement, such as title generation or delivery
-recovery. Keep this bounded; it runs in the Runner process.
-
-### `handle_turn_failed(host_state, reason, turn_opts)`
-
-Called when the supervised task crashes/exits rather than returning a normal
-Tackle.Lib result. `turn_opts[:turn_usage]` contains usage observed before the crash.
-Return `{updated_host_state, recovered_agent_state_or_nil}`.
-
-### `init_host/1` and `handle_host_message/2` (optional)
-
-Use these to subscribe a Runner to a private host transport or recover durable
-mailbox work. `handle_host_message/2` may return:
-
-```elixir
-:unhandled
-{:noreply, updated_host_state}
-{:run_turn, updated_host_state, input, turn_opts}
-```
-
-The last form sends host-delivered input through the same gate, correlation,
-persistence, cancellation, telemetry, billing, and settlement lifecycle as a
-public turn. A host can use this seam for durable parent/child agent delivery.
-
-## 4. Build Runner configuration
-
-Hide the map behind a host module so LiveViews never know infrastructure names:
-
-```elixir
-defmodule MyApp.AgentSession do
-  alias Tackle.Phoenix.Runner
-
-  @config %{
-    registry: MyApp.AgentRegistry,
-    dynamic_supervisor: MyApp.AgentSessionSupervisor,
-    task_supervisor: MyApp.AgentTaskSupervisor,
-    pubsub: MyApp.PubSub,
-    store: MyApp.AgentStore,
-    agent: MyApp.Agent
-  }
-
-  def get_or_start(user_id, opts \\ []) do
-    Runner.get_or_start(@config, user_id, prepare_start_opts(user_id, opts))
-  end
-
-  def snapshot(user_id, opts \\ []) do
-    Runner.snapshot(@config, user_id, prepare_start_opts(user_id, opts))
-  end
-
-  def subscribe(user_id, session_id) do
-    Runner.subscribe(@config, user_id, session_id)
-  end
-
-  def run_turn(user_id, state, input, opts \\ []) do
-    Runner.run_turn(@config, user_id, state, input, prepare_start_opts(user_id, opts))
-  end
-
-  def continue_turn(user_id, state, opts \\ []) do
-    Runner.continue_turn(@config, user_id, state, prepare_start_opts(user_id, opts))
-  end
-
-  def cancel_turn(pid), do: Runner.cancel_turn(pid)
-
-  defp prepare_start_opts(user_id, opts) do
-    session_id = Keyword.get(opts, :session_id)
-    {agent_state, host_state} = MyApp.AgentPersistence.load(user_id, session_id)
-
-    opts
-    |> Keyword.put_new(:agent_state, agent_state)
-    |> Keyword.put_new(:host_state, host_state)
-  end
-end
-```
-
-When creating/reloading a Runner, pass both:
-
-```elixir
-[
-  session_id: persisted_session_id,
-  agent_state: reconstructed_tackle_state,
-  host_state: initialized_store_state
-]
-```
-
-The host facade should load these from durable storage. `Runner.get_or_start/3`
-otherwise needs enough state for the Store and agent to work.
-
-## Runner API
-
-| Function | Purpose |
-|---|---|
-| `get_or_start/3` | Resolve/start runner for user + optional session |
-| `get_state/3` | Read in-memory Tackle.Lib state |
-| `snapshot/3` or `snapshot/1` | Atomically read agent state, session ID, active turn, runner pid |
-| `replace_state/3` | Replace host and agent state when idle |
-| `update_state/4` | Replace only agent state |
-| `get_session_id/3` | Read Store's current persisted session ID |
-| `subscribe/3` | Subscribe caller to the session topic |
-| `run_turn/5` | Append a user message and start a turn |
-| `continue_turn/4` | Retry without appending a user message |
-| `cancel_turn/1` | Request cooperative cancellation |
-
-Only one turn can run per Runner. Concurrent `run_turn`/`continue_turn` calls
-return `{:error, :turn_in_progress}` without disturbing the accepted turn.
-A caller with an outdated transcript/model projection receives
-`{:error, :stale_agent_state}`; reload via `snapshot/1` before retrying. This
-prevents an older LiveView or job from replacing already-settled messages.
-Hosts still control updates to *idle* state with `update_state/4`.
-
-`replace_state/3` and `update_state/4` also return `{:error, :turn_in_progress}`
-while a task is active. Prefer `snapshot/1` over separate state/status calls so a
-LiveView does not race a running turn.
-
-### Correlated/pre-persisted inputs
-
-`run_turn/5` accepts these optional correlation values:
-
-- `:user_message_id` — non-empty binary, at most 255 bytes;
-- `:pre_persisted_message?` — boolean; `true` requires `user_message_id`;
-- `:turn_metadata` — either `%{}` or exactly `kind` + `source_session_id` with
-  bounded binary values.
-
-Invalid values return `{:error, {:invalid_turn_option, field}}`. The closed
-metadata shape prevents arbitrary caller data from entering durable routing and
-telemetry paths.
-
-## PubSub contract
-
-Subscribe with:
-
-```elixir
-Tackle.Phoenix.Runner.subscribe(config, user_id, session_id)
-```
-
-The subscriber receives:
-
-```elixir
-{:agent_event, %Tackle.Lib.Event{}}
-{:agent_turn_done, {:ok | :error | :cancelled, %Tackle.Lib.State{}}}
-{:agent_turn_failed, reason}
-```
-
-Topic names are:
-
-```text
-agent:session:current:<user_id>   # no persisted session yet
-agent:session:<byte length of user_id>:<user_id>:<session_id>  # durable session
-```
-
-Persisted-session topics include the user key, so identical session IDs in
-separate user/tenant scopes cannot share broadcasts. If upgrading from older
-versions that used `agent:session:<session_id>`, reconnect subscribers using
-`Runner.subscribe/3` rather than retaining hard-coded topic strings.
-
-When the first user message creates a persisted session during the turn,
-`broadcast_turn/4` sends to both the current-user topic and new session topic.
-Preserve this behavior in wrappers; otherwise a LiveView subscribed before the
-session existed will silently lose first-turn updates.
-
-## LiveView integration
-
-### Implement MessageView
-
-The EventReducer deliberately does not decide what a message bubble looks like:
+The EventReducer does not decide what a message bubble looks like:
 
 ```elixir
 defmodule MyAppWeb.AgentMessageView do
   @behaviour Tackle.Phoenix.MessageView
 
   @impl true
-  def group_messages(messages) do
-    Enum.map(messages, &{:visible, &1})
-  end
+  def group_messages(messages), do: Enum.map(messages, &{:visible, &1})
 
   @impl true
-  def new_streaming_message do
-    %{content: "", html: ""}
-  end
+  def new_streaming_message, do: %{content: "", html: ""}
 
   @impl true
   def append_streaming_delta(entry, delta) do
@@ -449,46 +121,46 @@ end
 ```
 
 A richer host can group assistant tool-call and tool-result messages into
-collapsible internal-work blocks while leaving final answers visible. The
-reducer treats the returned block shape as opaque stream content.
+collapsible internal-work blocks; the reducer treats blocks as opaque.
 
-### Initialize the stream
+## 4. Wire the LiveView
+
+Subscribe before reading the snapshot and the in-flight text, so no event is
+lost between them:
 
 ```elixir
-alias Tackle.Phoenix.EventReducer
+alias Tackle.Phoenix.{Bridge, EventReducer}
 
 @impl true
-def mount(_params, _session, socket) do
-  user_id = socket.assigns.current_scope.user.id
-  session_id = nil
+def mount(%{"id" => id}, _session, socket) do
+  # Authorize the user for this conversation first, then:
+  {agent_ref, bridge} = MyApp.Conversations.agent!(socket.assigns.current_scope, id)
 
-  if connected?(socket) do
-    :ok = MyApp.AgentSession.subscribe(user_id, session_id)
-  end
+  if connected?(socket), do: :ok = Phoenix.PubSub.subscribe(MyApp.PubSub, "conversation:#{id}")
 
-  snapshot = MyApp.AgentSession.snapshot(user_id, session_id: session_id)
+  {:ok, %{agent_state: agent_state} = snapshot} = Tackle.Runtime.session_snapshot(agent_ref)
 
   {:ok,
    socket
+   |> assign(agent_ref: agent_ref, agent_state: agent_state)
+   # Snapshots are backend-specific; `Tackle.Session` reports `:active_turn`.
+   |> assign(:processing, Map.get(snapshot, :active_turn) != nil)
    |> assign(:tackle_message_view, MyAppWeb.AgentMessageView)
-   |> assign(:agent_state, snapshot.agent_state)
-   |> assign(:processing, snapshot.turn_active?)
-   |> assign(:runner_pid, snapshot.runner_pid)
-   |> EventReducer.init_stream(snapshot.agent_state)}
+   |> EventReducer.init_stream(agent_state)
+   |> EventReducer.restore_streaming_messages(Bridge.streaming(bridge))}
 end
 ```
 
-The reducer requires these assigns:
+The snapshot's shape is the backend's; most return `%{agent_state: state}`.
+A delta broadcast while the view joins may appear twice in the provisional
+text; the settled message replaces it on `:message_end`.
 
-- `:agent_state`
-- `:streaming_messages`
-- `:tackle_message_view`
-
-It manages the `:agent_messages` LiveView stream. Keep its stream container
-mounted at all times; do not conditionally mount a `phx-update="stream"`
-container while events may arrive.
-
-### Reduce events and settle turns
+The reducer requires the `:agent_state` and `:tackle_message_view` assigns and
+manages the `:agent_messages` stream (`EventReducer.stream_name/0`). Set
+`:tackle_stream_rows?` to `true` to render in-flight messages as
+`{:streaming, entry}` rows in that stream; otherwise render
+`@streaming_messages` yourself. Keep the stream container mounted at all
+times.
 
 ```elixir
 @impl true
@@ -496,189 +168,88 @@ def handle_info({:agent_event, %Tackle.Lib.Event{} = event}, socket) do
   socket =
     socket
     |> handle_domain_event(event)
-    |> Tackle.Phoenix.EventReducer.handle_tackle_event(event)
+    |> EventReducer.handle_tackle_event(event)
 
-  {:noreply, socket}
-end
-
-def handle_info({:agent_turn_done, {status, %Tackle.Lib.State{} = state}}, socket)
-    when status in [:ok, :error, :cancelled] do
   socket =
-    socket
-    |> assign(:agent_state, state)
-    |> assign(:processing, false)
-    |> assign(:runner_pid, nil)
-    |> Tackle.Phoenix.EventReducer.sync_message_stream(state)
-    |> Tackle.Phoenix.EventReducer.clear_streaming_messages()
+    if event.type == :turn_end, do: assign(socket, :processing, false), else: socket
 
   {:noreply, socket}
 end
 
-def handle_info({:agent_turn_failed, reason}, socket) do
+def handle_info({:agent_down, reason}, socket) do
   {:noreply,
    socket
-   |> assign(:processing, false)
-   |> assign(:runner_pid, nil)
-   |> assign(:agent_error, reason)
-   |> Tackle.Phoenix.EventReducer.clear_streaming_messages()}
+   |> assign(processing: false, agent_error: reason)
+   |> EventReducer.clear_streaming_messages()}
 end
 ```
 
-`EventReducer` handles `:message_start`, visible content
-`:message_delta`, `:retry_scheduled`, and `:message_end`. A retry clears the
-provisional streaming entry for that pending message ID before replacement
-deltas arrive. It intentionally ignores reasoning and
-tool-input deltas for the visible bubble. Handle domain-specific events such as
-navigation, resource previews, or current-tool indicators before/after invoking
+`EventReducer` handles `:message_start`, visible content `:message_delta`,
+`:retry_scheduled`, `:message_end`, and `:turn_end`. A retry clears the
+provisional entry of that message; a finished turn clears every in-flight
+entry. Reasoning and tool-input deltas never reach the visible bubble. Handle
+domain events such as navigation or current-tool indicators before or after
 the reducer.
 
-### Start and cancel a turn
+Submit and cancel through the runtime:
 
 ```elixir
-case MyApp.AgentSession.run_turn(user_id, socket.assigns.agent_state, input,
-       session_id: socket.assigns.session_id,
-       tenant_id: socket.assigns.current_scope.tenant.id
-     ) do
-  {:ok, runner_pid} ->
-    {:noreply, assign(socket, processing: true, runner_pid: runner_pid)}
-
-  {:error, reason} ->
-    {:noreply, assign(socket, processing: false, agent_error: reason)}
+def handle_event("submit", %{"input" => input}, socket) do
+  case Tackle.Runtime.submit(socket.assigns.agent_ref, input) do
+    {:ok, _turn} -> {:noreply, assign(socket, :processing, true)}
+    {:error, reason} -> {:noreply, assign(socket, :agent_error, reason)}
+  end
 end
-```
 
-```elixir
 def handle_event("cancel", _params, socket) do
-  :ok = MyApp.AgentSession.cancel_turn(socket.assigns.runner_pid)
-  {:noreply, socket}
+  case Tackle.Runtime.cancel_turn(socket.assigns.agent_ref) do
+    :ok -> {:noreply, socket}
+    {:error, reason} -> {:noreply, assign(socket, :agent_error, reason)}
+  end
 end
 ```
 
-Cancellation is cooperative. The Runner owns and deletes the signal, while the
-Tackle.Lib loop, provider adapter, and long-running tools must observe it.
+Cancellation is cooperative: the backend's loop, provider adapter, and
+long-running tools must observe the signal.
 
-## Persistence and recovery design
+## Guide: a multi-tenant SaaS host
 
-A robust durable host normally uses this sequence:
+Policy belongs in the backend that runs the agent, not in this package. A
+production backend usually:
 
-1. Load ordered persisted messages and rebuild a fresh `%Tackle.Lib.State{}` with
-   current trusted tools, prompt, model policy, and authorization.
-2. Before a turn, re-authorize persisted user/tenant identity and gate quota.
-3. Persist the user message before provider work.
-4. Optionally insert a pending assistant row at `:message_start`.
-5. Finalize messages idempotently by their stable Tackle.Lib IDs.
-6. On error/cancel/crash, mark pending rows interrupted rather than presenting
-   them as completed.
-7. Settle usage/billing exactly once with an idempotency key tied to the turn.
-8. On Runner restart, reload state and recover any durable pending deliveries.
+1. **Builds trusted specs.** Re-authorize the persisted user and tenant
+   before starting a scope or a turn, and rebuild tools, prompt, model policy,
+   and `Tackle.Lib.State.context` from current server-side state. Never trust
+   a persisted context wholesale.
+2. **Gates each turn before provider work.** Check quota, credits, and rate
+   limits in the backend's `:submit` before starting the loop; fail closed.
+3. **Persists the user message first.** Write it before the provider call, and
+   finalize assistant and tool messages idempotently by their stable
+   `Tackle.Lib` ids, for example from `:message_end` events or a
+   `Tackle.Lib.Committer`.
+4. **Settles exactly once.** Aggregate usage from `:usage` and `:step_end`
+   events and charge it when the turn ends, including on error, cancellation,
+   or a crashed turn task, with an idempotency key tied to the turn.
+5. **Recovers.** After a restart, reload the transcript, mark pending rows
+   interrupted, and resume durable deliveries.
+6. **Publishes `:turn_end` for every turn**, also when the turn task crashes,
+   so views settle.
 
-Do not persist and later trust `%Tackle.Lib.State.context` wholesale. Authorization,
-organization membership, and tool availability may have changed. Rebuild them
-from current server-side state.
+Keep tenant assumptions out of `Tackle.Lib`; keep them in the backend, the
+agent factory, and the tools.
 
-### Conversation trees in a Phoenix host
+### Conversation trees
 
-Branching is a library capability, not a Phoenix feature. Every
-`%Tackle.Lib.State{}` keeps its conversation in a `Tackle.Lib.Tree`; a Phoenix
-host that offers in-session branching calls `Tackle.Lib.navigate/3` and persists
-its own entries through a `Tackle.Lib.Committer`, and nothing in this package
-requires the root harness or its `:disk_log` journal. A host that does not offer
-branching never navigates, and its sessions are single-branch trees. Once a
-session has branched, remember the reader contract: `State.messages` is the
-**active branch's** transcript, not the whole archive. Hosts that index or
-display the complete history read `Tackle.Lib.Tree.enumerate/1`, while model
-context is `State.model_messages/1` (the active branch with only its own
-compactions). Usage follows the same split: `Tackle.Lib.State.branch_usage/1`
-for the active path, and `Tackle.Lib.State.usage/1` for the archive. The runner
-amends a settled message only through `Tackle.Lib.State.update_message/3` (it
-attaches usage reported only through events to the final answer), so the tree
-and the transcript never disagree.
-
-## Telemetry
-
-Runner turns emit:
-
-```text
-[:tackle, :phoenix, :turn, :start]
-[:tackle, :phoenix, :turn, :stop]
-[:tackle, :phoenix, :turn, :exception]
-```
-
-The events are `Tackle.Lib.Telemetry` spans. Stop measurements include
-duration, count, iteration count, and tool-call count. Every event's metadata
-includes the operation (`:run`/`:continue`), the host's `telemetry_metadata:`
-(supply bounded correlation there when starting a turn), and the
-`telemetry_ref` that correlates the events; stop adds the bounded outcome.
-Exception events add `kind` and a bounded `error_type`: `:task_exit` when the
-turn task exits, `:runner_terminated` when the runner stops mid-turn (both
-`kind: :exit`), and `:call_failed` when the call to the runner itself fails.
-
-An optional `:telemetry_adapter` in Runner config may implement
-`with_context(telemetry_ref, fun)` to carry an OpenTelemetry span/context into
-the supervised turn task and tool execution. A host can use this to preserve
-parent/child span relationships without placing prompts or payloads in
-telemetry metadata.
-
-Core Tackle.Lib separately emits tool-execution telemetry documented in the core
-README.
-
-## Example host implementation
-
-A production host can split its wiring as follows:
-
-| Layer | File | Responsibility |
-|---|---|---|
-| Supervision | `lib/my_app/application.ex` | Registry, DynamicSupervisor, Task.Supervisor, PubSub |
-| Host session API | `lib/my_app/agent/session.ex` | Runner config, DB bootstrap, reload/switch/subscribe API |
-| Store | `lib/my_app/agent/session_store.ex` | Ecto persistence, tenant reauthorization, quota, billing, recovery |
-| Agent factory | `lib/my_app/agent/agent.ex` | tools, model, prompt, hooks, session auth reconstruction |
-| LLM adapter | `lib/my_app/ai/tackle_adapter.ex` | provider/native-tool translation and streaming |
-| Persistence hook | `lib/my_app/agent/hooks/persistence.ex` | incremental idempotent message finalization |
-| LiveViews | `lib/my_app_web/live/agent_panel_live.ex`, `agent_sessions_live/show.ex` | subscription, submit/retry/cancel, domain events |
-| MessageView | `lib/my_app_web/components/agent_chat.ex` | grouping, markdown, rich tool presentation |
-| Telemetry | `lib/my_app/telemetry/open_telemetry/agent_workflow.ex` | generic telemetry to OpenTelemetry spans |
-
-### Example production policies
-
-These are intentionally outside `tackle_phoenix`:
-
-- organization is the tenant boundary;
-- persisted session identity is re-authorized before every turn;
-- organization subscription limits gate the turn before the LLM call;
-- normalized usage is charged at settlement, including consumed usage on
-  failures/cancellation;
-- user, assistant, and tool messages are stored in Ecto with stable ordering;
-- pending assistant rows are recovered/marked interrupted after crashes;
-- UI tools and data tools have different surface allowlists;
-- durable child agents use Store mailbox callbacks plus host database state;
-- only an explicitly safe subset of tools is exposed through MCP.
-
-The reusable lesson is to keep these policies in the Store, agent factory, and
-tool implementations rather than adding tenant assumptions to Tackle.Lib itself.
-
-## Production checklist
-
-- [ ] Start Registry, DynamicSupervisor, Task.Supervisor, and PubSub.
-- [ ] Hide Runner config behind a host facade.
-- [ ] Implement every required Store callback.
-- [ ] Fail closed in `before_turn/2`.
-- [ ] Derive tenant scope from trusted identity in `enrich_state/3`.
-- [ ] Persist user messages before starting provider work.
-- [ ] Make message and billing settlement idempotent.
-- [ ] Recover or interrupt pending rows after crashes.
-- [ ] Use `snapshot/1` for atomic UI reconciliation.
-- [ ] Handle all event, done, and failed PubSub messages.
-- [ ] Keep the LiveView stream container mounted.
-- [ ] Observe cancellation in provider adapters and long-running tools.
-- [ ] Plan node affinity/distributed ownership for a clustered deployment.
-- [ ] Attach bounded telemetry without prompt/tool payloads.
-- [ ] Do not rely on `Tackle.Phoenix.Chat` until it has a real implementation.
+Branching is a library capability. Every `%Tackle.Lib.State{}` keeps its
+conversation in a `Tackle.Lib.Tree`; `State.messages` is the **active
+branch's** transcript. Hosts that index the whole history read
+`Tackle.Lib.Tree.enumerate/1`, and model context is `State.model_messages/1`.
+Usage follows the same split: `Tackle.Lib.State.branch_usage/1` for the
+active path, `Tackle.Lib.State.usage/1` for the archive. `EventReducer`
+renders `State.messages`.
 
 ## Source guide
 
-- `lib/tackle_phoenix/runner.ex` — authoritative process/turn lifecycle
-- `lib/tackle_phoenix/store.ex` — host persistence/policy contract
-- `lib/tackle_phoenix/pub_sub.ex` — topic and dual-broadcast contract
+- `lib/tackle_phoenix/bridge.ex` — runtime subscription and PubSub relay
 - `lib/tackle_phoenix/event_reducer.ex` — LiveView stream reducer
 - `lib/tackle_phoenix/message_view.ex` — host rendering behaviour
-- `lib/tackle_phoenix/chat.ex` — future mixin scaffold
