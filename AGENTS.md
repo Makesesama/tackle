@@ -139,7 +139,9 @@ Burrito, or lint commands for tooling that has not been wired up.
 - `packages/tackle_runtime/`: reusable OTP orchestration above `tackle_lib`,
   including scopes, stable refs, admission limits, per-agent tool supervision,
   subagents, and workflows. Hosts provide an agent backend for their lifecycle
-  and persistence policy.
+  and persistence policy, or use `Tackle.Runtime.LoopAgent`, the ready-made
+  in-memory backend that runs `Tackle.Lib` loops (the hub and review tests
+  use it).
 - `packages/tackle_tools/`: the coding tools `read`, `bash`, `edit`, and
   `write` (`Tackle.Tools.*`) and their executors (`Tackle.Executor.Local`,
   `Tackle.Executor.Jailed`), on `tackle_lib` and `tackle_exec` only, so hosts

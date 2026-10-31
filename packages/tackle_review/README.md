@@ -38,9 +38,9 @@ The scope's runtime backend must implement the optional
 `Tackle.Runtime.AgentBackend` callbacks `configure/2`, `describe/1`, and
 `llm/1`, which the review uses to give each stage its model, thinking level,
 step limit, and per-run context, and to call the scorer's model. The
-harness's `Tackle.Runtime.RootBackend` implements them, and so does the test
-backend in `test/support/backend.ex`, which runs `Tackle.Lib` loops directly
-and shows the smallest host a review needs.
+harness's `Tackle.Runtime.RootBackend` implements them, and so does
+`Tackle.Runtime.LoopAgent`, which runs `Tackle.Lib` loops directly and is the
+smallest host a review needs; the review's own tests run on it.
 
 The harness (`packages/tackle`) is one host: `Tackle.LocalReview` adds the
 local session's settings, rules discovered in `$TACKLE_HOME/review/rules` and

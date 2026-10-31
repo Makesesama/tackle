@@ -1,26 +1,26 @@
-defmodule Tackle.Hub.AgentBackendTest do
+defmodule Tackle.Hub.AgentConfigTest do
   use ExUnit.Case, async: true
 
-  alias Tackle.Hub.{AgentBackend, CredentialStore, ReviewAdapter}
-  alias Tackle.Lib.{Cancellation, Event}
+  alias Tackle.Hub.{AgentConfig, CredentialStore, ReviewAdapter}
+  alias Tackle.Lib.Cancellation
   alias Tackle.Review
   alias Tackle.Review.{Change, Diff, Finding}
   alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
   alias Tackle.Runtime
-  alias Tackle.Runtime.{AgentSpec, Outcome, ScopeSpec}
+  alias Tackle.Runtime.{AgentSpec, LoopAgent, ScopeSpec}
 
   @moduletag :capture_log
 
   @owner_id "00000000-0000-4000-8000-000000000001"
 
-  test "spec callbacks select models, merge context/options, validate limits and keep the stable store" do
+  test "review agents keep the owner's credential store through reconfiguration" do
     spec = spec("agent", fn _, opts -> ReviewAdapter.answer(opts) end, context: %{cwd: "/repo"})
 
-    assert AgentBackend.validate_spec(spec) == :ok
-    assert {:error, _reason} = AgentBackend.validate_spec(%{spec | config: %{}})
+    assert LoopAgent.validate_spec(spec) == :ok
+    assert {:error, _reason} = LoopAgent.validate_spec(%{spec | config: %{}})
 
     assert {:ok, configured} =
-             AgentBackend.configure(spec,
+             LoopAgent.configure(spec,
                model: "scripted/verifier",
                thinking: "high",
                max_steps: 4,
@@ -28,21 +28,21 @@ defmodule Tackle.Hub.AgentBackendTest do
                llm_opts: [prompt_cache_key: "review", credential_store: {:wrong, make_ref()}]
              )
 
-    assert AgentBackend.model_ref(configured) == "scripted/verifier"
+    assert LoopAgent.model_ref(configured) == "scripted/verifier"
     assert configured.config.context == %{cwd: "/repo", review: :run}
 
     assert %{model: "scripted/verifier", thinking: "high", max_steps: 4} =
-             AgentBackend.describe(configured)
+             LoopAgent.describe(configured)
 
-    assert {:ok, client} = AgentBackend.llm(configured)
+    assert {:ok, client} = LoopAgent.llm(configured)
     assert client.llm_opts[:credential_store] == CredentialStore.handle(@owner_id)
     assert client.llm_opts[:prompt_cache_key] == "review"
     assert client.llm_opts[:test_pid] == self()
-    assert {:error, _reason} = AgentBackend.select_model(spec, "unconfigured/model")
-    assert {:error, _reason} = AgentBackend.configure(spec, thinking: "huge")
-    assert {:error, :invalid_max_steps} = AgentBackend.configure(spec, max_steps: 0)
-    assert {:error, _reason} = AgentBackend.configure(spec, context: nil)
-    assert {:error, _reason} = AgentBackend.configure(spec, unknown: true)
+    assert {:error, _reason} = LoopAgent.select_model(spec, "unconfigured/model")
+    assert {:error, _reason} = LoopAgent.configure(spec, thinking: "huge")
+    assert {:error, :invalid_max_steps} = LoopAgent.configure(spec, max_steps: 0)
+    assert {:error, _reason} = LoopAgent.configure(spec, context: nil)
+    assert {:error, _reason} = LoopAgent.configure(spec, unknown: true)
   end
 
   test "a whole review detects, verifies, scores and forwards events without a harness or live provider" do
@@ -96,87 +96,7 @@ defmodule Tackle.Hub.AgentBackendTest do
            end)
   end
 
-  test "delegation inherits the parent's current model/thinking and reports the terminal outcome" do
-    script = fn _, opts -> ReviewAdapter.answer(opts) end
-    scope = scope(spec("root", script))
-
-    assert {:ok, _snapshot} =
-             Runtime.reconfigure(scope.root_agent_ref,
-               model: "scripted/verifier",
-               thinking: "medium"
-             )
-
-    child = %{spec("child", script) | model_source: :parent}
-    assert {:ok, run} = Runtime.request_agent(scope.root_agent_ref, child, "Review")
-    assert %Outcome{status: :ok} = result = Runtime.await(run, 5_000)
-    assert Outcome.answer(result) == "done"
-    assert result.agent_state.llm.ref == "scripted/verifier"
-    assert result.agent_state.llm_opts[:reasoning_effort] == "medium"
-    assert result.agent_state.context.runtime == run.agent_ref
-    assert AgentBackend.outcome(result, run.agent_ref) == result
-  end
-
-  test "one active turn, streaming subscriptions and cooperative cancellation on both entry points" do
-    scope = scope(spec("root", &ReviewAdapter.block/2))
-    root = scope.root_agent_ref
-    assert {:ok, _snapshot} = Runtime.subscribe(root)
-    assert {:ok, _snapshot} = Runtime.subscribe(root)
-    assert {:ok, _turn} = Runtime.submit(root, "wait")
-    assert_receive {:model_call, _pid, nil, opts}, 2_000
-    assert_receive {:tackle_runtime_event, %Event{type: :message_delta}}, 2_000
-    assert {:error, :busy} = Runtime.submit(root, "again")
-    assert {:error, :busy} = Runtime.reconfigure(root, thinking: "high")
-    assert :ok = Runtime.cancel_turn(root)
-    assert_receive {:tackle_runtime_event, %Event{type: :turn_cancelled}}, 2_000
-    assert :ok = eventually(fn -> settled?(root, :cancelled) end)
-    refute Cancellation.cancelled?(opts[:cancellation_signal])
-
-    assert {:ok, _turn} = Runtime.submit(root, "wait again")
-    assert_receive {:model_call, _pid, nil, _opts}, 2_000
-    {:ok, pid} = Runtime.session_pid(root)
-    send(pid, {:runtime_cancel, :test_cancel})
-    assert :ok = eventually(fn -> settled?(root, :cancelled) end)
-    assert :ok = Runtime.unsubscribe(root)
-    assert :ok = Runtime.unsubscribe(root)
-    assert :sys.get_state(pid).subscribers == %{}
-  end
-
-  test "provider errors settle as library errors; a killed turn reports a runtime error" do
-    scope = scope(spec("root", &ReviewAdapter.block/2))
-    failed = spec("failed", fn _, _ -> {:error, :provider_unavailable} end)
-    assert {:ok, run} = Runtime.request_agent(scope.root_agent_ref, failed, "Review")
-    assert %Outcome{status: :error, agent_state: %{error: error}} = Runtime.await(run, 5_000)
-    assert error =~ "provider_unavailable"
-    _ = calls()
-
-    blocked = spec("blocked", &ReviewAdapter.block/2)
-    assert {:ok, run} = Runtime.request_agent(scope.root_agent_ref, blocked, "Review")
-    assert_receive {:model_call, pid, nil, _opts}, 2_000
-    Process.exit(pid, :kill)
-    assert %Outcome{status: :runtime_error, reason: :killed} = Runtime.await(run, 5_000)
-  end
-
-  test "stopping the scope kills a turn which ignores cancellation" do
-    stubborn = fn _, _ -> receive do: (:never -> :never) end
-    scope = scope(spec("root", stubborn))
-    assert {:ok, _turn} = Runtime.submit(scope.root_agent_ref, "wait")
-    assert_receive {:model_call, pid, nil, _opts}, 2_000
-    monitor = Process.monitor(pid)
-    assert :ok = Runtime.stop_scope(scope.scope_ref)
-    assert_receive {:DOWN, ^monitor, :process, ^pid, _reason}, 2_000
-  end
-
-  test "step limits stop a tool-calling turn, and cancelling a review tears down delegated runs" do
-    looping = fn _, opts -> ReviewAdapter.report("missing_tool", %{}, opts) end
-    scope = scope(spec("root", looping))
-    child = spec("limited", looping, max_steps: 1)
-    {:ok, run} = Runtime.request_agent(scope.root_agent_ref, child, "Review")
-
-    assert %Outcome{status: :error, agent_state: %{error: "Reached maximum iterations" <> _}} =
-             Runtime.await(run, 5_000)
-
-    _ = calls()
-
+  test "cancelling a review tears down its delegated runs" do
     profiles = %{
       "review-detector" =>
         spec("review-detector", &ReviewAdapter.block/2, tools: [ReportFindings]),
@@ -210,7 +130,7 @@ defmodule Tackle.Hub.AgentBackendTest do
 
   defp spec(name, script, opts \\ []) do
     {:ok, config} =
-      AgentBackend.config(
+      AgentConfig.new(
         Keyword.merge(
           [
             providers: [ReviewAdapter],
@@ -227,11 +147,9 @@ defmodule Tackle.Hub.AgentBackendTest do
     AgentSpec.new!(name: name, config: config, timeout: 5_000, allow_delegation: true)
   end
 
-  defp scope(root, profiles \\ %{}) do
+  defp scope(root, profiles) do
     {:ok, scope} =
-      Runtime.start_scope(
-        ScopeSpec.new!(backend: AgentBackend, root_spec: root, profiles: profiles)
-      )
+      Runtime.start_scope(ScopeSpec.new!(backend: LoopAgent, root_spec: root, profiles: profiles))
 
     on_exit(fn -> stop_scope(scope.scope_ref) end)
     scope
@@ -241,12 +159,6 @@ defmodule Tackle.Hub.AgentBackendTest do
     Runtime.stop_scope(ref)
   catch
     :exit, _reason -> :ok
-  end
-
-  defp settled?(ref, status) do
-    {:ok, pid} = Runtime.session_pid(ref)
-    state = :sys.get_state(pid)
-    state.task == nil and state.agent_state.status == status
   end
 
   defp eventually(fun, attempts \\ 200)

@@ -1,10 +1,9 @@
 defmodule Tackle.Review.Test.Scope do
   @moduledoc false
-  # Runtime scopes for review tests, on `Tackle.Review.Test.Backend`.
+  # Runtime scopes for review tests, on `Tackle.Runtime.LoopAgent`.
 
-  alias Tackle.Review.Test.Backend
   alias Tackle.Runtime
-  alias Tackle.Runtime.{AgentSpec, Limits, ScopeSpec}
+  alias Tackle.Runtime.{AgentSpec, Limits, LoopAgent, ScopeSpec}
 
   @doc """
   Starts a scope stopped when the test exits. `:root_config` is a backend
@@ -20,7 +19,7 @@ defmodule Tackle.Review.Test.Scope do
 
     spec =
       ScopeSpec.new!(
-        backend: Backend,
+        backend: LoopAgent,
         root_spec: root,
         limits: Keyword.get(opts, :limits, Limits.default()),
         profiles: Keyword.get(opts, :profiles, %{})

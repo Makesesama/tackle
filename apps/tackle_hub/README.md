@@ -728,13 +728,14 @@ Raw OAuth errors are not displayed because upstream responses may contain secret
 
 ### Agent backend
 
-`Tackle.Hub.AgentBackend` implements `Tackle.Runtime.AgentBackend` directly on
-`Tackle.Lib`, without local harness configuration, sessions or persistence.
-`config/1` takes explicit `providers`, `owner_id` (whose providers they are) and
-`model`, plus `tools`, `system_prompt`, `context`, `llm_opts`, `thinking` and
-`max_steps`. It always installs the owner's `CredentialStore.handle/1` in
-adapter options. Put the resulting config in an
-`AgentSpec` and choose this backend in the `ScopeSpec`.
+Review agents run on `Tackle.Runtime.LoopAgent`, the runtime's ready-made
+backend that runs `Tackle.Lib` loops without local harness configuration,
+sessions or persistence. `Tackle.Hub.AgentConfig.new/1` builds its
+configuration from explicit `providers`, `owner_id` (whose providers they are)
+and `model`, plus `tools`, `system_prompt`, `context`, `llm_opts`, `thinking`
+and `max_steps`, and always installs the owner's `CredentialStore.handle/1`,
+which `LoopAgent` keeps in every model call's adapter options. Put the
+resulting config in an `AgentSpec` and choose `LoopAgent` in the `ScopeSpec`.
 
 The backend supports review configuration callbacks, model/thinking inheritance,
 streaming subscriptions, snapshots, and one turn at a time. Cancellation is

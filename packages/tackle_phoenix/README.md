@@ -46,15 +46,25 @@ Phoenix PubSub `~> 2.1`.
 
 ## 1. Run the agent under a runtime scope
 
-The agent is whatever your `Tackle.Runtime.AgentBackend` starts. Start one
-scope per conversation, with a trusted root spec your host built after
-authorizing the user:
+The agent is whatever your `Tackle.Runtime.AgentBackend` starts; if an
+in-memory conversation is enough, use the ready-made
+`Tackle.Runtime.LoopAgent`. Start one scope per conversation, with a trusted
+root spec your host built after authorizing the user:
 
 ```elixir
+{:ok, config} =
+  Tackle.Runtime.LoopAgent.Config.new(
+    providers: MyApp.AI.providers_for(user),
+    model: "provider/model",
+    tools: MyApp.Agent.Tools.for(user),
+    hooks: [MyApp.Agent.PersistenceHook],
+    system_prompt: MyApp.Agent.Prompt.build(user)
+  )
+
 scope_spec =
   Tackle.Runtime.ScopeSpec.new!(
-    backend: MyApp.AgentBackend,
-    root_spec: Tackle.Runtime.AgentSpec.new!(name: "root", config: trusted_config)
+    backend: Tackle.Runtime.LoopAgent,
+    root_spec: Tackle.Runtime.AgentSpec.new!(name: "root", config: config)
   )
 
 {:ok, scope} = Tackle.Runtime.start_scope(scope_spec)
@@ -96,7 +106,8 @@ Subscribers receive:
 A turn ends with a `:turn_end` event whose `data.status` is `:completed`,
 `:error`, or `:cancelled`. A turn task that crashes without the backend
 publishing `:turn_end` is only reported once the agent exits, so backends
-should publish one for every turn they start.
+should publish one for every turn they start; `Tackle.Runtime.LoopAgent`
+does.
 
 ## 3. Implement MessageView
 
@@ -143,7 +154,7 @@ def mount(%{"id" => id}, _session, socket) do
   {:ok,
    socket
    |> assign(agent_ref: agent_ref, agent_state: agent_state)
-   # Snapshots are backend-specific; `Tackle.Session` reports `:active_turn`.
+   # Snapshots are backend-specific; `LoopAgent` and `Tackle.Session` report `:active_turn`.
    |> assign(:processing, Map.get(snapshot, :active_turn) != nil)
    |> assign(:tackle_message_view, MyAppWeb.AgentMessageView)
    |> EventReducer.init_stream(agent_state)
@@ -214,15 +225,21 @@ long-running tools must observe the signal.
 
 ## Guide: a multi-tenant SaaS host
 
-Policy belongs in the backend that runs the agent, not in this package. A
-production backend usually:
+Policy belongs in the host and the backend that runs the agent, not in this
+package. With `Tackle.Runtime.LoopAgent`, gate turns in the host before
+calling `Tackle.Runtime.submit/2`, and persist and settle in `Tackle.Lib.Hook`s
+(`after_message/3`, `after_turn/2`) or an event subscriber. Hooks do not run
+when the turn task crashes; settle such turns from the `:turn_end` event with
+status `:error`. Write your own backend when you need durable sessions or an
+inbox. A production host usually:
 
 1. **Builds trusted specs.** Re-authorize the persisted user and tenant
    before starting a scope or a turn, and rebuild tools, prompt, model policy,
    and `Tackle.Lib.State.context` from current server-side state. Never trust
    a persisted context wholesale.
 2. **Gates each turn before provider work.** Check quota, credits, and rate
-   limits in the backend's `:submit` before starting the loop; fail closed.
+   limits before submitting the turn (or in a backend's `:submit`); fail
+   closed.
 3. **Persists the user message first.** Write it before the provider call, and
    finalize assistant and tool messages idempotently by their stable
    `Tackle.Lib` ids, for example from `:message_end` events or a

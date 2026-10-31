@@ -9,9 +9,9 @@ defmodule Tackle.ReviewTest do
   alias Tackle.Review
   alias Tackle.Review.{Change, Detector, Diff, Finding, Result, Rules}
   alias Tackle.Review.Settings, as: ReviewSettings
-  alias Tackle.Review.Test.{Backend, Gauge, Scope}
+  alias Tackle.Review.Test.{Gauge, Scope}
   alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
-  alias Tackle.Runtime.{AgentSpec, Limits, ScopeSpec}
+  alias Tackle.Runtime.{AgentSpec, Limits, LoopAgent, ScopeSpec}
 
   defmodule Adapter do
     @moduledoc false
@@ -272,12 +272,12 @@ defmodule Tackle.ReviewTest do
 
   defp stage_spec(name, tool, script, opts \\ []) do
     {:ok, config} =
-      Backend.config(
+      LoopAgent.Config.new(
         providers: [Adapter],
         model: "review/fake",
         tools: [tool],
         system_prompt: "Review stage.",
-        max_iterations: Keyword.get(opts, :max_iterations, 6),
+        max_steps: Keyword.get(opts, :max_iterations, 6),
         llm_opts: [test_pid: self(), script: script]
       )
 
@@ -322,7 +322,7 @@ defmodule Tackle.ReviewTest do
   # A scope whose root agent only requests the review's runs.
   defp start_scope(opts) do
     {:ok, root_config} =
-      Backend.config(
+      LoopAgent.Config.new(
         providers: [Adapter],
         model: "review/fake",
         system_prompt: "Root.",
@@ -996,7 +996,7 @@ defmodule Tackle.ReviewTest do
     profiles = profiles(script, detector: inherit, verifier: inherit)
 
     {:ok, root_config} =
-      Backend.config(
+      LoopAgent.Config.new(
         providers: [Adapter],
         model: "review/fake",
         system_prompt: "Root.",
@@ -1005,7 +1005,7 @@ defmodule Tackle.ReviewTest do
 
     spec =
       ScopeSpec.new!(
-        backend: Backend,
+        backend: LoopAgent,
         root_spec: AgentSpec.new!(name: "root", config: root_config, allow_delegation: true),
         profiles: profiles
       )
@@ -1374,7 +1374,7 @@ defmodule Tackle.ReviewTest do
       profiles = profiles(script, detector: inherit, verifier: inherit)
 
       {:ok, root_config} =
-        Backend.config(
+        LoopAgent.Config.new(
           providers: [Adapter],
           model: "review/fake",
           thinking: "medium",
@@ -1384,7 +1384,7 @@ defmodule Tackle.ReviewTest do
 
       spec =
         ScopeSpec.new!(
-          backend: Backend,
+          backend: LoopAgent,
           root_spec: AgentSpec.new!(name: "root", config: root_config, allow_delegation: true),
           profiles: profiles
         )
@@ -1440,7 +1440,7 @@ defmodule Tackle.ReviewTest do
       profiles = profiles(script)
 
       {:ok, root_config} =
-        Backend.config(
+        LoopAgent.Config.new(
           providers: [Adapter],
           model: "review/fake",
           system_prompt: "Root.",
@@ -1449,7 +1449,7 @@ defmodule Tackle.ReviewTest do
 
       spec =
         ScopeSpec.new!(
-          backend: Backend,
+          backend: LoopAgent,
           root_spec: AgentSpec.new!(name: "root", config: root_config, allow_delegation: true),
           profiles: profiles
         )

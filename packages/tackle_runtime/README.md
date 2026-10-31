@@ -73,6 +73,46 @@ The root harness provides `Tackle.Runtime.RootBackend` for `Tackle.Session`.
 `Tackle.Phoenix` provides no backend: its `Tackle.Phoenix.Bridge` relays any
 backend's agent events over Phoenix PubSub.
 
+## Ready-made backend: `Tackle.Runtime.LoopAgent`
+
+Hosts that only need to run `Tackle.Lib` loops do not have to write a
+backend. `Tackle.Runtime.LoopAgent` runs one in-memory conversation per agent
+and one turn at a time in a linked task with the agent's tool supervisor:
+
+```elixir
+{:ok, config} =
+  Tackle.Runtime.LoopAgent.Config.new(
+    providers: providers,
+    model: "provider/model",
+    tools: tools,
+    hooks: [MyApp.AgentHooks],
+    system_prompt: "You review code.",
+    credential_store: MyApp.CredentialStore.handle(owner_id)
+  )
+
+scope_spec =
+  Tackle.Runtime.ScopeSpec.new!(
+    backend: Tackle.Runtime.LoopAgent,
+    root_spec: Tackle.Runtime.AgentSpec.new!(name: "root", config: config)
+  )
+```
+
+It supports `:submit`, `:continue`, `:cancel`, `:cancel_tool_call`,
+`:subscribe` (events arrive as `{:tackle_runtime_event, event}`; subscribers
+are monitored), `:unsubscribe`, `:snapshot` (`%{agent_state:, active_turn:}`),
+`:publish_event`, and `:reconfigure`, plus `prepare_child/2`,
+`select_model/2`, `configure/2`, `describe/1`, and `llm/1`, so it runs
+subagents, workflows, and code reviews. Models resolve only against the
+configuration's own providers, and a `:credential_store` handle stays in
+every model call's options. A crashed turn task publishes `:turn_end` with
+status `:error`, keeps the conversation from before the turn, and reports a
+`:runtime_error` outcome.
+
+It persists nothing and has no inbox (`:deliver` is unsupported). A host
+gates turns before submitting them and puts persistence or billing in
+`Tackle.Lib.Hook`s, or writes its own backend when it needs durable sessions
+or message delivery.
+
 ## Per-request model selection
 
 `Tackle.Runtime.request_agent/4` accepts `model: "provider/model"` to override a
@@ -82,7 +122,7 @@ argument. The runtime checks it is a non-empty string and passes it, after
 must resolve it only against the child's trusted configuration. Backends that
 do not implement `select_model/2` refuse such requests with
 `{:error, {:model_selection_unsupported, model}}` before admission.
-`Tackle.Runtime.RootBackend` implements it.
+`Tackle.Runtime.RootBackend` and `Tackle.Runtime.LoopAgent` implement it.
 
 ## Configuring trusted specs
 
@@ -105,7 +145,7 @@ by name, as a delegated request does, and `Tackle.Runtime.prepare_spec/2`
 applies `prepare_child/2` to a spec, both without starting a run. Backends without a callback return
 `{:error, {:unsupported_backend_callback, name}}`, and a raising callback
 returns `{:error, {:agent_backend_failed, message}}`.
-`Tackle.Runtime.RootBackend` implements all three.
+`Tackle.Runtime.RootBackend` and `Tackle.Runtime.LoopAgent` implement all three.
 
 ## Delegated inactivity timeouts
 

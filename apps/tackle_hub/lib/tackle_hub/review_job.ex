@@ -22,14 +22,14 @@ defmodule Tackle.Hub.ReviewJob do
 
   require Logger
 
-  alias Tackle.Hub.{AgentBackend, Feedback, Models, Posting, ReviewProgress}
+  alias Tackle.Hub.{AgentConfig, Feedback, Models, Posting, ReviewProgress}
   alias Tackle.Hub.Forges.Installation
   alias Tackle.Hub.ReviewJob.{Lifecycle, Store}
   alias Tackle.Hub.Reviews.ReviewRequest
   alias Tackle.Review
   alias Tackle.Review.{Change, Rules, Stages}
   alias Tackle.Review.Tools.{ReportFindings, ReportVerdict}
-  alias Tackle.Runtime.{AgentSpec, ScopeSpec}
+  alias Tackle.Runtime.{AgentSpec, LoopAgent, ScopeSpec}
   alias Tackle.Tools.{Bash, Read}
 
   @spec run(map()) :: :ok | {:error, String.t()}
@@ -193,7 +193,7 @@ defmodule Tackle.Hub.ReviewJob do
          {:ok, detector} <- stage(Stages.detector(), :detector, settings, common, ReportFindings),
          {:ok, verifier} <- stage(Stages.verifier(), :verifier, settings, common, ReportVerdict) do
       ScopeSpec.new(
-        backend: AgentBackend,
+        backend: LoopAgent,
         root_spec: root,
         profiles: %{detector.name => detector, verifier.name => verifier}
       )
@@ -213,7 +213,7 @@ defmodule Tackle.Hub.ReviewJob do
     {delegation, config_opts} = Keyword.pop(opts, :allow_delegation, false)
 
     with {:ok, config} <-
-           AgentBackend.config(Keyword.merge(common, [model: model] ++ config_opts)) do
+           AgentConfig.new(Keyword.merge(common, [model: model] ++ config_opts)) do
       AgentSpec.new(name: name, config: config, allow_delegation: delegation, timeout: 1_200_000)
     end
   end

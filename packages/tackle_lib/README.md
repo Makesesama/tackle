@@ -213,8 +213,8 @@ end
 
 `Tackle.Lib.run/3` is synchronous. A host that needs a long-lived or cancellable UI
 turn should run it in a supervised process, for example under a
-`tackle_runtime` scope through an `AgentBackend`; `tackle_phoenix` relays such
-an agent's events to LiveView.
+`tackle_runtime` scope with its ready-made `Tackle.Runtime.LoopAgent` backend;
+`tackle_phoenix` relays such an agent's events to LiveView.
 
 ## What is possible with Tackle.Lib?
 

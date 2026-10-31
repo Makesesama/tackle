@@ -204,7 +204,7 @@ Cancellation signals live in `Tackle.Lib`'s default store, whose ETS table is ow
 
 `Tackle.AgentSupervisor` owns root-agent scopes rather than every agent directly. All agents enter through a scope; there is no unscoped runtime fallback.
 
-Each concrete agent runs under `Tackle.Runtime.AgentSupervisor`, which owns the agent's dedicated tool `Task.Supervisor` and one backend child. The backend child is `Tackle.Session` in the root harness and the host's own agent process elsewhere (for example `Tackle.Hub.AgentBackend`). This keeps supervision reusable while leaving persistence, authorization, billing, and host delivery semantics in adapters.
+Each concrete agent runs under `Tackle.Runtime.AgentSupervisor`, which owns the agent's dedicated tool `Task.Supervisor` and one backend child. The backend child is `Tackle.Session` in the root harness, `Tackle.Runtime.LoopAgent` in hosts that only run in-memory `Tackle.Lib` loops (such as `tackle_hub`), or the host's own agent process. This keeps supervision reusable while leaving persistence, authorization, billing, and host delivery semantics in adapters.
 
 `WorkSupervisor` accepts heterogeneous temporary child specifications. It owns descendant agent subtrees, trusted work children, request helpers, and turn/awaiter Tasks. There is exactly one tool supervisor per agent, so a child never shares tool tasks with its parent and subtree termination cleans up every in-flight tool task for that agent.
 

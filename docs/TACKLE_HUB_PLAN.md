@@ -132,7 +132,7 @@ Tackle.Hub.Models        (Ash domain) Provider (+ encrypted credentials)
 Tackle.Hub.Accounts      (Ash domain) User (sign-in)
 Tackle.Hub.Forge                      behaviour (§7.1)
 Tackle.Hub.Forge.GitHub               GitHub App client, webhooks, posting
-Tackle.Hub.AgentBackend               runtime backend (§7.3)
+Tackle.Hub.AgentConfig                agent configuration on Tackle.Runtime.LoopAgent (§7.3)
 Tackle.Hub.CredentialStore            Tackle.Lib.CredentialStore on Postgres
 Tackle.Hub.Checkout                   clones and worktrees (§7.4)
 Tackle.Hub.ReviewJob                  runs one review request (§7.5)
@@ -368,9 +368,10 @@ README for console configuration.
   callbacks `configure/2`, `describe/1`, `llm/1`, `outcome/2`.
 - Nothing is persisted for review runs; the review result is what is kept.
 
-**Reference implementation**: `packages/tackle_review/test/support/backend.ex`
-is exactly this backend, minus credentials, and the review test suite runs
-whole reviews on it. Start from it; the harness's
+**Reference implementation**: `Tackle.Runtime.LoopAgent`
+(`packages/tackle_runtime/lib/tackle/runtime/loop_agent.ex`) is this backend,
+with credentials as an optional handle, and the review test suite runs whole
+reviews on it. Start from it; the harness's
 `Tackle.Runtime.RootBackend` shows the same callbacks on `%Tackle.Config{}`.
 Test the app's backend with the same scripted-adapter approach as
 `packages/tackle_review/test/tackle/review_test.exs`.
@@ -381,6 +382,11 @@ the stable database credential handle, forwards streaming events, monitors
 subscribers, and owns a linked turn task which is stopped with the agent.
 Tests exercise a full detector/verifier/scorer review plus inheritance,
 cancellation, step limits, provider/task failures and scope cleanup.
+
+Since then the backend moved into `tackle_runtime` as
+`Tackle.Runtime.LoopAgent`, with those tests; the app keeps
+`Tackle.Hub.AgentConfig.new/1`, which builds a `LoopAgent.Config` with the
+owner's credential handle, and review and cancellation tests.
 
 ### 7.4 Checkouts
 
@@ -514,7 +520,7 @@ Startup/periodic sweeps conservatively preserve live leases and executing jobs.
    Settings were valid when saved, but a provider disabled or a default
    changed since then must fail the request with a readable reason, not
    crash the job.
-5. A scope on `Tackle.Hub.AgentBackend`: a root agent that never runs a
+5. A scope on `Tackle.Runtime.LoopAgent`: a root agent that never runs a
    turn (allow delegation), and the two stage profiles built from
    `Tackle.Review.Stages.detector/0` and `verifier/0`: tools
    `Tackle.Tools.Read`, `Tackle.Tools.Bash`, and
@@ -1131,6 +1137,6 @@ use Postgres with the Ecto sandbox. Commit per phase.
 
 - **Gitea**: a `Forge.Gitea` module with a bot user and an encrypted access
   token, OAuth2 for sign-in, webhook HMAC, and Gitea's pull review API.
-- Chat with a coding agent: would extend `Tackle.Hub.AgentBackend` with
-  persisted conversations.
+- Chat with a coding agent: would run on `Tackle.Runtime.LoopAgent` with
+  persistence hooks, or a backend of its own for durable conversations.
 - Multi-tenancy, billing, and sign-up.

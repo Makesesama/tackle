@@ -11,10 +11,10 @@ defmodule Tackle.Hub.ReviewJobTest do
   alias Tackle.Plugins.Codex
   alias Tackle.Review.{Finding, Result, Settings}
   alias Tackle.Runtime
-  alias Tackle.Runtime.{AgentSpec, ScopeSpec}
+  alias Tackle.Runtime.{AgentSpec, LoopAgent, ScopeSpec}
 
   alias Tackle.Hub.{
-    AgentBackend,
+    AgentConfig,
     Models,
     Repo,
     ReviewAdapter,
@@ -751,7 +751,7 @@ defmodule Tackle.Hub.ReviewJobTest do
     %{scope: ref} = :sys.get_state(owner)
 
     {:ok, config} =
-      AgentBackend.config(
+      AgentConfig.new(
         providers: [ReviewAdapter],
         owner_id: c.owner.id,
         model: "scripted/verifier"
@@ -759,7 +759,7 @@ defmodule Tackle.Hub.ReviewJobTest do
 
     spec =
       ScopeSpec.new!(
-        backend: AgentBackend,
+        backend: LoopAgent,
         root_spec: AgentSpec.new!(name: "root", config: config)
       )
 
